@@ -6,6 +6,7 @@
 #include "slrr/scene_ambience.hpp"
 #include "slrr/scene_triggers.hpp"
 #include "slrr/scene_instances.hpp"
+#include "slrr/skeleton.hpp"
 #include "slrr/scene_presentation.hpp"
 #include "slrr/natives_boot.hpp"
 #include "slrr/video_fmv.hpp"
@@ -771,6 +772,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   {
     perf::Scope scope(perf::Zone::Physics);
     sim_seconds = jvm.advance_sim_time(dt);
+    character_set_sim_time(jvm.sim_time());
     part_physics_advance(sim_seconds);
   }
   scene_ambience_tick(sim_seconds);

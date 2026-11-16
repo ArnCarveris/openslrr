@@ -770,3 +770,21 @@ Run `./scripts/run_save_io_tests.ps1 -Suite asset_bounds`; add
 or saves. Knowledge-reference check: 219 references, zero errors.
 In-game visual regression testing remains pending; these fixes are most directly
 validated with malformed fixtures, not normal driving.
+
+
+### Character animation pause (#128)
+
+Character pose rebuilds used gameref_now (wall time), while pedestrians moved
+with the JVM simulation clock. With timeWarp(0), their world position stopped
+but skinning continued. The main loop now publishes jvm.sim_time to character
+animation immediately after advance_sim_time; all six character pose/bone/palette
+read paths sample that clock. Pause and time scaling therefore match physics,
+without adding the paused wall interval on resume. UI timers/orbit clocks are
+unchanged. No Java changes. This applies to character animations, not FMVs.
+
+Release x64 compiled; source audit confirms no remaining gameref_now calls in
+character.cpp. Knowledge references: 219 checked, zero errors. No automated
+animation playback or agent in-game validation is claimed. Manual check: in
+Valo face a walking pedestrian, pause for several seconds, confirm limbs are
+frozen, resume without pose catch-up, then repeat. Also check mechanic/driver
+animations during normal play. Save/section changes should remain functional.
