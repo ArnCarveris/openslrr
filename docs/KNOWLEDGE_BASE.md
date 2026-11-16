@@ -543,7 +543,6 @@ run time.
 | Risk | Where |
 | --- | --- |
 | DirectShow frame copy trusts `width × height × 4` against the sample size | `src/platform/video_fmv.cpp` (`grab_frame`) |
-| RPK reader reserves declared TOC counts before checking the remaining bytes | `src/resources/rpk_index.cpp:parse_rpak` |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
@@ -1215,3 +1214,44 @@ PR #146 was validated and merged at the user's request; #107/#94 are closed.
 For this wave, confirm menu/options, career loading, garage/city and catalog
 behaviour in game before merge; parser corpus compatibility is separate
 from gameplay validation. RPK TOC count validation remains a separate risk.
+
+
+### Issues #80 / #95: RPAK ranges and bounded ground-node traversal
+
+`src/resources/rpk_index.cpp:RpkIndex::parse_rpak` checks file sizing,
+64-bit dependency-count sums, dependency/table spans, record count versus
+minimum TOC record size, alias/bounds spans, and 64-bit offset+size against
+the file snapshot before publishing entries. It parses into a temporary
+pack: a bad record rejects the TOC instead of leaving a usable prefix.
+File loading and allocations are inside an exception boundary. An open
+pack with a rejected TOC retains its assigned id/path but has no entries.
+
+`RpkPack::file_size` records the validated snapshot. Uncached read_payload
+checks both that snapshot and the current stream length before allocating
+the payload, and contains allocation/read exceptions for preload callers.
+Descriptor cache hits remain immutable snapshots as described in #107;
+this does not add hot pack editing. A file truncated after TOC parsing is
+rejected by an uncached payload read before allocation.
+
+`src/resources/scene_instances.cpp:walk_ground_node` visits each in-range
+file offset once per GroundWalk. Cycles and repeated child pointers no
+longer cause exponential recursion or duplicate placements/geometry. The
+existing depth and byte-range guards remain; chunk iteration uses remaining
+byte counts. Repeated node data is consumed once in first traversal order,
+not interpreted as a new placement on each graph edge.
+
+Validation: Release host compiles. rpk_validation covers huge TOC counts,
+dependency addition overflow, huge payload sizes, offset+size overflow,
+truncated aliases/bounds, oversized table ranges, a file truncated after
+indexing, a two-edge self-cycle, and two children sharing a placement node.
+All 80 actual RPK files / 11367 TOC entries are accepted. Actual Test Track
+and ROC placement counts remain 1413 and 1791 respectively, matching the
+previous wave's logs. Existing resource_cache suite passes. Evidence is in
+`assets/validation/rpk-map-validation/`. No unsafe baseline cyclic walk or
+huge reserve is deliberately executed. No game Java/data is modified.
+SLRR_rev `SLRR_rev:docs/formats/rpk.md` and `SLRR_rev:src/formats/rpk.ts` were
+consulted for RPAK spans and record contracts; no external code copied.
+
+PR #147 was validated and merged at the user's request; #88/#89/#74 are
+closed. In-game loading of garage, city and tracks remains the validation
+step before merging this resource-validation wave.

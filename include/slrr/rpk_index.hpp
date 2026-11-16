@@ -31,6 +31,7 @@ struct RpkPack {
   int32_t pack_id = 0;
   std::string path;  // path as opened (relative or absolute)
   uint32_t version = 0;
+  uint64_t file_size = 0; // Validated TOC payload ranges refer to this snapshot.
   std::vector<RpkDep> deps;
   std::vector<RpkEntry> entries;
   // low 16-bit local type id → first matching entry index
