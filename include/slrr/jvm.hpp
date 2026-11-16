@@ -149,6 +149,10 @@ class Jvm : public TreeHost {
   std::vector<std::unique_ptr<Object>> heap_;
   std::unordered_map<std::string, std::unordered_map<std::string, Value>>
       statics_;
+  // Immutable initializer metadata, rebuilt whenever a class is loaded again.
+  // Absent fields have no eligible RID literal; mutable static Values stay separate.
+  std::unordered_map<std::string,
+      std::unordered_map<std::string, std::vector<TufaClass::Resource>>> static_rids_;
   int invoke_depth_ = 0;
   int field_init_depth_ = 0;
   bool halt_on_unbound_ = false;
