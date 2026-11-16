@@ -917,3 +917,21 @@ masked and four unmasked sections, valid mask slot and hour transitions. This
 establishes parser/scene metadata only, not final pixel output. Retest windows,
 wall/roof darkness, illuminated signs and flicker. Knowledge references: 219,
 zero errors. No Java edits or physical-light changes.
+
+
+### Night signs: SCX4 emission colour (PR #139 follow-up)
+
+Stock `_uvw/night_reklam1naa.SCX` and `night_vreklam3aa.SCX` declare
+COLOR_EMISSIVE (property 2) as white without TEX2D_EMISSIONMASK; their
+daytime counterparts have no emission colour. ScxGroup now retains that
+colour, and material merging compares it. Night overlay drawing accepts
+either an authored mask (windows) or a nonzero emission colour (signs).
+Colour-only signs use the white mask binding and multiply the base texture
+by the emission colour; non-emissive facade groups remain excluded. Missing
+authored mask textures still do not fall back to a full-bright facade.
+The 2 mm overlay offset and 18:30 onset remain unchanged.
+
+Validation: Release host build succeeded; `night_props` passed against game
+assets, checking night/day sign emission and window mask presence. Actual
+GPU appearance of signs still requires user validation; windows were
+confirmed working by the user before this follow-up.

@@ -1219,6 +1219,7 @@ bool same_material(const ScxGroup& a, const ScxGroup& b) {
          a.reflection_index == b.reflection_index && a.lightmap_index == b.lightmap_index &&
          a.illumination_index == b.illumination_index &&
          a.emission_index == b.emission_index && same_map(a.emission_map, b.emission_map) &&
+         std::equal(std::begin(a.emission_color), std::end(a.emission_color), std::begin(b.emission_color)) &&
          a.mix_vertex_color == b.mix_vertex_color && a.material_type == b.material_type &&
          a.reflection_strength == b.reflection_strength && same_map(a.base_map, b.base_map) &&
          same_map(a.mix_map, b.mix_map) && same_map(a.reflection_map, b.reflection_map) &&

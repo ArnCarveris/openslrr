@@ -320,9 +320,11 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     }
     auto draw=[&](uint32_t first,uint32_t count,uint16_t texture_index,uint32_t flags,const ScxGroup* group){
       // Night meshes duplicate ordinary facade sections. Only sections with
-      // the authored self-illumination mask contribute emissive light.
+      // an authored emission mask or colour contribute emissive light.
       if (instance.emissive_overlay &&
-          (!group || group->emission_index == 0xffff)) return;
+          (!group || (group->emission_index == 0xffff &&
+           group->emission_color[0] == 0.f && group->emission_color[1] == 0.f &&
+           group->emission_color[2] == 0.f))) return;
       // SCX3 alpha-blended sprites, including map markers, belong above
       // the opaque tiles. Their JPEG/PNG alpha is already premultiplied.
       // SCX4 glass requests texture alpha in the material word. The
@@ -356,6 +358,8 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       float tint[4]={((color>>16)&255)/255.f,((color>>8)&255)/255.f,(color&255)/255.f,1};
       if (material_mix)
         for (int i = 0; i < 3; ++i) tint[i] *= group->diffuse[i];
+      if (instance.emissive_overlay && group && group->emission_index == 0xffff)
+        for (int c = 0; c < 3; ++c) tint[c] *= group->emission_color[c];
       const ScxTextureMap identity;
       const ScxTextureMap& base_uv = group ? group->base_map : identity;
       const ScxTextureMap& mix_uv = group ? group->mix_map : identity;
@@ -386,7 +390,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
           (world_mesh && outdoor_lighting_ && graphics.dynamic_lighting);
       bind_baked_light(group, &part.tex, mix, world_mesh && view_id < 72,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
-      if (instance.emissive_overlay && group) {
+      if (instance.emissive_overlay && group && group->emission_index != 0xffff) {
         const auto& uv = group->emission_map;
         const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
                                    static_cast<float>(uv.channel), 0.f};

@@ -271,6 +271,8 @@ bool parse_v4(const std::vector<uint8_t>& buf, ScxGeometry& geo, bool want_geo) 
               mat.specular[0] = buf[p + 0] / 255.f;
               mat.specular[1] = buf[p + 1] / 255.f;
               mat.specular[2] = buf[p + 2] / 255.f;
+            } else if (want_geo && prop == 2) {
+              for (int c = 0; c < 3; ++c) mat.emission_color[c] = buf[p + c] / 255.f;
             }
             p += 4;
           } else if (prop >= 0x01000000u && prop <= 0x01000002u) {
