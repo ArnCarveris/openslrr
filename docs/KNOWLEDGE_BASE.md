@@ -669,3 +669,23 @@ Each answer names its evidence.
 - When a contract changes, update [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)
   first, then this summary.
 - Move items out of §9 and §10 when they are fixed, in the same change.
+
+
+## 14. Garage lifetime correction (#122)
+
+Boot no longer loads G1 meshes unconditionally into the renderer's permanent
+ScenePart list and the global static collision cache. Garage.java selects its
+GroundRef and stuff RenderRef from garageIndex; the normal resource/scene path
+owns their lifetime. The boot copy had no world owner and was drawn whenever
+the garage viewport was active, including G2/G3/ROC, and entered reflection
+captures as well. Its collision triangles also survived garage changes.
+
+The patch removes this duplicate preload rather than adding garage-name checks
+or deleting cached resources still owned by a live scene. Resource decoding
+continues through natives_resref and scene_instances. No Java changes.
+Release x64 compiles and knowledge reference validation passes (219 references).
+No in-game validation is claimed yet. Test initial G1, then use fastpromotion
+for club garages and letmeroc for the ROC garage; inspect walls, floor/lift,
+props and reflections for old G1 geometry. Confirm the car remains supported
+by each active garage's collision geometry and that returning to G1 works.
+Issue #93 / PR #121 remains independent and unmerged.
