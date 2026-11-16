@@ -3833,7 +3833,8 @@ void PedSim::run(std::stop_token stop) {
     const float step_dt = dt;
     const std::vector<PedestrianCar> obstacles = cars;
     PedestrianLines* lines = walk;
-    posted = false;
+    // Keep the job busy until its result is published. Otherwise the main
+    // thread can submit another snapshot from before this step completed.
     lock.unlock();
     if (lines && step_dt > 0.f) {
       // All walkers in one step: they steer around each other.
@@ -3845,6 +3846,7 @@ void PedSim::run(std::stop_token stop) {
     }
     lock.lock();
     out = std::move(slots);
+    posted = false;
     ready = true;
   }
 }
@@ -4167,11 +4169,16 @@ void tick_pedestrians(double seconds) {
       node->empty = false;
     }
   }
+  // Pause still consumes a finished job and publishes render poses above,
+  // but must not submit zero-duration snapshots with the previous gait.
+  if (dt <= 0.f) return;
   bool wake = false;
   {
     PedSim& sim = ped_sim();
     std::lock_guard lock(sim.mu);
-    if (sim.posted) {
+    // ready may become true between the result-consumption lock above and
+    // this lock. Do not enqueue stale agent positions over an unread result.
+    if (sim.posted || sim.ready) {
       ped_backlog = std::min(0.1f, ped_backlog + dt);
     } else {
       sim.in.clear();

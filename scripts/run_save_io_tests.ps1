@@ -1,7 +1,7 @@
 param(
   [string]$BuildDir = "build",
   [string]$BaselineRef = "",
-  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds")]
+  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing")]
   [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
