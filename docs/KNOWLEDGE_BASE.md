@@ -1395,3 +1395,20 @@ video_safety suite checks cancellation both before opening a decoder and after
 opening a generated silent AVI; no later intro is opened. Immediate LibVLC
 cancellation can log demux errors in this fixture; actual rendered frames are
 not asserted. Release build and the suite pass.
+
+
+### Options save failure policy (#109)
+
+`host_game_options_update` keeps failed options dirty but suspends automatic
+saveConfig retries after the first failure. `host_game_options_dirty` rearms
+the normal 500 ms debounce on a new setting change. Forced updates (including
+shutdown) can still retry; repeated failures without a change log only once.
+Success clears dirty/failure state, and options load resets it for a new
+session. Runtime settings continue to apply even when persistence fails.
+
+Release build and `options_retry` pass. An isolated compiled Config fixture
+binds a counted saveConfig adapter: checks debounce, failure followed by 100
+updates after another debounce interval, rearming on a real GPS option change,
+forced retry, recovery and no extra writes after success. This tests the save
+result policy, not filesystem permissions; the existing save implementation is
+unchanged. Evidence: `assets/validation/options-retry/after.txt`.

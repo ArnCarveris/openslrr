@@ -10,7 +10,7 @@
 namespace slrr {
 namespace {
 using Clock = std::chrono::steady_clock;
-bool loaded = false, dirty = false;
+bool loaded = false, dirty = false, save_failed = false;
 Clock::time_point changed, next_sample;
 GameOptions current;
 uint64_t driving_revision = 0;
@@ -103,7 +103,7 @@ void host_set_framerate_mode(FramerateMode mode) {
 uint64_t host_driving_options_revision() { return driving_revision; }
 
 void host_game_options_load(Jvm& jvm) {
-  loaded=false;dirty=false;
+  loaded=false;dirty=false;save_failed=false;
   // Engine-owned Config in stock. A VM static keeps it alive through GC.
   Object* options=jvm.new_object("java.util.Config");
   jvm.set_static("java.lang.System","_hostGameOptions",Value::make_obj(options));
@@ -117,7 +117,7 @@ void host_game_options_load(Jvm& jvm) {
 }
 void host_game_options_dirty() {
   if(!loaded)return;
-  dirty=true;changed=std::chrono::steady_clock::now();
+  dirty=true;save_failed=false;changed=std::chrono::steady_clock::now();
 }
 void host_game_options_apply(Jvm& jvm) {
   if (!loaded) return;
@@ -196,12 +196,15 @@ void host_game_options_set_steering_help(Jvm& jvm, float strength) {
 void host_game_options_update(Jvm& jvm, bool force) {
   if (!loaded) return;
   if (force || Clock::now() >= next_sample) host_game_options_apply(jvm);
-  if (!dirty || (!force && Clock::now() - changed < std::chrono::milliseconds(500))) return;
+  if (!dirty || (!force && (save_failed || Clock::now() - changed < std::chrono::milliseconds(500)))) return;
   Value v=jvm.get_static("java.lang.System","_hostGameOptions");
   if(v.tag!=ValueTag::Obj || !v.v.o)return;
   Value result=jvm.invoke_by_name(v.v.o->class_name,"saveConfig",
        {v,Value::make_obj(jvm.new_string("save/game/options"))},false);
-  if(result.tag==ValueTag::Int && result.v.i){dirty=false;std::printf("[options] saved save/game/options\n");}
-  else {changed=std::chrono::steady_clock::now();std::fprintf(stderr,"[options] save failed\n");}
+  if(result.tag==ValueTag::Int && result.v.i){dirty=false;save_failed=false;std::printf("[options] saved save/game/options\n");}
+  else {
+    if (!save_failed) std::fprintf(stderr,"[options] save failed; retry on next change or shutdown\n");
+    save_failed = true;
+  }
 }
 }
