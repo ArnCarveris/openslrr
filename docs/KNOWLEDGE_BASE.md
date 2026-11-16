@@ -967,3 +967,9 @@ park trees near the first garage using MSAA 2x/4x/8x, then AA off/FXAA,
 and check fences, tree shadows and reflections for regressions.
 `SLRR_rev:src/formats/scx.ts` and `SLRR_rev:src/render/map-material-pool.ts` were
 consulted; neither provides this bgfx alpha-to-coverage correction.
+
+
+Issue #129 in-game follow-up: the user confirmed the foliage fix works on
+16 November 2026 and supplied `assets/validation/tree-foliage/in-game-after.png`.
+This confirms the reported Valo foliage appearance; separate validation of
+every AA mode and other two-sided cutout assets has not been claimed.
