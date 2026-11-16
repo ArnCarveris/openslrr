@@ -122,11 +122,16 @@ std::vector<std::string> RpkIndex::list_rpks(const std::string& dir) const {
   return out;
 }
 
-bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
+bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& output) const {
+  try {
+  RpkPack pack;
+  pack.pack_id=output.pack_id;pack.path=output.path;
   std::ifstream in(disk, std::ios::binary | std::ios::ate);
   if (!in) return false;
-  const auto sz = static_cast<size_t>(in.tellg());
-  if (sz < 16) return false;
+  const auto length=in.tellg();
+  if (length<16) return false;
+  const auto sz = static_cast<size_t>(length);
+  pack.file_size=sz;
   in.seekg(0);
   std::vector<uint8_t> buf(sz);
   in.read(reinterpret_cast<char*>(buf.data()),
@@ -145,14 +150,14 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
   pack.version = version;
   const uint32_t dep_a = rd_u32(buf.data() + 8);
   const uint32_t dep_b = rd_u32(buf.data() + 12);
-  const uint32_t dep_n = dep_a + dep_b;
+  const uint64_t dep_n = uint64_t(dep_a) + dep_b;
   size_t off = 16;
+  if (sz<32 || dep_n>(sz-32)/64) return false;
   const size_t dep_bytes = static_cast<size_t>(dep_n) * 64;
-  if (off + dep_bytes + 16 > sz) return false;
 
   pack.deps.clear();
   pack.deps.reserve(dep_n);
-  for (uint32_t i = 0; i < dep_n; ++i) {
+  for (uint64_t i = 0; i < dep_n; ++i) {
     const uint8_t* d = buf.data() + off;
     RpkDep dep;
     dep.id = rd_u32(d);
@@ -167,8 +172,8 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
   const uint32_t table_size = rd_u32(buf.data() + off);
   const uint32_t count = rd_u32(buf.data() + off + 4);
   off += 16;  // tableSize, count, skip(8)
+  if (table_size > sz-off || count > table_size/23) return false;
   const size_t table_end = off + table_size;
-  if (table_end > sz) return false;
 
   pack.entries.clear();
   pack.by_type_id.clear();
@@ -176,7 +181,7 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
   for (uint32_t i = 0; i < count; ++i) {
     if (off + 23 > table_end) {
       std::printf("[rpk] TOC overrun entry %u %s\n", i, disk.c_str());
-      break;
+      return false;
     }
     const uint8_t* e = buf.data() + off;
     RpkEntry ent;
@@ -187,9 +192,10 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
     (void)rd_f32(e + 10);
     ent.offset = rd_u32(e + 14);
     ent.size = rd_u32(e + 18);
+    if (uint64_t(ent.offset)+ent.size>pack.file_size) return false;
     const uint8_t alias_len = e[22];
     off += 23;
-    if (off + alias_len > table_end) break;
+    if (alias_len > table_end-off) return false;
     if (alias_len) {
       ent.alias.assign(reinterpret_cast<const char*>(buf.data() + off),
                        alias_len);
@@ -198,7 +204,7 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
       off += alias_len;
     }
     if (ent.flags & 1) {
-      if (off + 48 > table_end) break;
+      if (table_end-off < 48) return false;
       off += 48;  // f32[12]
     }
     pack.by_type_id.try_emplace(ent.type_id & 0xFFFFu, pack.entries.size());
@@ -208,7 +214,12 @@ bool RpkIndex::parse_rpak(const std::string& disk, RpkPack& pack) const {
   std::printf("[rpk] parsed %s pack=%d deps=%zu entries=%zu\n",
               pack.path.c_str(), pack.pack_id, pack.deps.size(),
               pack.entries.size());
+  output=std::move(pack);
   return true;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr,"[rpk] load failed %s: %s\n",disk.c_str(),error.what());
+    return false;
+  }
 }
 
 int32_t RpkIndex::open_all() {
@@ -357,9 +368,12 @@ uint32_t RpkIndex::canonical_id(uint32_t id) const {
   return id;
 }
 std::vector<uint8_t> RpkIndex::read_payload(uint32_t full_id) const {
+  try {
   full_id=canonical_id(full_id);
   const RpkEntry* e=resolve(full_id);
   if (!e || !e->size) return {};
+  const auto* pack=pack_by_id(pack_from_full(full_id));
+  if (!pack || uint64_t(e->offset)+e->size>pack->file_size) return {};
   std::lock_guard lock(payload_mutex_);
   if (auto it=payload_cache_.find(full_id);it!=payload_cache_.end()) return it->second;
   const int32_t pid=pack_from_full(full_id);
@@ -369,7 +383,10 @@ std::vector<uint8_t> RpkIndex::read_payload(uint32_t full_id) const {
     if (!*opened) return {};
     stream=std::move(opened);
   }
-  stream->clear();stream->seekg(static_cast<std::streamoff>(e->offset));
+  stream->clear();stream->seekg(0,std::ios::end);
+  const auto current_size=stream->tellg();
+  if (current_size<0 || uint64_t(e->offset)+e->size>static_cast<uint64_t>(current_size)) return {};
+  stream->seekg(static_cast<std::streamoff>(e->offset));
   std::vector<uint8_t> out(e->size);
   stream->read(reinterpret_cast<char*>(out.data()),static_cast<std::streamsize>(out.size()));
   if (!*stream) return {};
@@ -381,6 +398,10 @@ std::vector<uint8_t> RpkIndex::read_payload(uint32_t full_id) const {
   if (inline_cfg || std::find(out.begin(),text_end,uint8_t(0))==text_end)
     payload_cache_.emplace(full_id,out);
   return out;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr,"[rpk] payload 0x%08x: %s\n",full_id,error.what());
+    return {};
+  }
 }
 
 namespace {

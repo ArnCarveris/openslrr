@@ -435,6 +435,7 @@ struct PolySection {
 };
 
 struct GroundWalk {
+  std::unordered_set<uint32_t> walked_offsets;
   const std::vector<uint8_t> *file = nullptr;
   std::string params;
   std::vector<PolySection> poly;
@@ -547,6 +548,7 @@ void walk_ground_node(GroundWalk &w, uint32_t offset, uint32_t size,
   const std::vector<uint8_t> &file = *w.file;
   if (size < 8 || offset > file.size() || size > file.size() - offset)
     return;
+  if (!w.walked_offsets.insert(offset).second) return;
   const uint8_t *base = file.data() + offset;
   const uint8_t *end = base + size;
   const uint32_t n0 = rd32(base);
@@ -589,7 +591,7 @@ void walk_ground_node(GroundWalk &w, uint32_t offset, uint32_t size,
     p += rec;
     kids.push_back(Kid{restype, foff, sz, (flags & 0x20u) != 0});
   }
-  while (ok && p + 8 <= end) {
+  while (ok && end - p >= 8) {
     const uint32_t tag = rd32(p);
     const uint32_t csize = rd32(p + 4);
     const uint8_t *data = p + 8;
