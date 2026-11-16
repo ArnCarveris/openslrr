@@ -730,3 +730,21 @@ Release x64 compiled; knowledge references 219 checked, zero errors.
 In-game validation remains pending: inspect poles/objects in TestTrack and ROC,
 reenter the maps, and verify frame time and collisions now that props exist.
 The scripted trigger/race progression issues are separate.
+
+
+### Track structures casting shadows (follow-up to #134)
+
+User confirms standalone native placements appear. The tower/stairs remain
+unshadowed because they belong to the ground POLY itself, excluded wholesale
+from the static shadow caster pass. Ground POLY now casts as well as receives;
+vehicle, sky, skinned and light exclusions remain. Fragment receiver bias now
+uses the depth gradient in shadow UV coordinates over the PCF footprint rather
+than derivatives measured in screen pixels. This is intended to avoid terrain
+self-shadow grids when including the ground; the cap is 0.004 normalized depth.
+Potential tradeoff: excess bias can detach fine contact shadows, especially at
+shallow angles. Visual validation is required before merge.
+
+Release x64 and embedded DXBC/GLSL shaders compile. Knowledge references: 219
+checked, zero errors. No GPU visual test was performed by the agent. Retest
+TestTrack tower/stairs and adjacent apron for shadows/acne, then Valo buildings
+and roads. These rendering checks are separate from placement integration tests.
