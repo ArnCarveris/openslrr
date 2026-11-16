@@ -1,4 +1,5 @@
 #include "slrr/video_fmv.hpp"
+#include "slrr/video_frame.hpp"
 
 #ifdef _WIN64
 #include "video_fmv_vlc.hpp"
@@ -76,6 +77,7 @@ uint64_t g_vlc_frame_serial = 0;
 #endif
 int g_w = 0;
 int g_h = 0;
+bool g_rgb32_top_down = false;
 char g_path[MAX_PATH] = {};
 std::vector<uint8_t> g_scratch;
 std::vector<uint8_t> g_bgra;
@@ -248,6 +250,7 @@ void release_graph() {
   rel(g_bvideo);
   g_non_exclusive = false;
   g_w = g_h = 0;
+  g_rgb32_top_down = false;
   g_path[0] = '\0';
   g_scratch.clear();
   g_bgra.clear();
@@ -369,19 +372,25 @@ HRESULT build_graph_texture(const wchar_t *wpath) {
     return E_FAIL;
 
   AM_MEDIA_TYPE connected{};
+  bool valid_format = false;
   if (SUCCEEDED(g_grabber->GetConnectedMediaType(&connected))) {
-    if (connected.formattype == FORMAT_VideoInfo && connected.pbFormat) {
-      auto *vih = reinterpret_cast<VIDEOINFOHEADER *>(connected.pbFormat);
-      g_w = vih->bmiHeader.biWidth;
-      g_h = vih->bmiHeader.biHeight;
-      if (g_h < 0)
-        g_h = -g_h;
+    if (connected.formattype == FORMAT_VideoInfo && connected.subtype == MEDIASUBTYPE_RGB32 &&
+        connected.pbFormat && connected.cbFormat >= sizeof(VIDEOINFOHEADER)) {
+      const auto* vih = reinterpret_cast<const VIDEOINFOHEADER*>(connected.pbFormat);
+      const auto& bitmap = vih->bmiHeader;
+      if (bitmap.biSize >= sizeof(BITMAPINFOHEADER) && bitmap.biPlanes == 1 &&
+          bitmap.biBitCount == 32 && bitmap.biCompression == BI_RGB &&
+          video_rgb32_bytes(bitmap.biWidth, bitmap.biHeight)) {
+        g_w = bitmap.biWidth;
+        g_rgb32_top_down = bitmap.biHeight < 0;
+        g_h = g_rgb32_top_down ? -bitmap.biHeight : bitmap.biHeight;
+        valid_format = true;
+      }
     }
-    if (connected.pbFormat)
-      CoTaskMemFree(connected.pbFormat);
-    if (connected.pUnk)
-      connected.pUnk->Release();
+    if (connected.pbFormat) CoTaskMemFree(connected.pbFormat);
+    if (connected.pUnk) connected.pUnk->Release();
   }
+  if (!valid_format) return E_FAIL;
   const int audio = render_audio_pins();
   g_audio_streams = audio;
   std::printf("[fmv] audio render pins=%d\n", audio);
@@ -460,25 +469,17 @@ void grab_frame() {
   g_frame_ready = false;
   if (!g_grabber || g_w <= 0 || g_h <= 0)
     return;
+  const auto need = video_rgb32_bytes(g_w, g_h);
   long sz = 0;
-  if (FAILED(g_grabber->GetCurrentBuffer(&sz, nullptr)) || sz <= 0)
-    return;
-  if (static_cast<long>(g_scratch.size()) < sz)
-    g_scratch.resize(static_cast<size_t>(sz));
-  if (FAILED(g_grabber->GetCurrentBuffer(
-          &sz, reinterpret_cast<long *>(g_scratch.data()))))
-    return;
-  const size_t need = static_cast<size_t>(g_w) * static_cast<size_t>(g_h) * 4u;
-  if (g_bgra.size() < need)
-    g_bgra.resize(need);
-  // DS RGB32 is often bottom-up; flip to top-left for bgfx.
-  const int pitch = g_w * 4;
-  for (int y = 0; y < g_h; ++y) {
-    const uint8_t *src =
-        g_scratch.data() + static_cast<size_t>(g_h - 1 - y) * pitch;
-    uint8_t *dst = g_bgra.data() + static_cast<size_t>(y) * pitch;
-    std::memcpy(dst, src, static_cast<size_t>(pitch));
-  }
+  if (!need || FAILED(g_grabber->GetCurrentBuffer(&sz, nullptr)) ||
+      sz <= 0 || static_cast<size_t>(sz) < need) return;
+  g_scratch.resize(static_cast<size_t>(sz));
+  if (FAILED(g_grabber->GetCurrentBuffer(&sz, reinterpret_cast<long*>(g_scratch.data()))) ||
+      sz <= 0 || static_cast<size_t>(sz) > g_scratch.size()) return;
+  // Check the size returned by the second call, not vector capacity or the
+  // earlier size query: a short sample must never expose stale rows.
+  if (!video_copy_rgb32(std::span<const uint8_t>(g_scratch.data(), static_cast<size_t>(sz)),
+                        g_w, g_rgb32_top_down ? -g_h : g_h, g_bgra)) return;
   g_frame_ready = true;
 }
 #endif

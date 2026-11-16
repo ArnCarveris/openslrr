@@ -364,6 +364,11 @@ void dispatch_mechanic_pointer(Jvm& jvm) {
 
 MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
                                    SectionMachine& sections, double dt) {
+  if (render.quit_requested()) {
+    MainLoopFrameResult out{};
+    out.quit = true;
+    return out;
+  }
   resource_loading_pump();
   host_music_update();
   host_game_options_update(jvm);
@@ -792,7 +797,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   // Soft: backend flush pumps FMV SampleGrabber + Present (libbgfx path).
   {
     perf::Scope scope(perf::Zone::Flush);
-    render.flush();
+    if (!render.quit_requested()) render.flush();
   }
 
   // --- PollWindowQuit @ 0x5522A0 ---

@@ -1,0 +1,6 @@
+[bgfx] program present failed to link
+[bgfx] program hiz failed to link
+PASS top-down/bottom-up RGB32; short samples preserve output; invalid/overflow dimensions rejected
+[cursor] loaded 10/10 shapes (2.cur..11.cur)
+[bgfx] open 320x240 GPU=libbgfx renderer=Direct3D 11
+PASS WM_CLOSE retains HWND until backend close; quit frame returns; close is repeatable

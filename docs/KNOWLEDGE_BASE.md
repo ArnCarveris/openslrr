@@ -542,7 +542,7 @@ run time.
 
 | Risk | Where |
 | --- | --- |
-| DirectShow frame copy trusts `width × height × 4` against the sample size | `src/platform/video_fmv.cpp` (`grab_frame`) |
+| DirectShow dynamic media-format renegotiation is not supported; malformed/short RGB32 frames are rejected | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
@@ -1355,3 +1355,33 @@ short/mistagged native calls, Float camera priorities and time flags, Int text
 and matrix coordinates, and System.exit with an Int argument. Unsafe old array
 behavior was not executed with huge indices. Evidence:
 `assets/validation/script-safety/after.txt`. In-game validation remains separate.
+
+
+### Video frame bounds and shutdown (#78, #102)
+
+The DirectShow Sample Grabber accepts only a complete VIDEOINFOHEADER describing
+packed RGB32 (one plane, BI_RGB). Width/height validation rejects zero, negative
+width, INT32_MIN height and byte counts beyond the signed 32-bit sample API.
+`video_rgb32_bytes` and `video_copy_rgb32` in `include/slrr/video_frame.hpp`
+validate the actual returned sample span before copying. The second
+GetCurrentBuffer result, not scratch capacity or the initial query, determines
+the valid bytes. Short samples never publish a new frame or copy stale rows.
+Negative-height images retain top-down order; positive heights are flipped.
+Dynamic media-format renegotiation is not implemented by this change.
+
+WM_CLOSE only requests quit in the libbgfx backend. The main loop returns early
+when quit is already requested and skips presentation if quit is requested
+mid-frame. Backend close destroys/resets its FMV texture, dimensions and serial
+before bgfx shutdown; HWND destruction remains after shutdown (this order was
+already correct before this fix). Repeated close was verified.
+
+Validation: Release build and `video_safety` pass. Synthetic pixel fixtures
+cover both orientations, short/empty samples, extra trailing bytes and invalid
+or overflowing dimensions. A real Direct3D 11 window test sends WM_CLOSE,
+checks the HWND is still valid through mainloop_frame's quit return, then
+checks it is destroyed by close and that close can be repeated. Test log:
+`assets/validation/video-safety/after.txt`. Existing present/hiz shader-link
+warnings (#105) were observed in this test; the backend still opened and the
+test passed. Actual DirectShow decoder fallback, intro playback and FMV texture
+allocation/release during playback remain manual validation; the synthetic
+copy tests do not claim to cover a full decoder graph.
