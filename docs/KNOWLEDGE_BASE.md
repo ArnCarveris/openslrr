@@ -893,3 +893,27 @@ metadata on the collected night mesh. Checks pass; they do not prove GPU output.
 User must retest illumination, coplanar flicker and overly bright wall regions.
 This supersedes the 18:00 threshold documented above. Knowledge check: 219
 references, zero errors. No simulation, Java or physical light-source changes.
+
+
+### Night emission masks and coplanar signs (PR #139)
+
+User confirms night detail appears but the entire house was too bright; signs
+were correctly lit with slight depth fighting. Actual krthaz02_night.scx has
+five material groups: one window material carries 0x06000005 (EmissionMaskMap),
+four wall/roof/door sections do not. The property was ignored by the SCX reader.
+CarBuilder scxWrite.ts documents selfIllumMap as TEX2D_EMISSIONMASK 0x06000005;
+the matching property is present in the shipped SCX.
+
+Parse and retain emission texture slot plus UV mapping; include both in material
+merge equality. In a night overlay, skip sections without a mask and sample the
+mask RGB to modulate the additive emissive contribution. Missing masks do not
+fall back to white/full-bright. Preserve normal lighting on base facades. The
+night detail vertex path uses a 0.002 m normal offset to reduce coplanar depth
+fighting, without depth writes or distance-dependent clip bias. Onset remains
+18:30. Signs only emit through their authored masks as well.
+
+Release x64 and DXBC/GLSL shaders compile. Stock integration test verifies one
+masked and four unmasked sections, valid mask slot and hour transitions. This
+establishes parser/scene metadata only, not final pixel output. Retest windows,
+wall/roof darkness, illuminated signs and flicker. Knowledge references: 219,
+zero errors. No Java edits or physical-light changes.

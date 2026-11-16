@@ -319,6 +319,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       return;
     }
     auto draw=[&](uint32_t first,uint32_t count,uint16_t texture_index,uint32_t flags,const ScxGroup* group){
+      // Night meshes duplicate ordinary facade sections. Only sections with
+      // the authored self-illumination mask contribute emissive light.
+      if (instance.emissive_overlay &&
+          (!group || group->emission_index == 0xffff)) return;
       // SCX3 alpha-blended sprites, including map markers, belong above
       // the opaque tiles. Their JPEG/PNG alpha is already premultiplied.
       // SCX4 glass requests texture alpha in the material word. The
@@ -382,6 +386,18 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
           (world_mesh && outdoor_lighting_ && graphics.dynamic_lighting);
       bind_baked_light(group, &part.tex, mix, world_mesh && view_id < 72,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
+      if (instance.emissive_overlay && group) {
+        const auto& uv = group->emission_map;
+        const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
+                                   static_cast<float>(uv.channel), 0.f};
+        const float transform[4] = {uv.scale_u, uv.scale_v, uv.offset_u, uv.offset_v};
+        bgfx::setUniform(u_lightmap_, channels);
+        bgfx::setUniform(u_lightmap_uv_, transform);
+        // Missing masks are black, never a full-bright wall fallback.
+        const auto mask = texture(group->emission_index);
+        if (mask.idx == white_tex_.idx) return;
+        bgfx::setTexture(1, s_lightmap_, mask);
+      }
       if (world_mesh) bgfx::setUniform(u_local_light_, local_light_.data());
       uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA;
       if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;

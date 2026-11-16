@@ -306,6 +306,10 @@ bool parse_v4(const std::vector<uint8_t>& buf, ScxGeometry& geo, bool want_geo) 
               mat.illumination_index = static_cast<uint16_t>(tex_i);
               mat.illumination_map = map;
             }
+            if (prop == 0x06000005u && tex_i < 0xffffu) {
+              mat.emission_index = static_cast<uint16_t>(tex_i);
+              mat.emission_map = map;
+            }
             if (prop == 0x06000007u && tex_i < 0xffffu) {
               mat.lightmap_index = static_cast<uint16_t>(tex_i);
               mat.lightmap_map = map;
