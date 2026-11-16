@@ -845,3 +845,93 @@ Run `./scripts/run_save_io_tests.ps1 -Suite time_format`, optionally with
 Knowledge reference check: 219 checked, zero errors. In-game check pending:
 TestTrack/ROC timer should show exactly three fractional digits; garage clock
 should retain its ordinary display.
+
+
+### Native building night overlays (#133)
+
+Ground placement loading previously rejected every standalone `night` word in
+render aliases. Stock objects.rpk object 0x1a1 (krthaz02) includes a second render
+0x4ba (krthaz02_night) in its ICFG, flagged 4; this is authored night geometry,
+not a missing alternative texture filename. Retain the render, mark the placement
+night-only by alias word boundaries, and filter at collection time in both
+individual and instanced paths. Base facades stay present. All required meshes
+stay resident so time changes need no map reload and reflection collection uses
+the same visibility. Collision bodies are unchanged.
+
+Enhanced policy currently shows night overlays 18:00 inclusive to 06:00
+exclusive, from scene_sun_time with 24-hour wrapping. These thresholds are a
+host policy, not a newly proven original-engine rule. The old blanket exclusion
+advice in EXTERNAL_RESEARCH section 7 is superseded by this runtime filter;
+flags=4 alone still cannot classify arbitrary daytime renders.
+
+Release x64 compiles. Read-only stock-asset integration test instantiates
+krthaz02 and checks collected props/batches at noon, 22h, 6h, 18h and noon again:
+corrected totals 1/2/1/2/1, night counts 0/1/0/1/0; baseline c15a839 is always
+1 with zero night overlays. Run `./scripts/run_save_io_tests.ps1 -Suite night_props`,
+optionally `-BaselineRef c15a839`. Evidence: assets/validation/night-props.
+Source provenance: actual objects.rpk ICFG/render aliases; current SLRR_rev
+map-object-stream/category sources were checked for an applicable night policy
+but none was adopted. Knowledge reference check: 219 checked, zero errors.
+Visual validation pending: Valo facade windows at midday/night and after moving
+time back; check no daytime overlays, duplicate flicker, or reflection mismatch.
+
+
+### Night facade illumination follow-up (PR #139)
+
+User reports registered overlays still look unlit, and requests lights start
+at 18:30. Visibility now starts at 18.5h (off at 06:00 as before). Night meshes
+under _krthaz_selfillum are marked emissive_overlay in SceneInstance, kept out
+of opaque instance batches and drawn in the blended pass after facades. They
+use reverse-Z GEQUAL, no depth write and SRC_ALPHA/ONE additive blending for
+coplanar lit detail. The shader ignores sun/ambient/shadow attenuation for these
+layers; ordinary geometry lighting is unchanged. Emissive overlays do not cast
+solid shadows. Reflection draws reuse the same instance flags.
+
+Release x64 and embedded shaders compile. The real-asset test now checks just
+before 18:30, exactly 18:30, noon/night/dawn/noon again and verifies emissive
+metadata on the collected night mesh. Checks pass; they do not prove GPU output.
+User must retest illumination, coplanar flicker and overly bright wall regions.
+This supersedes the 18:00 threshold documented above. Knowledge check: 219
+references, zero errors. No simulation, Java or physical light-source changes.
+
+
+### Night emission masks and coplanar signs (PR #139)
+
+User confirms night detail appears but the entire house was too bright; signs
+were correctly lit with slight depth fighting. Actual krthaz02_night.scx has
+five material groups: one window material carries 0x06000005 (EmissionMaskMap),
+four wall/roof/door sections do not. The property was ignored by the SCX reader.
+CarBuilder scxWrite.ts documents selfIllumMap as TEX2D_EMISSIONMASK 0x06000005;
+the matching property is present in the shipped SCX.
+
+Parse and retain emission texture slot plus UV mapping; include both in material
+merge equality. In a night overlay, skip sections without a mask and sample the
+mask RGB to modulate the additive emissive contribution. Missing masks do not
+fall back to white/full-bright. Preserve normal lighting on base facades. The
+night detail vertex path uses a 0.002 m normal offset to reduce coplanar depth
+fighting, without depth writes or distance-dependent clip bias. Onset remains
+18:30. Signs only emit through their authored masks as well.
+
+Release x64 and DXBC/GLSL shaders compile. Stock integration test verifies one
+masked and four unmasked sections, valid mask slot and hour transitions. This
+establishes parser/scene metadata only, not final pixel output. Retest windows,
+wall/roof darkness, illuminated signs and flicker. Knowledge references: 219,
+zero errors. No Java edits or physical-light changes.
+
+
+### Night signs: SCX4 emission colour (PR #139 follow-up)
+
+Stock `_uvw/night_reklam1naa.SCX` and `night_vreklam3aa.SCX` declare
+COLOR_EMISSIVE (property 2) as white without TEX2D_EMISSIONMASK; their
+daytime counterparts have no emission colour. ScxGroup now retains that
+colour, and material merging compares it. Night overlay drawing accepts
+either an authored mask (windows) or a nonzero emission colour (signs).
+Colour-only signs use the white mask binding and multiply the base texture
+by the emission colour; non-emissive facade groups remain excluded. Missing
+authored mask textures still do not fall back to a full-bright facade.
+The 2 mm overlay offset and 18:30 onset remain unchanged.
+
+Validation: Release host build succeeded; `night_props` passed against game
+assets, checking night/day sign emission and window mask presence. Actual
+GPU appearance of signs still requires user validation; windows were
+confirmed working by the user before this follow-up.

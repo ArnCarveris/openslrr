@@ -277,6 +277,12 @@ void main()
 		              * mix(0.35, 1.0, visibility);
 	}
 	vec3 shaded = tex.rgb * bake * tint * placement * illumination;
+	if (u_alphaTest.y > 1.5) {
+		// EmissionMaskMap (SCX 0x06000005) selects lit windows/sign detail.
+		vec2 emissionUv = mapUv(uvSet(u_lightmap.z, v_texcoord0, v_texcoord1, v_texcoord2), u_lightmapUv);
+		vec3 emission = texture2D(s_lightmap, emissionUv).rgb;
+		shaded = tex.rgb * tint * placement * emission;
+	}
 	// Sky and OSD set u_alphaTest.y. Their fragments stay sharp.
 	if (u_fogColor.a > 0.5 && u_alphaTest.y < 0.5) {
 		float span = max(u_fogRange.y - u_fogRange.x, 1.0);

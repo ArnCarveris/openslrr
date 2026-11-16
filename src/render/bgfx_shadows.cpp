@@ -186,7 +186,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     // Ground POLY also contains buildings, stairs and track structures.
     // It must cast as well as receive; receiver-plane bias handles self-shadow.
     if (!instance.geometry || instance.sky || instance.vehicle_material ||
-        instance.gpu_skin || instance.light_flags)
+        instance.gpu_skin || instance.light_flags || instance.emissive_overlay)
       continue;
     const auto found = instance_meshes_.find(instance.geometry.get());
     if (found == instance_meshes_.end()) continue;
