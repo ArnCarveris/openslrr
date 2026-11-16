@@ -1325,3 +1325,33 @@ passes. TUFA corpus remains 1,501 files / 1,546 accepted classes, with the same
 pre-existing Dialog.class kind-2 rejection. Evidence:
 `assets/validation/vm-lookup/before.txt` and
 `assets/validation/vm-lookup/after.txt`. No production Java or native API added.
+
+
+### Script input safety (#87, #90)
+
+Native adapters now use checked `native_arg_number`, `native_arg_integer` and
+`native_arg_object` helpers (`src/natives/natives_internal.hpp`). Missing or
+mistagged values use explicit fallbacks; numeric arguments accept Int/Float,
+non-finite floats use the fallback, and float-to-int conversions saturate.
+Options getter/setter, display-mode lookup/change, camera priority, time strings
+and System.exit(String) no longer read unchecked argument slots/union members.
+Incomplete or object-valued renderer-option setters leave settings unchanged.
+Text.setPos and RenderRef.setMatrix accept integer coordinates as well as floats.
+No native signatures or production Java changed.
+
+TREE direct and compound array writes share `store_array_slot`
+(`src/jvm/tree_eval.cpp:store_array_slot`). Existing auto-growth is preserved
+below 1,048,576 slots, matching the new-array cap. Negative indices and indices
+at or above that limit are ignored, leaving slots/length unchanged; the first
+rejection is logged once per process. Compound growth now synchronizes length
+as direct growth already did. This is a compatibility limit, not Java bounds
+exception semantics. System.arraycopy keeps its separately documented policy;
+this limit does not establish a total VM memory budget.
+
+Validation: Release build and `script_safety`, `tree_numbers`, `save_io` suites
+pass. The new suite compiles a Java fixture and exercises direct/compound
+stores, the last allowed slot, negative/cap/INT32_MAX indices, mutable options,
+short/mistagged native calls, Float camera priorities and time flags, Int text
+and matrix coordinates, and System.exit with an Int argument. Unsafe old array
+behavior was not executed with huge indices. Evidence:
+`assets/validation/script-safety/after.txt`. In-game validation remains separate.
