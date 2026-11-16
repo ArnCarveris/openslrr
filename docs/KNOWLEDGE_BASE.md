@@ -965,5 +965,5 @@ at mip 5 those estimates are 20.3%, 2.2%, and 19.0%. These are CPU
 diagnostics, not measured GPU output or in-game validation. Compare the
 park trees near the first garage using MSAA 2x/4x/8x, then AA off/FXAA,
 and check fences, tree shadows and reflections for regressions.
-SLRR_rev `src/formats/scx.ts` and `src/render/map-material-pool.ts` were
+`SLRR_rev:src/formats/scx.ts` and `SLRR_rev:src/render/map-material-pool.ts` were
 consulted; neither provides this bgfx alpha-to-coverage correction.
