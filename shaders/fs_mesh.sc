@@ -21,7 +21,7 @@ uniform vec4 u_cloudSky;
 uniform vec4 u_cloudWind;
 // x: legacy cutout when positive, or -(reference + 1) / 255 for SCX4
 // y: unlit (skip ndl — OSD icons)
-// z: write texture alpha (blend) instead of opaque 1
+// z: 0 opaque, 1 texture alpha for blending, 2 alpha-to-coverage
 uniform vec4 u_alphaTest;
 // Text.changeColor modulate (ARGB → rgba 0..1). Default white.
 uniform vec4 u_color;
@@ -173,15 +173,20 @@ void main()
 		vec4 layer = texture2D(s_meshMix, mapUv(uvSet(u_lightmap.w - 1.0, v_texcoord0, v_texcoord1, v_texcoord2), u_meshMixUv));
 		tex.rgb = mix(tex.rgb, layer.rgb, layer.a);
 	}
-	if ((u_alphaTest.x > 0.5 && tex.a < 0.5)
-		|| (u_alphaTest.x < 0.0 && tex.a * 255.0 <= -u_alphaTest.x * 255.0 - 1.0))
+	// MSAA coverage must retain both sides of the authored cutoff. A hard
+	// discard first would remove the partially covered edge samples.
+	if (u_alphaTest.z < 1.5 && ((u_alphaTest.x > 0.5 && tex.a < 0.5)
+		|| (u_alphaTest.x < 0.0 && tex.a * 255.0 <= -u_alphaTest.x * 255.0 - 1.0)))
 		discard;
 	float light = (u_alphaTest.y > 0.75) ? 1.0 : ((u_alphaTest.y > 0.25) ? 0.65 + 0.35 * ndl : ndl);
 	float outA = (u_alphaTest.z > 0.5) ? tex.a : 1.0;
 	if (u_alphaTest.z > 1.5) {
 		float cutoff = (-u_alphaTest.x * 255.0 - 1.0) / 255.0;
-		float width = max(fwidth(tex.a), 0.06);
-		outA = smoothstep(cutoff, cutoff + width, tex.a);
+		// Centre the pixel footprint on the cutoff: alpha == cutoff covers
+		// half the samples. The old one-sided ramp eroded thin leaves as
+		// derivatives grew with distance. Evaluate derivatives before clipping.
+		float width = max(fwidth(tex.a), 1.0 / 255.0);
+		outA = tex.a > 0.0 ? saturate((tex.a - cutoff) / width + 0.5) : 0.0;
 	}
 	vec3 tint = u_color.rgb;
 	// The instanced prop path carries the placement colour here (1 elsewhere).
