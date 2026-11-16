@@ -86,8 +86,10 @@ void register_script_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           case 4: graphics.local_lights = value != 0; break;
           case 5:
             host_set_framerate_mode(value ? FramerateMode::Adaptive : FramerateMode::Classic);
-            break;
+            return Value::make_void();
+          default: return Value::make_void();
         }
+        host_save_graphics_options();
         return Value::make_void();
       });
   jvm.natives().register_method("java.lang.System", "getConfigOptions", "()V",

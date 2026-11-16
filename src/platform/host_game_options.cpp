@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <string>
 
 namespace slrr {
@@ -25,18 +26,42 @@ void load_host_options(const std::string& root) {
       host_options_path.back() != '/')
     host_options_path.push_back('\\');
   host_options_path += "save\\game\\openslrr_options";
+  host_enhanced_graphics() = {};
+  framerate_mode = FramerateMode::Adaptive;
+  auto& graphics = host_enhanced_graphics();
   std::ifstream in(host_options_path);
   for (std::string line; std::getline(in, line);)
     if (line == "framerate_mode=classic") framerate_mode = FramerateMode::Classic;
     else if (line == "framerate_mode=adaptive") framerate_mode = FramerateMode::Adaptive;
+    else if (line == "msaa=0") graphics.msaa = 0;
+    else if (line == "msaa=1") graphics.msaa = 1;
+    else if (line == "msaa=2") graphics.msaa = 2;
+    else if (line == "msaa=3") graphics.msaa = 3;
+    else for (const auto& entry : {std::pair{"dynamic_reflections", &graphics.dynamic_reflections},
+                                  std::pair{"volumetric_clouds", &graphics.volumetric_clouds},
+                                  std::pair{"dynamic_lighting", &graphics.dynamic_lighting},
+                                  std::pair{"local_lights", &graphics.local_lights}}) {
+      if (line == std::string(entry.first) + "=0") *entry.second = false;
+      if (line == std::string(entry.first) + "=1") *entry.second = true;
+    }
 }
 
-void save_host_options() {
-  if (host_options_path.empty()) return;
+bool save_host_options() {
+  if (host_options_path.empty()) return false;
+  std::error_code error;
+  std::filesystem::create_directories(std::filesystem::path(host_options_path).parent_path(), error);
+  const auto& graphics = host_enhanced_graphics();
   std::ofstream out(host_options_path, std::ios::trunc);
   out << "framerate_mode="
-      << (framerate_mode == FramerateMode::Classic ? "classic" : "adaptive") << '\n';
+      << (framerate_mode == FramerateMode::Classic ? "classic" : "adaptive") << '\n'
+      << "msaa=" << std::clamp(graphics.msaa, 0, 3) << '\n'
+      << "dynamic_reflections=" << graphics.dynamic_reflections << '\n'
+      << "volumetric_clouds=" << graphics.volumetric_clouds << '\n'
+      << "dynamic_lighting=" << graphics.dynamic_lighting << '\n'
+      << "local_lights=" << graphics.local_lights << '\n';
+  out.close();
   if (!out) std::fprintf(stderr, "[options] could not save %s\n", host_options_path.c_str());
+  return bool(out);
 }
 
 void write_video_mode(Jvm& jvm, const VideoMode& mode) {
@@ -93,6 +118,7 @@ EnhancedGraphics& host_enhanced_graphics() {
   static EnhancedGraphics graphics;
   return graphics;
 }
+bool host_save_graphics_options() { return save_host_options(); }
 const GameOptions& host_game_options() { return current; }
 FramerateMode host_framerate_mode() { return framerate_mode; }
 void host_set_framerate_mode(FramerateMode mode) {

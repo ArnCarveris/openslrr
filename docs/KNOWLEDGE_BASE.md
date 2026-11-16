@@ -1412,3 +1412,20 @@ updates after another debounce interval, rearming on a real GPS option change,
 forced retry, recovery and no extra writes after success. This tests the save
 result policy, not filesystem permissions; the existing save implementation is
 unchanged. Evidence: `assets/validation/options-retry/after.txt`.
+
+
+Enhanced settings persistence follow-up: MSAA, dynamic reflections, volumetric
+clouds, sunlight and local lights now round-trip through
+save/game/openslrr_options beside framerate_mode. The renderer-option native
+saves after explicit changes; debug-menu changes/reset use
+`host_save_graphics_options`. This does not extend the stock Config binary
+format. Missing keys retain defaults; invalid MSAA/bool lines are ignored.
+Loading resets defaults first so settings do not leak between roots/sessions.
+The parent directory is created on an explicit host save. Save failures are
+reported per user change, without a periodic retry loop.
+
+Release build, options_retry and script_safety pass. The persistence test writes
+and reloads every MSAA index (0=off, 1=2x, 2=4x, 3=8x), all enhanced booleans,
+framerate coexistence, the debug-save entry point, legacy and invalid files.
+These are real disk round-trips in an isolated fixture; the stock Config
+saveConfig remains counted/injected for retry-policy tests.
