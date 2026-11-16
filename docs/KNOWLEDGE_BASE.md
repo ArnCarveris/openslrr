@@ -707,3 +707,26 @@ Run `./scripts/run_save_io_tests.ps1 -Suite garage_shell` (requires game assets)
 and add `-BaselineRef a61b1ba` for reproduction. No saves or game files changed.
 Release x64 rebuilt successfully. Full visual/collision validation in G3 and
 ROC remains pending; the test checks scene attachment, not GPU output.
+
+
+## 14. Standalone map placements (#134)
+
+spawn_ground_shell previously registered native placements only for secondary
+grounds or primary grounds with exterior-map references. This silently excluded
+standalone TestTrack and ROC, despite their placement tables being parsed.
+Register placements for every attached ground shell; exterior references still
+control traversal of additional maps. Existing render-id cache and attached-shell
+checks prevent duplication. No Java edits or per-track special cases.
+
+Read-only integration tests use local game assets and the production resource
+index, ground decoder, shell attachment and scene collection. TestTrack reports
+1413 placements / 1435 render instances; ROC 1791 / 1791. Before 933cf0a neither
+registered its props (0/2 passing); corrected both register and supply resident
+meshes (2/2 passing). Repeated attachment keeps the shell count unchanged.
+Evidence: assets/validation/map-props. Run
+`./scripts/run_save_io_tests.ps1 -Suite map_props`, optionally with
+`-BaselineRef 933cf0a`. These tests require game assets; no saves are modified.
+Release x64 compiled; knowledge references 219 checked, zero errors.
+In-game validation remains pending: inspect poles/objects in TestTrack and ROC,
+reenter the maps, and verify frame time and collisions now that props exist.
+The scripted trigger/race progression issues are separate.

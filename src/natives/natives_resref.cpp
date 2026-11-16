@@ -56,8 +56,9 @@ void spawn_ground_shell(Jvm& jvm, const RpkIndex& rpk, Object* ground) {
     if (!model.ok && !map.poly) continue;
     scene_instances_override_mesh(full, map.poly);
     scene_instances_override_collision(full, map.collision);
-    if (id != primary || !map.exterior_maps.empty())
-      scene_instances_add_ground_props(map);
+    // Standalone maps carry placements too. Exterior stitching only affects
+    // which additional grounds are visited, not whether this ground has props.
+    scene_instances_add_ground_props(map);
     Object* node = jvm.new_object("java.util.resource.RenderRef");
     if (!node) return;
     GameRefState* shell = gameref_upsert(node, GameRefKind::RenderRef);
