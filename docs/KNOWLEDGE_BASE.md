@@ -1255,3 +1255,46 @@ consulted for RPAK spans and record contracts; no external code copied.
 PR #147 was validated and merged at the user's request; #88/#89/#74 are
 closed. In-game loading of garage, city and tracks remains the validation
 step before merging this resource-validation wave.
+
+
+### Issues #108 / #97: audio admission, PCM reuse and playlist recovery
+
+`src/platform/host_sfx.cpp` admits requests before WAV reads/source creation.
+At most 24 of 32 voices may be loops, leaving capacity for one-shots. At full
+capacity an existing one-shot is selected for replacement before decoding,
+but retired only when the replacement buffer is ready. Existing menu/burst
+coalescing is retained. Rejected loop requests increment diagnostics without
+reading their WAV. This is a common loop budget, not new engine-vs-ambient
+priority; a 25th loop can still be denied until another loop stops.
+
+Decoded immutable WAV format/PCM is shared between voices and held in a
+16 MiB / 64-entry LRU cache. Playing voices retain their buffer even after
+cache eviction; root reset stops voices and clears cached data/counters.
+Oversized valid WAVs can play but are not added to that cache. Loop pitch
+and gain updates now reject non-finite inputs via the same finite defaults
+as play_file. HostSfxStats exposes rejection/read/hit/cache diagnostics.
+
+`src/platform/host_music.cpp` tries at most one playlist pass when opening
+a track fails, preserving next/previous direction. A fill() failure advances
+through the same bounded recovery path. A wholly unreadable set remains
+stopped; update does not continuously retry it. Explicit change/next can
+retry later. HostMusicStats exposes attempts/failures/current track for
+diagnostics. No Java native or music-set/mode contract is added.
+
+Validation: Release host compiles. audio_recovery creates only digital-silence
+PCM WAVs in an isolated fixture and mutes playback. Actual XAudio2/Media
+Foundation checks pass: 24 loops share one disk read; the next loop is
+rejected before I/O; nine distinct one-shots are admitted with 32 total
+voices while existing loops remain; NaN loop updates do not interrupt the
+voice; 65 new cues exercise the 64-entry limit while an evicted playing
+buffer stays valid. Root reset releases voices/cache. An unreadable music
+file is skipped to a valid WAV in both directions; an all-broken two-track
+set makes two attempts then stays stopped through 100 updates. Mid-stream
+fill-error recovery is implemented but not fault-injected by this fixture.
+Log: `assets/validation/audio-recovery/after.txt`. resource_cache regression
+also passes. These silent tests do not validate perceived sound balance or
+engine/ambient priorities in gameplay; listen in menus, garage and city
+before merging. SLRR_rev `SLRR_rev:docs/music.md` consulted for set contracts;
+no external implementation copied. No production Java/game assets modified.
+
+PR #148 was validated and merged at the user's request; #80/#95 are closed.
