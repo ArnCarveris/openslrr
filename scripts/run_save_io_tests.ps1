@@ -1,7 +1,7 @@
 param(
   [string]$BuildDir = "build",
   [string]$BaselineRef = "",
-  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props")]
+  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props", "sun_cycle")]
   [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
@@ -40,7 +40,7 @@ try {
     $label = 'before'
     $baselineRoot = Join-Path $outputRoot 'baseline'
     New-Item -ItemType Directory -Path $baselineRoot -Force | Out-Null
-    $baselineSources = if ($Suite -eq 'night_props') { @('src/resources/scene_instances.cpp') } elseif ($Suite -eq 'time_format') { @('src/ui/ui_time.cpp') } elseif ($Suite -eq 'asset_bounds') { @('src/resources/scx_mesh.cpp', 'src/formats/matrixdata.cpp') } elseif ($Suite -eq 'garage_shell' -or $Suite -eq 'map_props') { @('src/natives/natives_resref.cpp') } elseif ($Suite -eq 'physics_position') { @('src/natives/natives_osd.cpp') } elseif ($Suite -eq 'scx_skin') { @('src/resources/scx_mesh.cpp') } else { @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp') }
+    $baselineSources = if ($Suite -eq 'sun_cycle') { @('src/resources/scene_sun.cpp') } elseif ($Suite -eq 'night_props') { @('src/resources/scene_instances.cpp') } elseif ($Suite -eq 'time_format') { @('src/ui/ui_time.cpp') } elseif ($Suite -eq 'asset_bounds') { @('src/resources/scx_mesh.cpp', 'src/formats/matrixdata.cpp') } elseif ($Suite -eq 'garage_shell' -or $Suite -eq 'map_props') { @('src/natives/natives_resref.cpp') } elseif ($Suite -eq 'physics_position') { @('src/natives/natives_osd.cpp') } elseif ($Suite -eq 'scx_skin') { @('src/resources/scx_mesh.cpp') } else { @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp') }
     if ($Suite -eq 'save_persistence') { $baselineSources += 'src/resources/part_runtime.cpp' }
     foreach ($sourcePath in $baselineSources) {
       $name = [IO.Path]::GetFileNameWithoutExtension($sourcePath)
