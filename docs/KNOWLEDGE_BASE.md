@@ -748,3 +748,25 @@ Release x64 and embedded DXBC/GLSL shaders compile. Knowledge references: 219
 checked, zero errors. No GPU visual test was performed by the agent. Retest
 TestTrack tower/stairs and adjacent apron for shadows/acne, then Valo buildings
 and roads. These rendering checks are separate from placement integration tests.
+
+## 14. Asset bounds checks (#91, #92)
+
+SCX v3 validates all three face indices against the current material group's
+vertex count before appending indices. Validation also runs for metadata reads;
+an index referencing vertices in a later group is invalid even when the final
+mesh would contain that index. Invalid geometry is marked not-ok with an error.
+
+matrixdata_read checks declared keys against remaining bytes (eight floats per
+key) before resizing times or track channels. This prevents allocation driven
+by an unsupported key declaration. Existing quaternion/time/name checks remain.
+These are parser corrections, not changes to deformation or animation behavior.
+
+Release x64 build passes. Five deterministic fixtures exercise valid multi-group
+SCX, an out-of-range local index, an index into a later group, truncated keys
+with no channel allocation, and a valid named animation. Main 933cf0a: 2 pass /
+3 fail; corrected: 5 pass / 0 fail. Evidence: assets/validation/asset-bounds.
+Run `./scripts/run_save_io_tests.ps1 -Suite asset_bounds`; add
+`-BaselineRef 933cf0a` to reproduce. Generated fixtures do not alter game assets
+or saves. Knowledge-reference check: 219 references, zero errors.
+In-game visual regression testing remains pending; these fixes are most directly
+validated with malformed fixtures, not normal driving.
