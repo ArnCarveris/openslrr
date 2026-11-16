@@ -437,7 +437,8 @@ bool parse_v4(const std::vector<uint8_t>& buf, ScxGeometry& geo, bool want_geo) 
           geo.uvs.push_back(vv);
           geo.uv2.push_back(u2); geo.uv2.push_back(v2);
           geo.uv3.push_back(u3); geo.uv3.push_back(v3);
-          if (!geo.skin_weights.empty()) {
+          // The first skinned vertex has no preceding weights to backfill.
+          if (skinned || !geo.skin_weights.empty()) {
             for (int k = 0; k < 4; ++k) {
               geo.skin_weights.push_back(skinned ? skin_w[k] : 0.f);
               geo.skin_bones.push_back(skinned ? skin_b[k] : 0);

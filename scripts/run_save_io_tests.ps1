@@ -1,7 +1,7 @@
 param(
   [string]$BuildDir = "build",
   [string]$BaselineRef = "",
-  [ValidateSet("save_io", "save_persistence")]
+  [ValidateSet("save_io", "save_persistence", "scx_skin")]
   [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
@@ -40,7 +40,7 @@ try {
     $label = 'before'
     $baselineRoot = Join-Path $outputRoot 'baseline'
     New-Item -ItemType Directory -Path $baselineRoot -Force | Out-Null
-    $baselineSources = @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp')
+    $baselineSources = if ($Suite -eq 'scx_skin') { @('src/resources/scx_mesh.cpp') } else { @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp') }
     if ($Suite -eq 'save_persistence') { $baselineSources += 'src/resources/part_runtime.cpp' }
     foreach ($sourcePath in $baselineSources) {
       $name = [IO.Path]::GetFileNameWithoutExtension($sourcePath)
