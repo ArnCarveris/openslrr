@@ -1,7 +1,8 @@
 param(
   [string]$BuildDir = "build",
   [string]$BaselineRef = "",
-  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props", "sun_cycle", "tree_numbers", "ui_lifetime", "resource_cache")]
+  [switch]$CorpusOnly,
+  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props", "sun_cycle", "tree_numbers", "ui_lifetime", "resource_cache", "tufa_validation")]
   [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
@@ -40,7 +41,7 @@ try {
     $label = 'before'
     $baselineRoot = Join-Path $outputRoot 'baseline'
     New-Item -ItemType Directory -Path $baselineRoot -Force | Out-Null
-    $baselineSources = if ($Suite -eq 'tree_numbers') { @('src/jvm/tree_eval.cpp') } elseif ($Suite -eq 'sun_cycle') { @('src/resources/scene_sun.cpp') } elseif ($Suite -eq 'night_props') { @('src/resources/scene_instances.cpp') } elseif ($Suite -eq 'time_format') { @('src/ui/ui_time.cpp') } elseif ($Suite -eq 'asset_bounds') { @('src/resources/scx_mesh.cpp', 'src/formats/matrixdata.cpp') } elseif ($Suite -eq 'garage_shell' -or $Suite -eq 'map_props') { @('src/natives/natives_resref.cpp') } elseif ($Suite -eq 'physics_position') { @('src/natives/natives_osd.cpp') } elseif ($Suite -eq 'scx_skin') { @('src/resources/scx_mesh.cpp') } else { @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp') }
+    $baselineSources = if ($Suite -eq 'tufa_validation') { @('src/jvm/tufa.cpp') } elseif ($Suite -eq 'tree_numbers') { @('src/jvm/tree_eval.cpp') } elseif ($Suite -eq 'sun_cycle') { @('src/resources/scene_sun.cpp') } elseif ($Suite -eq 'night_props') { @('src/resources/scene_instances.cpp') } elseif ($Suite -eq 'time_format') { @('src/ui/ui_time.cpp') } elseif ($Suite -eq 'asset_bounds') { @('src/resources/scx_mesh.cpp', 'src/formats/matrixdata.cpp') } elseif ($Suite -eq 'garage_shell' -or $Suite -eq 'map_props') { @('src/natives/natives_resref.cpp') } elseif ($Suite -eq 'physics_position') { @('src/natives/natives_osd.cpp') } elseif ($Suite -eq 'scx_skin') { @('src/resources/scx_mesh.cpp') } else { @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp') }
     if ($Suite -eq 'save_persistence') { $baselineSources += 'src/resources/part_runtime.cpp' }
     foreach ($sourcePath in $baselineSources) {
       $name = [IO.Path]::GetFileNameWithoutExtension($sourcePath)
@@ -59,7 +60,12 @@ try {
   & $compiler /nologo /std:c++20 /EHsc /MD /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Iinclude /Isrc/natives "tests/test_$Suite.cpp" "/Fe:$executable" "/Fo:$testObject" @objects @libraries
   if ($LASTEXITCODE -ne 0) { throw "Save I/O regression link failed" }
   $log = Join-Path $outputRoot "$label.log"
-  & $executable *> $log
+  if ($CorpusOnly) {
+    if ($Suite -ne 'tufa_validation') { throw "CorpusOnly requires tufa_validation" }
+    & $executable --corpus *> $log
+  } else {
+    & $executable *> $log
+  }
   $testExit = $LASTEXITCODE
   Get-Content $log
   Write-Output "Save I/O test exit code: $testExit (log: $log)"
