@@ -30,7 +30,7 @@ namespace slrr {
 
 // A map GroundRef is a native ground: its triangles live in the instance
 // tree. Stitched outdoor maps also carry static object placements.
-// The garage shell is already the boot scene.
+// Garage shells follow this same world-owned path; no permanent boot copy.
 void spawn_ground_shell(Jvm& jvm, const RpkIndex& rpk, Object* ground) {
   if (!ground || ground->class_name.find("GroundRef") == std::string::npos)
     return;
@@ -53,14 +53,7 @@ void spawn_ground_shell(Jvm& jvm, const RpkIndex& rpk, Object* ground) {
     if (already_attached) continue;
     const RpkIndex::ModelRef model =
         rpk.model_for_resource(RpkIndex::pack_from_full(full), full & 0xffffu);
-    if (model.ok) {
-      std::string src = model.source;
-      for (char& c : src)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      if (src.find("garage") != std::string::npos) continue;
-    } else if (!map.poly) {
-      continue;
-    }
+    if (!model.ok && !map.poly) continue;
     scene_instances_override_mesh(full, map.poly);
     scene_instances_override_collision(full, map.collision);
     if (id != primary || !map.exterior_maps.empty())

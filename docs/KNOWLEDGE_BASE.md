@@ -669,3 +669,41 @@ Each answer names its evidence.
 - When a contract changes, update [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)
   first, then this summary.
 - Move items out of §9 and §10 when they are fixed, in the same change.
+
+
+## 14. Garage lifetime correction (#122)
+
+Boot no longer loads G1 meshes unconditionally into the renderer's permanent
+ScenePart list and the global static collision cache. Garage.java selects its
+GroundRef and stuff RenderRef from garageIndex; the normal resource/scene path
+owns their lifetime. The boot copy had no world owner and was drawn whenever
+the garage viewport was active, including G2/G3/ROC, and entered reflection
+captures as well. Its collision triangles also survived garage changes.
+
+The patch removes this duplicate preload rather than adding garage-name checks
+or deleting cached resources still owned by a live scene. Resource decoding
+continues through natives_resref and scene_instances. No Java changes.
+Release x64 compiles and knowledge reference validation passes (219 references).
+No in-game validation is claimed yet. Test initial G1, then use fastpromotion
+for club garages and letmeroc for the ROC garage; inspect walls, floor/lift,
+props and reflections for old G1 geometry. Confirm the car remains supported
+by each active garage's collision geometry and that returning to G1 works.
+Issue #93 / PR #121 remains independent and unmerged.
+
+
+### Garage shell follow-up: obsolete exclusion removed
+
+User testing of #122 exposed missing garage shells after removing boot G1.
+spawn_ground_shell still explicitly skipped model paths containing "garage",
+assuming the boot preload owned them. Remove that exclusion: the selected
+GroundRef now owns its POLY/render shell and collision override, like other
+maps. Keep the boot preload removed. The user reports improved city shadows
+with that removal; the causal rendering mechanism has not been isolated.
+
+Read-only integration test against local game/misc/garage.rpk: G1 (0x7a),
+G2 (0x06), G3 (0xc7), ROC (0x2f) each attach and collect one shell; repeated
+spawn does not duplicate it. Before a61b1ba: 0/4 pass; corrected: 4/4 pass.
+Run `./scripts/run_save_io_tests.ps1 -Suite garage_shell` (requires game assets),
+and add `-BaselineRef a61b1ba` for reproduction. No saves or game files changed.
+Release x64 rebuilt successfully. Full visual/collision validation in G3 and
+ROC remains pending; the test checks scene attachment, not GPU output.
