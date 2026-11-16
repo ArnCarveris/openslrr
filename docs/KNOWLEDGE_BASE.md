@@ -689,3 +689,21 @@ for club garages and letmeroc for the ROC garage; inspect walls, floor/lift,
 props and reflections for old G1 geometry. Confirm the car remains supported
 by each active garage's collision geometry and that returning to G1 works.
 Issue #93 / PR #121 remains independent and unmerged.
+
+
+### Garage shell follow-up: obsolete exclusion removed
+
+User testing of #122 exposed missing garage shells after removing boot G1.
+spawn_ground_shell still explicitly skipped model paths containing "garage",
+assuming the boot preload owned them. Remove that exclusion: the selected
+GroundRef now owns its POLY/render shell and collision override, like other
+maps. Keep the boot preload removed. The user reports improved city shadows
+with that removal; the causal rendering mechanism has not been isolated.
+
+Read-only integration test against local game/misc/garage.rpk: G1 (0x7a),
+G2 (0x06), G3 (0xc7), ROC (0x2f) each attach and collect one shell; repeated
+spawn does not duplicate it. Before a61b1ba: 0/4 pass; corrected: 4/4 pass.
+Run `./scripts/run_save_io_tests.ps1 -Suite garage_shell` (requires game assets),
+and add `-BaselineRef a61b1ba` for reproduction. No saves or game files changed.
+Release x64 rebuilt successfully. Full visual/collision validation in G3 and
+ROC remains pending; the test checks scene attachment, not GPU output.
