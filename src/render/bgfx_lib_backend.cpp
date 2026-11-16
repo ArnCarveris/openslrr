@@ -439,6 +439,10 @@ static const bgfx::EmbeddedShader k_shadow_recv[] = {
       if(bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
+    if (bgfx::isValid(fmv_tex_)) bgfx::destroy(fmv_tex_);
+    fmv_tex_ = BGFX_INVALID_HANDLE;
+    fmv_tex_w_ = fmv_tex_h_ = 0;
+    fmv_tex_serial_ = 0;
     if (ready_) bgfx::shutdown();
 #ifdef _WIN32
     if (hwnd_) {
@@ -2289,7 +2293,6 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     }
     if (msg == WM_CLOSE) {
       if (self) self->quit_ = true;
-      DestroyWindow(hwnd);
       return 0;
     }
     if (msg == WM_DESTROY) {

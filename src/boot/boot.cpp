@@ -312,8 +312,19 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
       const int32_t cap = (opt.max_frames > 0) ? 2 : 0;
       if(opt.spawn_car.empty())video_fmv_play_boot_intros(cap, [&render]() {
         render.pump(0);
+        if (render.quit_requested()) return false;
         render.flush();
+        return !render.quit_requested();
       });
+      if (render.quit_requested()) {
+        video_fmv_close();
+        host_set_loading_present({});
+        osd_set_framebuffer_listener({});
+        host_music_stop();
+        render.close();
+        host_set_render_callbacks({}, {});
+        return 0;
+      }
     }
   }
 
