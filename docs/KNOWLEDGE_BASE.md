@@ -826,3 +826,22 @@ No automated assembled-vehicle regression or agent in-game validation claimed.
 Manual check: enter/load the garage and inspect wheel braquage before touching
 any part; change mechanic modes and return from catalog/dealer, then confirm
 normal driving steering still works. Notes stay in KNOWLEDGE_BASE.md.
+
+
+### Three-decimal elapsed time (#131)
+
+format_game_time used %g for seconds, producing variable decimal counts.
+Displays with seconds now discard fractional milliseconds before splitting
+hours/minutes and emit exactly three decimals. The issue's 1:19.8356 example
+becomes 1:19.835 (truncation, not rounding up). Formats hiding seconds keep the
+original minute boundary and US am/pm behavior. Physics and stored times are
+unchanged; no Java edits. Existing separators remain as before.
+
+Release x64 compiles. Twelve formatting tests cover the reported value, zero,
+trailing zeros, minute/hour boundaries, no-seconds clocks, am/pm, no-minutes
+and NaN input. Baseline 896e9bd: 4 pass / 8 fail; corrected: 12/12 pass.
+Run `./scripts/run_save_io_tests.ps1 -Suite time_format`, optionally with
+`-BaselineRef 896e9bd`. Evidence: assets/validation/time-format.
+Knowledge reference check: 219 checked, zero errors. In-game check pending:
+TestTrack/ROC timer should show exactly three fractional digits; garage clock
+should retain its ordinary display.
