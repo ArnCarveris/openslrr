@@ -935,3 +935,41 @@ Validation: Release host build succeeded; `night_props` passed against game
 assets, checking night/day sign emission and window mask presence. Actual
 GPU appearance of signs still requires user validation; windows were
 confirmed working by the user before this follow-up.
+
+
+### Issue #129: foliage alpha-to-coverage erosion
+
+Valo tree ICFGs use detailed `fa_tibi` renders at LOD 2; the prop selector
+already chooses those over LOD 0–1 billboards. The leaf material `lomb`
+uses SCX4 flags 0xa2000000 (alpha test and two-sided), reference 0x38,
+and Lomb3/Lomb4 BC3 textures. Their authored mip chains are already
+completed by the DDS loader; this change does not replace assets or LODs.
+
+`shaders/fs_mesh.sc` previously discarded alpha below the cutoff and then
+used a one-sided smoothstep from cutoff to cutoff + fwidth. This eroded
+small leaves, increasingly with minification. MSAA alpha-to-coverage now
+uses a linear pixel footprint centred on the authored cutoff, computes
+derivatives before any clipping in that mode, and preserves zero coverage
+for fully transparent texels. Non-MSAA cutout, shadow and reflection-face
+thresholds are unchanged. `src/render/bgfx_lighting.cpp` enables this path
+for authored two-sided SCX4 cutouts, in ordinary and batched draws, rather
+than matching the `fa_tibi` filename. Other two-sided cutouts can benefit
+as well; inspect fences along with trees when validating.
+
+Validation: Release host and DXBC/GLSL mesh shaders compile.
+`scripts/analyze_foliage_coverage.py` decodes stock BC3 alpha and estimates
+quad derivatives on the texel grid; output is recorded in
+`assets/validation/tree-foliage/coverage.csv`. For Lomb3 mip 0, hard-cutout
+coverage is 14.4%, old estimated coverage 7.8%, centred coverage 13.5%;
+at mip 5 those estimates are 20.3%, 2.2%, and 19.0%. These are CPU
+diagnostics, not measured GPU output or in-game validation. Compare the
+park trees near the first garage using MSAA 2x/4x/8x, then AA off/FXAA,
+and check fences, tree shadows and reflections for regressions.
+`SLRR_rev:src/formats/scx.ts` and `SLRR_rev:src/render/map-material-pool.ts` were
+consulted; neither provides this bgfx alpha-to-coverage correction.
+
+
+Issue #129 in-game follow-up: the user confirmed the foliage fix works on
+16 November 2026 and supplied `assets/validation/tree-foliage/in-game-after.png`.
+This confirms the reported Valo foliage appearance; separate validation of
+every AA mode and other two-sided cutout assets has not been claimed.

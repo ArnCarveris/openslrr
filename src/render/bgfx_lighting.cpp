@@ -346,9 +346,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       // V4 map foliage specifies GREATER with an 8-bit reference (default 0x38).
       const float alpha_test = !cut ? 0.f : authored_alpha && group
           ? -(1.f + group->alpha_reference) / 255.f : 1.f;
+      // Authored two-sided cutouts, independent of asset directory names.
       const bool foliage_coverage = cut && authored_alpha && view_id < 72 &&
           (reset_flags_ & BGFX_RESET_MSAA_MASK) &&
-          part.geo.info.path.find("fa_tibi") != std::string::npos;
+          (flags & 0x02000000u) != 0;
       const bool vertex_mix = group && group->mix_vertex_color;
       const float settings[4] = {alpha_test, instance.emissive_overlay ? 2.f : instance.sky || blend || vertex_mix ? 1.f : preview ? .5f : 0.f,
                                  foliage_coverage ? 2.f : blend ? 1.f : 0.f, material_mix ? -2.f : vertex_mix ? -1.f :
@@ -500,7 +501,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
               ? -(1.f + group->alpha_reference) / 255.f : 1.f;
           const bool foliage_coverage = cut && v4 && view_id < 72 &&
               (reset_flags_ & BGFX_RESET_MSAA_MASK) &&
-              part.geo.info.path.find("fa_tibi") != std::string::npos;
+              (flags & 0x02000000u) != 0;
           const bool vertex_mix = group && group->mix_vertex_color;
           const float settings[4] = {alpha_test, vertex_mix ? 1.f : 0.f,
                                      foliage_coverage ? 2.f : 0.f,
