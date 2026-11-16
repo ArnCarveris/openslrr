@@ -113,7 +113,7 @@ void register_osd_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
         self->fields["active"] = Value::make_int(0);
         auto it = self->fields.find("_osd");
         if (it != self->fields.end() && it->second.tag == ValueTag::Obj)
-          osd_set_owner_visible(it->second.v.o, false);
+          osd_destroy_owner(it->second.v.o);
         return Value::make_void();
       });
   jvm.natives().register_method(
@@ -296,9 +296,8 @@ void register_osd_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
         // that string against the Text the same call creates.
         if (args.size() > 4 && args[4].tag == ValueTag::Obj && args[4].v.o)
           w.tip = args[4].v.o->str;
-        const int32_t wi = static_cast<int32_t>(osd_widgets().size());
+        const int32_t wi = osd_add_widget(std::move(w));
         self->fields["_osd_wi"] = Value::make_int(wi);
-        osd_add_widget(std::move(w));
         return Value::make_void();
       });
   jvm.natives().register_method(

@@ -547,7 +547,6 @@ run time.
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
-| Retired OSD widgets stay in the list and stay rooted | `src/ui/osd_registry.cpp:osd_visit_gc_roots` |
 | Any pad binding disables every XInput fallback axis | `src/platform/host_input.cpp` |
 | Root-scoped caches survive a game-root change | `src/resources/script_cfg.cpp:frontend_scripts`, `src/resources/scene_instances.cpp` |
 | `shaders/varying.def.sc` declares `v_worldPos` twice | `shaders/varying.def.sc` |
@@ -1081,3 +1080,48 @@ consulted; no third-party numeric implementation was copied.
 
 Previous vehicle follow-up: the user validated the #132/#116 correction and
 authorized merging PR #143; it is merged and both issues are closed.
+
+
+### Issues #127 / #101 / #77: OSD state and resource lifetime
+
+`src/render/bgfx_lighting.cpp:LibBgfxBackend::bind_baked_light` resets mesh
+base/mix UV transforms to identity for groupless draws, including OSD quads
+and font glyphs. Previously these could inherit the final world material's
+atlas transform and sample a transparent region of a UI texture. This is a
+source-backed candidate for #127; the intermittent city HUD disappearance
+still needs user confirmation in game. It does not change UI layering or
+blend mode.
+
+Widgets now have monotonic native handles independent of vector slots.
+`osd_add_widget` returns the handle stored in _osd_wi; setter/binding APIs
+resolve it through an index. Retiring a widget immediately clears its Java
+pointers and marks it dead. A destroyed Viewport retires its owner's widgets
+and removes its text states, while deactivate/hide only suppress visibility.
+GC compacts retired entries before marking, remaps hover/string focus, and
+uses forget hooks when sweeping. Registry clears never reuse old handles.
+Hidden live pages remain rooted and can be reopened. The root snapshot makes
+the widget sweep hook a constant-time miss for unrelated garbage objects.
+
+Fonts share immutable CPU data by root plus normalized font name. ResourceRef
+aliases are weak VM payloads; live texts and current frontend font slots
+continue to root their font references. Sweeping an alias removes its mapping
+and expires the last CPU asset owner. GPU font textures use the same asset
+key instead of ResourceRef addresses; the next renderer flush destroys cached
+font textures whose CPU assets no longer have owners. Alias cleanup only
+checks its own asset, not the whole cache for every swept VM object.
+
+Validation: Release host compiles. The ui_lifetime suite checks hidden-page
+roots, immediate destruction release, stable IDs after compaction/clear,
+hover and text-input focus across compaction, 200 retirement cycles without
+vector growth, two refs sharing one real slii24 atlas, live-text retention,
+collection of the unused alias, and final CPU asset expiration after owner
+destruction. Log: `assets/validation/ui-lifetime/after.txt`. Existing
+tree_numbers and save_io suites pass. GPU reclamation and the HUD visual
+fix are compiled but not measured/validated in game. SLRR_rev
+`SLRR_rev:src/runtime/osd-text-native.ts` and `SLRR_rev:src/osd/osd-layer.ts`
+were consulted for text/layer disposal; their browser ownership model is not
+a replacement for the VM's mark/sweep and no implementation was copied.
+
+Before merging, test city driving, garage/city re-entry, repeated options and
+catalog dialogs, hidden pages reopening, typing/slider focus, and a resolution
+change that changes frontend font size. No production Java was modified.
