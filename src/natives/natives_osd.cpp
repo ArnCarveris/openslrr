@@ -339,7 +339,10 @@ void register_osd_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
   jvm.natives().register_method(
       "java.util.resource.PhysicsRef", "getPos", "()Ljava.lang.Vector3;",
       [&jvm](Object* self, const std::vector<Value>&) {
-        if (self) {
+        const GameRefState* state = gameref_get(self);
+        // World bodies are owned by the simulation. OSD hit rectangles have
+        // no physics shape and keep their script-space hotspot coordinates.
+        if (self && (!state || state->physics_shape == PhysicsShape::None)) {
           const auto stored = self->fields.find("pos");
           if (stored != self->fields.end() && stored->second.tag == ValueTag::Obj &&
               stored->second.v.o) {
