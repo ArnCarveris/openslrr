@@ -1008,3 +1008,36 @@ the same suite with `-BaselineRef origin/main` fails only the stronger
 daylight assertion, as expected. Logs are in the validation directory.
 Cloud aesthetics, brightness and performance still require user testing
 in game, including noon, late afternoon, sunset, night and car reflections.
+
+
+### Issues #132 / #116: vehicle material backface culling
+
+`src/render/bgfx_lighting.cpp` previously drew all vehicle sections without
+culling, unlike the map SCX4 path. SCX4 material flag 0x02000000 explicitly
+requests two-sided drawing; an unset flag should cull clockwise faces in
+the renderer's reflected-Z vertex convention. The stock Enula trunk and
+MC chassis materials do not request two-sided drawing. Their raw indices
+and unit normals are consistent, but a top-view CPU depth diagnostic finds
+frontmost downward faces in these meshes (1,069/52,397 covered pixels for
+the trunk, 2,699/48,180 for the chassis at the diagnostic's 256-square grid).
+This supports the backface explanation for the dark body-panel patches.
+It does not by itself prove the exact cause of the under-car spike in #116.
+
+Vehicle drawing now honours that material flag in the main view, previews
+and reflection captures. SCX3 retains its existing behaviour. Glass that
+now draws once uses the authored opacity/reflection once; the previous
+half-reflection and two-face opacity compensation remain only for explicit
+two-sided materials. The shared u_dynamicReflection.y component carries
+this flag to `shaders/fs_vehicle.sc`; x retains its reflection mode.
+No triangles are deleted, no game files edited and no deformation filtered.
+Shadows retain their intentional two-sided caster handling.
+
+Validation: Release host and DXBC/GLSL vehicle shaders compile.
+`scripts/analyze_vehicle_backfaces.py` is a reproducible CPU geometry
+diagnostic limited to rigid SCX4 position/normal/UV layouts; results and
+original issue captures are in `assets/validation/vehicle-polygons/`. It is
+not an in-game rendering test. SLRR_rev vehicle-material.ts/scx.ts were
+consulted; the local CarBuilder scxWrite.ts documents the same 0x02000000
+Backface-cull-off bit. User validation is required separately for the MC
+roof/cabin, Enula trunk, and the #116 under-car spike, plus glass opacity
+and reflections. Do not claim #116 confirmed from the trunk diagnostic.
