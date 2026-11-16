@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +21,42 @@ namespace {
 
 constexpr uint32_t kNativeFlag = 0x40;
 constexpr uint32_t kStaticFlag = 0x08;
+
+// Java's f2i is defined even for NaN, infinities and out-of-range values.
+int32_t java_f2i(float v) {
+  if (std::isnan(v)) return 0;
+  if (v >= 2147483648.f) return INT32_MAX;
+  if (v <= -2147483648.f) return INT32_MIN;
+  return static_cast<int32_t>(v);
+}
+int32_t wrap_int(uint32_t v) { return std::bit_cast<int32_t>(v); }
+Value arithmetic(int tag, const Value& a, const Value& b) {
+  if (a.tag == ValueTag::Float || b.tag == ValueTag::Float) {
+    const float x = a.tag == ValueTag::Float ? a.v.f : a.tag == ValueTag::Int ? float(a.v.i) : 0.f;
+    const float y = b.tag == ValueTag::Float ? b.v.f : b.tag == ValueTag::Int ? float(b.v.i) : 0.f;
+    float r = 0.f;
+    switch(tag) {
+      case 15: r=x-y; break;
+      case 16: r=x+y; break;
+      case 17: r=y!=0.f?std::fmod(x,y):0.f; break;
+      case 18: r=y!=0.f?x/y:0.f; break;
+      case 19: r=x*y; break;
+    }
+    return Value::make_float(r);
+  }
+  const int32_t x = a.tag == ValueTag::Int ? a.v.i : 0;
+  const int32_t y = b.tag == ValueTag::Int ? b.v.i : 0;
+  const uint32_t ux=static_cast<uint32_t>(x), uy=static_cast<uint32_t>(y);
+  int32_t r=0;
+  switch(tag) {
+    case 15: r=wrap_int(ux-uy); break;
+    case 16: r=wrap_int(ux+uy); break;
+    case 17: r=y==0 || (x==INT32_MIN && y==-1)?0:x%y; break;
+    case 18: r=y==0?0:(x==INT32_MIN && y==-1)?INT32_MIN:x/y; break;
+    case 19: r=wrap_int(ux*uy); break;
+  }
+  return Value::make_int(r);
+}
 
 float bits_to_float(uint32_t bits) {
   float f;
@@ -148,7 +185,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
       // and the catalog shows whole dollars.
       if ((t == "I" || t == "B" || t == "S" || t == "C" || t == "Z") &&
           v.tag == ValueTag::Float) {
-        int32_t n = static_cast<int32_t>(v.v.f);
+        int32_t n = java_f2i(v.v.f);
         if (t == "Z") n = n != 0 ? 1 : 0;
         return Value::make_int(n);
       }
@@ -289,28 +326,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
       return;
     }
     if (tag >= 15 && tag <= 19) {
-      auto num = [](const Value& v) {
-        if (v.tag == ValueTag::Float) return v.v.f;
-        if (v.tag == ValueTag::Int) return static_cast<float>(v.v.i);
-        return 0.f;
-      };
-      const float af = num(a);
-      const float bf = num(b);
-      float rf = 0.f;
-      if (tag == 15)
-        rf = af - bf;
-      else if (tag == 16)
-        rf = af + bf;
-      else if (tag == 17)
-        rf = bf != 0.f ? std::fmod(af, bf) : 0.f;
-      else if (tag == 18)
-        rf = bf != 0.f ? af / bf : 0.f;
-      else
-        rf = af * bf;
-      if (use_f)
-        push(Value::make_float(rf));
-      else
-        push(Value::make_int(static_cast<int32_t>(rf)));
+      push(arithmetic(tag, a, b));
       pending_expr = -1;
       return;
     }
@@ -361,15 +377,6 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
       case 11:
         r = ai < bi;
         break;
-      case 15:
-        r = ai - bi;
-        break;
-      case 16:
-        r = ai + bi;
-        break;
-      case 19:
-        r = ai * bi;
-        break;
       default:
         r = 0;
         break;
@@ -383,7 +390,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
   auto combine_assign = [](int tag, const Value& lhs, const Value& rhs) -> Value {
     auto as_i = [](const Value& v) -> int32_t {
       if (v.tag == ValueTag::Int) return v.v.i;
-      if (v.tag == ValueTag::Float) return static_cast<int32_t>(v.v.f);
+      if (v.tag == ValueTag::Float) return java_f2i(v.v.f);
       return 0;
     };
     auto as_f = [](const Value& v) -> float {
@@ -400,18 +407,8 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
       else r = a | b;
       return Value::make_int(r);
     }
-    const bool use_f =
-        lhs.tag == ValueTag::Float || rhs.tag == ValueTag::Float;
-    const float a = as_f(lhs);
-    const float b = as_f(rhs);
-    float r = 0.f;
-    if (tag == 36) r = a * b;
-    else if (tag == 37) r = b != 0.f ? a / b : 0.f;
-    else if (tag == 38) r = b != 0.f ? std::fmod(a, b) : 0.f;
-    else if (tag == 39) r = a + b;
-    else if (tag == 40) r = a - b;
-    if (use_f) return Value::make_float(r);
-    return Value::make_int(static_cast<int32_t>(r));
+    const int binary_tag = tag == 36 ? 19 : tag == 37 ? 18 : tag == 38 ? 17 : tag == 39 ? 16 : 15;
+    return arithmetic(binary_tag, lhs, rhs);
   };
 
   auto push_instance_field = [&](Object* recv, const std::string& fname,
@@ -819,7 +816,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
                   pending_field_desc == "S" || pending_field_desc == "C" ||
                   pending_field_desc == "Z") &&
                  val.tag == ValueTag::Float) {
-          int32_t n = static_cast<int32_t>(val.v.f);
+          int32_t n = java_f2i(val.v.f);
           if (pending_field_desc == "Z") n = n != 0 ? 1 : 0;
           val = Value::make_int(n);
         }
@@ -856,9 +853,8 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
           const uint32_t tag = tree[ip + 1].imm;
           if (tag >= 0x17 && tag <= 0x1A) {
             const Value cur = locals[n.imm];
-            const int32_t v = cur.tag == ValueTag::Int ? cur.v.i : 0;
             const int32_t d = (tag == 0x17 || tag == 0x19) ? 1 : -1;
-            locals[n.imm] = Value::make_int(v + d);
+            locals[n.imm] = arithmetic(16, cur, Value::make_int(d));
             break;
           }
         }
@@ -937,7 +933,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
             const Value top = pop();
             if (top.tag == ValueTag::Int) len = top.v.i;
             else if (top.tag == ValueTag::Float)
-              len = static_cast<int32_t>(top.v.f);
+              len = java_f2i(top.v.f);
           }
           if (len < 0) len = 0;
           if (len > (1 << 20)) len = 1 << 20;
@@ -976,12 +972,19 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
           if ((raw == "I" || raw == "B" || raw == "S" || raw == "C" ||
                raw == "Z") &&
               top.tag == ValueTag::Float) {
-            int32_t n = static_cast<int32_t>(top.v.f);
+            int32_t n = java_f2i(top.v.f);
             if (raw == "Z") n = n != 0 ? 1 : 0;
             top = Value::make_int(n);
           } else if (raw == "F" && top.tag == ValueTag::Int) {
             top = Value::make_float(static_cast<float>(top.v.i));
           }
+        }
+        // A primitive cast is complete once its type conversion is applied.
+        if (pending_expr == 33) {
+          pending_expr = -1;
+          pending_class.clear();
+          path_static = false;
+          saw_class = false;
         }
         break;
       }
@@ -999,8 +1002,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
           if (cur.tag == ValueTag::Float)
             next.v.f = cur.v.f + static_cast<float>(step);
           else
-            next = Value::make_int(
-                (cur.tag == ValueTag::Int ? cur.v.i : 0) + step);
+            next = arithmetic(16, cur, Value::make_int(step));
           const auto& prev = tree[ip - 1];
           if (prev.op == 0x01 && prev.wide && prev.imm < locals.size()) {
             locals[prev.imm] = next;
@@ -1032,7 +1034,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
             if (a.tag == ValueTag::Float)
               push(Value::make_float(-a.v.f));
             else
-              push(Value::make_int(-(a.tag == ValueTag::Int ? a.v.i : 0)));
+              push(arithmetic(15, Value::make_int(0), a));
           } else if (pending_expr == 21) {  // lnot
             push(Value::make_int(truthy(a) ? 0 : 1));
           } else {  // bnot
@@ -1129,8 +1131,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
           if (cur.tag == ValueTag::Float)
             next.v.f = cur.v.f + static_cast<float>(step);
           else
-            next = Value::make_int(
-                (cur.tag == ValueTag::Int ? cur.v.i : 0) + step);
+            next = arithmetic(16, cur, Value::make_int(step));
           if (last_ifield_fresh && last_ifield_recv &&
               !last_ifield_name.empty()) {
             last_ifield_recv->fields[last_ifield_name] = next;
@@ -1161,7 +1162,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
                 if ((desc == "I" || desc == "B" || desc == "S" || desc == "C" ||
                      desc == "Z") &&
                     stored.tag == ValueTag::Float) {
-                  int32_t n = static_cast<int32_t>(stored.v.f);
+                  int32_t n = java_f2i(stored.v.f);
                   if (desc == "Z") n = n != 0 ? 1 : 0;
                   stored = Value::make_int(n);
                 } else if (desc == "F" && stored.tag == ValueTag::Int) {
@@ -1650,7 +1651,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
         const int32_t idx = idx_v.tag == ValueTag::Int
                                 ? idx_v.v.i
                                 : (idx_v.tag == ValueTag::Float
-                                       ? static_cast<int32_t>(idx_v.v.f)
+                                       ? java_f2i(idx_v.v.f)
                                        : 0);
         if (next_is_assign()) {
           pending_arr = arr;
@@ -1788,6 +1789,11 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
             pending_expr = -1;
             break;
           }
+          if (pending_expr >= 15 && pending_expr <= 19) {
+            push(arithmetic(pending_expr, a, b));
+            pending_expr = -1;
+            break;
+          }
           int32_t ai = a.tag == ValueTag::Int ? a.v.i : 0;
           int32_t bi = b.tag == ValueTag::Int ? b.v.i : 0;
           int32_t r = 0;
@@ -1830,18 +1836,6 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
               break;
             case 11:
               r = ai < bi;
-              break;
-            case 15:
-              r = ai - bi;
-              break;
-            case 16:
-              r = ai + bi;
-              break;
-            case 18:
-              r = bi ? ai / bi : 0;
-              break;
-            case 19:
-              r = ai * bi;
               break;
             default:
               return fail("unsupported expr tag " + std::to_string(pending_expr));

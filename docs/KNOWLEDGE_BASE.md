@@ -545,7 +545,6 @@ run time.
 | DirectShow frame copy trusts `width × height × 4` against the sample size | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | TUFA and RPK readers reserve declared counts before checking the remaining bytes | `src/jvm/tufa.cpp:parse_constants`, `src/resources/rpk_index.cpp:parse_rpak` |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
-| TREE integer overflow is undefined behaviour; the value dispatcher has no remainder case; `do_binop` computes integer arithmetic through float, losing precision above 2^24 | `src/jvm/tree_eval.cpp:tree_eval`, `src/jvm/tree_eval.cpp:do_binop` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
 | Retired OSD widgets stay in the list and stay rooted | `src/ui/osd_registry.cpp:osd_visit_gc_roots` |
@@ -1041,3 +1040,44 @@ consulted; the local CarBuilder scxWrite.ts documents the same 0x02000000
 Backface-cull-off bit. User validation is required separately for the MC
 roof/cabin, Enula trunk, and the #116 under-car spike, plus glass opacity
 and reflections. Do not claim #116 confirmed from the trunk diagnostic.
+
+
+### Issues #72 / #126: exact TREE integers and integer balances
+
+`src/jvm/tree_eval.cpp:arithmetic` now handles integer operands without
+converting through float. Addition, subtraction and multiplication wrap
+explicitly at 32 bits; division handles INT_MIN / -1 without a host trap
+and remainder handles that pair as zero. The existing divide/remainder
+by zero -> zero policy is retained. Both expression dispatchers and
+compound arithmetic use the same operation; unary negation and increment/
+decrement also avoid signed overflow. Mixed operands still promote to float.
+The deliberate MWM float-inequality behaviour remains unchanged.
+
+`src/jvm/tree_eval.cpp:java_f2i` defines NaN -> zero, saturation at integer
+limits and truncation otherwise for TREE conversions (locals, casts, fields,
+array lengths and indices). Primitive casts clear the completed expression
+and class carrier, avoiding the previous value-without-binop failure.
+Integer field/local narrowing on mixed compound assignment is preserved.
+These are general VM rules: no special case for Racer.money or the ROC.
+Stock Racer.money and GameLogic.ROC_ENTRYFEE are both int; the fee is
+100000. The tests confirm exact fee subtraction even for odd balances above
+2^24, and integer storage after a fractional fee. They do not prove why a
+particular historical ROC session went negative. A script spending more
+than the balance still gets a negative integer; this change adds no clamp
+or entry-eligibility rule. Keep that part of #126 subject to game validation.
+
+Validation: Release host builds; `tree_numbers` compiles a Java fixture to
+TUFA, loads it in the VM and checks exact arithmetic, compound operators,
+wrapping, casts including infinities/NaN, fee storage and mixed floats.
+Handcrafted TREE ordering additionally exercises the value dispatcher for
+all five arithmetic tags. The INT_MIN divide/remainder cases run after
+other checks pass. The same suite against pre-fix origin/main fails the
+precision/fee/compound/cast cases; dangerous division cases are skipped
+when earlier assertions fail. The existing save_io suite also passes. Logs
+are in `assets/validation/tree-numbers/`. No production Java is modified;
+the generated test Java lives only in an isolated temporary fixture.
+SLRR_rev's source tree and slrr-reverse TREE evaluator sources were
+consulted; no third-party numeric implementation was copied.
+
+Previous vehicle follow-up: the user validated the #132/#116 correction and
+authorized merging PR #143; it is merged and both issues are closed.
