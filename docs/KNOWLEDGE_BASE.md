@@ -544,7 +544,7 @@ run time.
 | --- | --- |
 | DirectShow frame copy trusts `width × height × 4` against the sample size | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | TUFA and RPK readers reserve declared counts before checking the remaining bytes | `src/jvm/tufa.cpp:parse_constants`, `src/resources/rpk_index.cpp:parse_rpak` |
-| File confinement is a string-prefix check; `FindFile` bypasses it; `File.delete` can `remove_all` the root | `src/natives/natives_boot.cpp`, `src/natives/natives_io.cpp` |
+| `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | TREE integer overflow is undefined behaviour; the value dispatcher has no remainder case; `do_binop` computes integer arithmetic through float, losing precision above 2^24 | `src/jvm/tree_eval.cpp:tree_eval`, `src/jvm/tree_eval.cpp:do_binop` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
