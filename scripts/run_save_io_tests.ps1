@@ -1,13 +1,16 @@
 param(
   [string]$BuildDir = "build",
-  [string]$BaselineRef = ""
+  [string]$BaselineRef = "",
+  [ValidateSet("save_io", "save_persistence")]
+  [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $repoRoot
 try {
   $buildRoot = (Resolve-Path $BuildDir).Path
-  $outputRoot = Join-Path $buildRoot "save-io-tests"
+  $suiteName = $Suite.Replace("_", "-")
+  $outputRoot = Join-Path $buildRoot "$suiteName-tests"
   New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
   $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
   $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -37,9 +40,12 @@ try {
     $label = 'before'
     $baselineRoot = Join-Path $outputRoot 'baseline'
     New-Item -ItemType Directory -Path $baselineRoot -Force | Out-Null
-    foreach ($name in @('natives_boot','natives_io')) {
+    $baselineSources = @('src/natives/natives_boot.cpp','src/natives/natives_io.cpp')
+    if ($Suite -eq 'save_persistence') { $baselineSources += 'src/resources/part_runtime.cpp' }
+    foreach ($sourcePath in $baselineSources) {
+      $name = [IO.Path]::GetFileNameWithoutExtension($sourcePath)
       $source = Join-Path $baselineRoot "$name.cpp"
-      $bytes = & git -c "safe.directory=$($repoRoot.Replace('\','/'))" show "${BaselineRef}:src/natives/$name.cpp"
+      $bytes = & git -c "safe.directory=$($repoRoot.Replace('\','/'))" show "${BaselineRef}:$sourcePath"
       if ($LASTEXITCODE -ne 0) { throw "Could not read $BaselineRef $name" }
       [IO.File]::WriteAllText($source, ($bytes -join "`n"), [Text.UTF8Encoding]::new($false))
       $object = Join-Path $baselineRoot "$name.obj"
@@ -48,9 +54,9 @@ try {
       $objects = @($objects | Where-Object { [IO.Path]::GetFileName($_) -ne "$name.obj" }) + @($object)
     }
   }
-  $executable = Join-Path $outputRoot "save-io-$label.exe"
-  $testObject = Join-Path $outputRoot "save-io-$label.obj"
-  & $compiler /nologo /std:c++20 /EHsc /MD /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Iinclude /Isrc/natives tests/test_save_io.cpp "/Fe:$executable" "/Fo:$testObject" @objects @libraries
+  $executable = Join-Path $outputRoot "$suiteName-$label.exe"
+  $testObject = Join-Path $outputRoot "$suiteName-$label.obj"
+  & $compiler /nologo /std:c++20 /EHsc /MD /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /Iinclude /Isrc/natives "tests/test_$Suite.cpp" "/Fe:$executable" "/Fo:$testObject" @objects @libraries
   if ($LASTEXITCODE -ne 0) { throw "Save I/O regression link failed" }
   $log = Join-Path $outputRoot "$label.log"
   & $executable *> $log
