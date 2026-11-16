@@ -297,7 +297,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         // material UV transforms need the scene's wrapping sampler here.
         bgfx::setTexture(2, s_env_, env, BGFX_SAMPLER_NONE);
         bgfx::setTexture(3,s_bake_,bake);
-        const float reflection[4] = {live_env ? 1.f : enhanced_env ? 2.f : 0.f, 0.f, 0.f, 0.f};
+        const bool two_sided = part.geo.info.version != 4 ||
+            (group.material_flags & 0x02000000u) != 0;
+        const float reflection[4] = {live_env ? 1.f : enhanced_env ? 2.f : 0.f,
+                                     two_sided ? 1.f : 0.f, 0.f, 0.f};
         bgfx::setUniform(u_dynamic_reflection_, reflection);
         if (live_env) {
           bgfx::setTexture(4, s_reflection_cube_, reflection_cubes_[reflection_write_ ^ 1]);
@@ -311,6 +314,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         }
         bgfx::setTransform(matrix);bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
         uint64_t state=BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_A|BGFX_STATE_MSAA|BGFX_STATE_DEPTH_TEST_GREATER;
+        // Like map SCX4, vehicle materials cull unless explicitly two-sided.
+        // Interior backs can protrude through thin outer panels when drawn.
+        if (!two_sided) state |= BGFX_STATE_CULL_CW;
         if (glass)
           state |= BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA);
         else if (transparent || group.diffuse[3] < .99f)
