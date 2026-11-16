@@ -504,6 +504,8 @@ void character_set_sim_time(double seconds) {
 }
 
 void character_forget_all() {
+  g_skeletons.clear();
+  g_clips.clear();
   g_characters.clear();
   g_links.clear();
   g_animations.clear();

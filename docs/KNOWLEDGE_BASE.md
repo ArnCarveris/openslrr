@@ -548,7 +548,6 @@ run time.
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
 | Any pad binding disables every XInput fallback axis | `src/platform/host_input.cpp` |
-| Root-scoped caches survive a game-root change | `src/resources/script_cfg.cpp:frontend_scripts`, `src/resources/scene_instances.cpp` |
 | `shaders/varying.def.sc` declares `v_worldPos` twice | `shaders/varying.def.sc` |
 | The `present` and `hiz` programs never link: `fs_present` and `fs_hiz` read only `v_texcoord0` but are paired with `vs_mesh`, so the offscreen scene target and the HiZ pyramid are skipped. Startup logs `[bgfx] program … failed to link` | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open` |
 
@@ -1125,3 +1124,47 @@ a replacement for the VM's mark/sweep and no implementation was copied.
 Before merging, test city driving, garage/city re-entry, repeated options and
 catalog dialogs, hidden pages reopening, typing/slider focus, and a resolution
 change that changes frontend font size. No production Java was modified.
+
+
+### Issues #107 / #94: RPK reads and index-scoped cache lifetime
+
+`src/resources/rpk_index.cpp:RpkIndex::read_payload` reuses a lazily opened
+file stream per pack under a mutex. Text/ICFG descriptors are cached by
+canonical full RID; large binary map payloads are not retained as another
+resident copy. `payload_props` parses all text keys once under its own lock
+and caches ordered repeated values, including negative key lookups. Empty
+read failures are retried. Unscoped ids retain last-pack-wins resolution.
+TOC lookups hash the low 16-bit local id directly (first matching TOC entry),
+removing the linear fallback for misses. Dependency slots and host pack ids
+remain separate. Cached descriptors are snapshots for the index lifetime;
+editing a pack on disk requires rebuilding/rebinding the index.
+
+`RpkIndex::set_root` clears packs, descriptor caches and open streams when
+the root changes. A monotonic generation changes on root/pack registration
+and distinguishes even index objects recreated at the same address.
+`src/resources/script_cfg.cpp:frontend_cache` keys frontend pack/CFG state
+by index identity and generation. `scene_instances_set_resources` also
+clears shadow metadata, and `character_forget_all` clears skeleton/clip
+caches as well as live characters. The active RPK pointer is cleared when
+its owning index is destroyed; destroying another index does not clear it.
+Root/index mutation must occur at a quiescent point after stopping preload
+readers, followed by scene rebinding. Concurrent readers are supported;
+concurrent root replacement and live-world RID migration are not added.
+
+Validation: Release host compiles. The resource_cache suite creates two
+isolated miniature RPAKs and frontend CFGs. Eight readers execute 1,600
+property queries: instrumentation reports one payload disk read and one RSD
+parse. Tests also verify key case/comments, repeated texture order, local/
+qualified ids and misses, root-switch invalidation with reused RID values,
+frontend cache rebuild with a different pack-id assignment, shadow metadata
+rebinding, and active-index cleanup on destruction. Log:
+`assets/validation/resource-cache/after.txt`. Existing map_props (Test Track
+and ROC placements), night_props (window/sign data), ui_lifetime and save_io
+suites pass. These checks do not measure full city load-time improvement.
+SLRR_rev `SLRR_rev:docs/formats/rpk.md` and `SLRR_rev:src/formats/rpk.ts` were
+consulted for RPAK structure and text/binary payload distinction; no parser
+implementation was copied.
+
+PR #145 was validated and merged at the user's request; #127/#101/#77 are
+closed. For this resource wave, in-game menu/garage/city/track loading still
+requires user confirmation before merge. No production Java is modified.
