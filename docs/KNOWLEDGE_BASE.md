@@ -973,3 +973,38 @@ Issue #129 in-game follow-up: the user confirmed the foliage fix works on
 16 November 2026 and supplied `assets/validation/tree-foliage/in-game-after.png`.
 This confirms the reported Valo foliage appearance; separate validation of
 every AA mode and other two-sided cutout assets has not been claimed.
+
+
+### Issue #141: separated clouds and stronger daylight
+
+Reference: the user supplied r72-29ee74f video frames and current screenshots,
+kept in `assets/validation/clouds-daylight/`. Git comparison with `29ee74f`
+showed the original density shape was still present; later wind moved the
+field by about 100 km at noon and the increased sun energy also affected
+cloud brightness. This is visual tuning toward the reference, not a byte-for-byte
+rollback of the old shader or removal of the dynamic sky.
+
+`shaders/fs_mesh.sc` now samples smaller puffs (noise scale 0.0019/0.0032/0.0019),
+separates formations with a 0.52–0.72 density threshold, and reduces extinction
+from 0.009 to 0.006. All 48 ray steps span the cloud layer instead of being
+capped at 85 m and truncating oblique views. Cloud scattering bounds the
+sun peak separately from world direct irradiance, so raising sun energy
+does not turn formations into a saturated white blanket. Sky day/night
+colours, stars, cloud movement and reflection capture remain procedural.
+`src/render/bgfx_lighting.cpp` anchors wind to noon with a slower 1.5/0.55 m
+per game-second drift; main views and cubemap faces share it. Time scrubbing
+continues to move clouds; this does not change the game's time wrapping policy.
+
+`src/resources/scene_sun.cpp` raises the daylight luminance target from 1.15
+to 1.45 and its dark-palette gain cap from 2.8 to 4.0. Direct diffuse and
+specular are stronger, not ambient exposure. Night ambient and the sunset
+ramp are unchanged; garage lights do not use this outdoor day-cycle change.
+
+Validation: Release host plus DXBC/GLSL mesh shaders compile. The new
+`sun_cycle` suite in `scripts/run_save_io_tests.ps1` passes daylight energy,
+noon direction, zero direct sun at night, unchanged night ambient, a warm
+fading sunset, finite nonnegative values and 24-hour repetition. Running
+the same suite with `-BaselineRef origin/main` fails only the stronger
+daylight assertion, as expected. Logs are in the validation directory.
+Cloud aesthetics, brightness and performance still require user testing
+in game, including noon, late afternoon, sunset, night and car reflections.

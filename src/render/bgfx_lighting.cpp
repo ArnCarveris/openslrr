@@ -116,7 +116,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     bgfx::setUniform(u_local_light_, no_sky);
     bgfx::setUniform(u_cloud_sky_, sky ? sky : no_sky);
     if (sky) {
-      const float wind[4] = {scene_sun_time() * 2.3f, scene_sun_time() * .85f, 0.f, 0.f};
+      // Noon is the reference field from the early procedural sky.
+      // Keep animation without starting every day kilometres downwind.
+      const float cloud_time = scene_sun_time() - 12.f * 3600.f;
+      const float wind[4] = {cloud_time * 1.5f, cloud_time * .55f, 0.f, 0.f};
       bgfx::setUniform(u_cloud_wind_, wind);
     }
     float direction[4]{};

@@ -85,9 +85,10 @@ float daylightDistribution(float cosZenith, float cosSun)
 
 float cloudDensity(vec3 p)
 {
-	vec3 samplePos = (p - vec3(u_cloudWind.x, 0.0, u_cloudWind.y)) * vec3(0.0014, 0.0025, 0.0014);
+	vec3 samplePos = (p - vec3(u_cloudWind.x, 0.0, u_cloudWind.y)) * vec3(0.0019, 0.0032, 0.0019);
 	float shape = cloudNoise(samplePos) * 0.72 + cloudNoise(samplePos * 2.7) * 0.28;
-	return smoothstep(0.47, 0.68, shape) * sin(3.14159 * saturate((p.y - 650.0) / 480.0));
+	// Smaller separated puffs leave clear sky between the formations.
+	return smoothstep(0.52, 0.72, shape) * sin(3.14159 * saturate((p.y - 650.0) / 480.0));
 }
 
 // Two grids whose scales are not multiples, with a drift that leaves the cell,
@@ -141,8 +142,9 @@ vec3 renderSky(vec3 ray, vec2 pixel)
 	if (u_cloudSky.w < 1.5 || ray.y < 0.04) return sky;
 	float start = max(0.0, (650.0 - u_cloudSky.y) / ray.y);
 	float stop = min(12000.0, (1130.0 - u_cloudSky.y) / ray.y);
-	// Shorten the march near the horizon and stagger neighbouring rays.
-	float stepLength = min(85.0, (stop - start) / 48.0);
+	// Sample the entire layer even at oblique angles. Capping the step
+	// length truncates the volume near the horizon into a flat sheet.
+	float stepLength = (stop - start) / 48.0;
 	float jitter = fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 	if (stepLength <= 0.0) return sky;
 	vec3 cloud = vec3(0.0, 0.0, 0.0);
@@ -150,9 +152,14 @@ vec3 renderSky(vec3 ray, vec2 pixel)
 	for (int i = 0; i < 48; ++i) {
 		vec3 p = u_cloudSky.xyz + ray * (start + (float(i) + jitter) * stepLength);
 		float density = cloudDensity(p);
-		float alpha = 1.0 - exp(-density * stepLength * 0.009);
+		float alpha = 1.0 - exp(-density * stepLength * 0.006);
 		float sunExposure = 1.0 - cloudDensity(p + sun * 120.0);
-		vec3 light = u_sunAmb.rgb + u_sunDiff.rgb * (0.30 + 0.70 * sunExposure);
+		// Keep scattering highlights bounded as direct ground sunlight grows.
+		// Otherwise saturated white clouds merge into an overcast blanket.
+		float sunPeak = max(max(u_sunDiff.r, u_sunDiff.g), u_sunDiff.b);
+		vec3 cloudSun = u_sunDiff.rgb / max(sunPeak, 1.0);
+		vec3 light = min(u_sunAmb.rgb, vec3(0.22, 0.22, 0.22))
+		           + cloudSun * (0.28 + 0.62 * sunExposure);
 		cloud += light * alpha * transmission;
 		transmission *= 1.0 - alpha;
 		if (transmission < 0.015) break;
