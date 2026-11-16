@@ -163,6 +163,19 @@ void Jvm::seed_static_fields(const TufaClass& cls) {
   // so we don't overwrite host-set object statics with a stray argc int.
   const std::string owner = cls.name();
   if (owner.empty()) return;
+  auto& rid_fields = static_rids_[owner];
+  rid_fields.clear();
+  // Record once, including the negative result for ordinary integer constants.
+  std::unordered_set<std::string> checked;
+  for (const auto& f : cls.static_fields) {
+    const auto name = cls.utf8(f.name);
+    if (f.tree == kTufaNone || f.tree >= cls.trees.size() || !checked.insert(name).second)
+      continue;
+    const auto& tree = cls.trees[f.tree];
+    if (tree.size() > 8) continue;
+    for (const auto& n : tree)
+      if (n.op == 0x0e && n.wide) rid_fields[name].push_back(cls.resource(n.imm));
+  }
   for (const auto& f : cls.static_fields) {
     const std::string fname = cls.utf8(f.name);
     if (fname.empty()) continue;
@@ -685,15 +698,13 @@ Value Jvm::get_static(const std::string& class_fqn, const std::string& field) {
   auto fit = cit->second.find(field);
   if (fit == cit->second.end()) return Value::make_void();
   if (fit->second.tag == ValueTag::Int && (fit->second.v.i & 0xffff0000) == 0) {
-    if (const auto* cls = find_class(class_fqn)) for (const auto& f : cls->static_fields) {
-      if (cls->utf8(f.name) != field || f.tree == kTufaNone || f.tree >= cls->trees.size()) continue;
-      const auto& tree = cls->trees[f.tree]; if (tree.size() > 8) break;
-      for (const auto& n : tree) if(n.op == 0x0e && n.wide) {
-        const auto rid=cls->resource(n.imm);
-        if(static_cast<uint32_t>(fit->second.v.i)==rid.id)
-          fit->second=Value::make_int(static_cast<int32_t>(rpk_resolve_resource(rid.pack,rid.id)));
+    const auto owner = static_rids_.find(class_fqn);
+    if (owner != static_rids_.end()) {
+      const auto metadata = owner->second.find(field);
+      if (metadata != owner->second.end()) for (const auto& rid : metadata->second) {
+        if (static_cast<uint32_t>(fit->second.v.i) == rid.id)
+          fit->second = Value::make_int(static_cast<int32_t>(rpk_resolve_resource(rid.pack, rid.id)));
       }
-      break;
     }
   }
   return fit->second;

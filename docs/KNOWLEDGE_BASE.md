@@ -157,7 +157,7 @@ current gaps to SLRR_rev code are in
 | Threads | `src/jvm/script_threads.cpp:script_threads_tick` | Cooperative Windows fibers |
 | GC | `src/jvm/gc.cpp:collect_garbage`, `src/jvm/gc.cpp:gc_safe_point` | Mark/sweep heap, root providers |
 | Script compiler | `src/jvm/script_compiler.cpp:script_compile_all`, `third_party/slrrc` | `System.compileAll` |
-| Native registry | `src/natives/native_registry.cpp:descriptor_match`, `src/natives/natives_internal.hpp:native_noop` | `class#method#descriptor` table |
+| Native registry | `src/natives/native_registry.cpp:alternate_descriptor`, `src/natives/natives_internal.hpp:native_noop` | `class#method#descriptor` table |
 | Natives | `src/natives/natives_boot.cpp:register_boot_natives` and the `natives_*.cpp` files | Script API adapters |
 | Resources | `src/resources/rpk_index.cpp:resolve_embedded_id`, `src/resources/rpk_index.cpp:model_for_resource` | RPK packs, RIDs, RSD properties |
 | Meshes and textures | `src/resources/scx_mesh.cpp:load_scx_geometry`, `src/resources/ptx_image.cpp:load_texture_file`, `src/resources/dds_image.cpp` | SCX v3/v4, PTX, DDS, PNG/TGA |
@@ -228,7 +228,7 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
 - Natives are registered as `register_method("java.pkg.Class", "name",
   "(args)Ret", fn)`. Descriptors use dotted class names. A duplicate
   registration throws. `descriptor_match` treats a missing return type as
-  `V` (`src/natives/native_registry.cpp:descriptor_match`).
+  `V` (`src/natives/native_registry.cpp:alternate_descriptor`).
 - `Jvm::invoke` finds the most specific method up the class chain. For a
   native or empty method it looks up a host leaf with `native_has_alias`.
   A registered host leaf also overrides a Java body (`src/jvm/jvm.cpp:invoke`).
@@ -1298,3 +1298,30 @@ before merging. SLRR_rev `SLRR_rev:docs/music.md` consulted for set contracts;
 no external implementation copied. No production Java/game assets modified.
 
 PR #148 was validated and merged at the user's request; #80/#95 are closed.
+
+
+### VM lookup costs (#81, #111)
+
+`NativeRegistry::has` and `NativeRegistry::invoke` perform an exact hash lookup,
+then at most one alternate lookup for the omitted void return (`(...)` /
+`(...)V`). They no longer scan all registered natives on a miss. Exact
+registrations retain priority when both spellings are registered; duplicate
+exact signatures still throw. Return types and class aliases are not widened.
+Late registrations work without negative-cache invalidation.
+
+`Jvm::seed_static_fields` records eligible short-tree RID initializer metadata
+once per class load in `static_rids_`. `Jvm::get_static` consults this index
+instead of rescanning fields and trees for every small integer. Values remain
+mutable; an unresolved local RID is retried against the active resource index,
+and class replacement rebuilds metadata. This does not change the existing
+class-reload/static-reset policy tracked by #73.
+
+Validation: Release build; `vm_lookup` before/after compatibility tests cover
+void aliases, exact priority, missing/duplicate natives, late registration,
+mutable statics, unresolved-to-resolved RIDs and class reload. The isolated
+100,000-miss / 4,000-registration benchmark measured about 1.43 s before and
+7 ms after on this machine; this is not an in-game FPS claim. `tree_numbers`
+passes. TUFA corpus remains 1,501 files / 1,546 accepted classes, with the same
+pre-existing Dialog.class kind-2 rejection. Evidence:
+`assets/validation/vm-lookup/before.txt` and
+`assets/validation/vm-lookup/after.txt`. No production Java or native API added.
