@@ -1429,3 +1429,28 @@ and reloads every MSAA index (0=off, 1=2x, 2=4x, 3=8x), all enhanced booleans,
 framerate coexistence, the debug-save entry point, legacy and invalid files.
 These are real disk round-trips in an isolated fixture; the stock Config
 saveConfig remains counted/injected for retry-policy tests.
+
+
+### Live GameRef lookup (#106)
+
+`gameref_find_live` now uses a live-ID hash index rather than scanning g_refs.
+The index points at stable unordered_map elements and is erased before their
+states are removed. ID allocation is monotonic until clear, without redundant
+collision scans or signed overflow; exhaustion returns 0. IDs of entries that
+become aliases remain dormant and are filtered at lookup, preserving wrapper
+unbind semantics. Alias deletion, canonical deletion and clear remove indexed
+entries. This index does not add Java GC roots or change ID ownership.
+
+`advance_free_bodies` resolves the controlled chassis and validates its script
+frame once before iterating bodies. Loose panels can have different owner IDs;
+their per-panel lookups remain, now indexed. Seated-driver world traversal
+(#112) is unchanged and stays open; caching its results requires reliable
+invalidation of all relevant scene changes.
+
+Release build, live_lookup, physics_position and ped_crossing pass. The same
+lifetime/alias fixture passes with baseline a15ab7b and current code, covering
+stable addresses after rehash, dormant aliases, alias/canonical removal, reused
+keys and clear/reset. Isolated 100,000 lookups / 8,000 nodes measured about
+2.71 s before and 0.81 ms after; not an in-game FPS measurement. Evidence:
+`assets/validation/live-lookup/before.txt` and
+`assets/validation/live-lookup/after.txt`. Gameplay validation is separate.
