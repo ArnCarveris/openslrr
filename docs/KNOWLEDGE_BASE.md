@@ -845,3 +845,32 @@ Run `./scripts/run_save_io_tests.ps1 -Suite time_format`, optionally with
 Knowledge reference check: 219 checked, zero errors. In-game check pending:
 TestTrack/ROC timer should show exactly three fractional digits; garage clock
 should retain its ordinary display.
+
+
+### Native building night overlays (#133)
+
+Ground placement loading previously rejected every standalone `night` word in
+render aliases. Stock objects.rpk object 0x1a1 (krthaz02) includes a second render
+0x4ba (krthaz02_night) in its ICFG, flagged 4; this is authored night geometry,
+not a missing alternative texture filename. Retain the render, mark the placement
+night-only by alias word boundaries, and filter at collection time in both
+individual and instanced paths. Base facades stay present. All required meshes
+stay resident so time changes need no map reload and reflection collection uses
+the same visibility. Collision bodies are unchanged.
+
+Enhanced policy currently shows night overlays 18:00 inclusive to 06:00
+exclusive, from scene_sun_time with 24-hour wrapping. These thresholds are a
+host policy, not a newly proven original-engine rule. The old blanket exclusion
+advice in EXTERNAL_RESEARCH section 7 is superseded by this runtime filter;
+flags=4 alone still cannot classify arbitrary daytime renders.
+
+Release x64 compiles. Read-only stock-asset integration test instantiates
+krthaz02 and checks collected props/batches at noon, 22h, 6h, 18h and noon again:
+corrected totals 1/2/1/2/1, night counts 0/1/0/1/0; baseline c15a839 is always
+1 with zero night overlays. Run `./scripts/run_save_io_tests.ps1 -Suite night_props`,
+optionally `-BaselineRef c15a839`. Evidence: assets/validation/night-props.
+Source provenance: actual objects.rpk ICFG/render aliases; current SLRR_rev
+map-object-stream/category sources were checked for an applicable night policy
+but none was adopted. Knowledge reference check: 219 checked, zero errors.
+Visual validation pending: Valo facade windows at midday/night and after moving
+time back; check no daytime overlays, duplicate flicker, or reflection mismatch.
