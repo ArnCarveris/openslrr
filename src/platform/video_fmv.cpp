@@ -945,7 +945,7 @@ void video_fmv_letterbox(int32_t screen_w, int32_t screen_h, float *out_left,
 }
 
 int32_t video_fmv_play_boot_intros(int32_t max_frames_each,
-                                   const std::function<void()> &pump) {
+                                   const std::function<bool()> &pump) {
   static const char *kPaths[] = {
       "Data\\FMV\\Activision.avi",
       "Data\\FMV\\Invictus.avi",
@@ -959,26 +959,30 @@ int32_t video_fmv_play_boot_intros(int32_t max_frames_each,
     SetFocus(g_hwnd);
   }
   // ESC skips one intro at a time (edge), then must release before the next.
+  bool cancelled = false;
+  auto tick = [&]() {
+    if (pump && !pump()) cancelled = true;
+    return !cancelled;
+  };
   auto wait_esc_up = [&]() {
-    while (esc()) {
-      if (pump)
-        pump();
+    while (!cancelled && esc()) {
+      if (!tick()) break;
       Sleep(1);
     }
   };
+  // Poll once even when ESC is not held, before opening the first decoder.
+  tick();
   wait_esc_up();
   video_fmv_set_block_osd(true);
   for (const char *path : kPaths) {
-    // bgfx always Presents — exclusive HWND is covered. Use SampleGrabber
-    // path (non_exclusive=1) so boot intros blit through draw_fmv.
+    if (cancelled) break;
     if (video_fmv_open(path, /*non_exclusive=*/1, /*loop=*/0) != 0)
       continue;
     ++played;
     int32_t frames = 0;
     bool skipped = false;
     while (video_fmv_is_playing()) {
-      if (pump)
-        pump();
+      if (!tick()) break;
       video_fmv_pump();
       if (esc()) {
         std::printf("[fmv] skip ESC %s\n", path);
@@ -986,13 +990,11 @@ int32_t video_fmv_play_boot_intros(int32_t max_frames_each,
         break;
       }
       ++frames;
-      if (max_frames_each > 0 && frames >= max_frames_each)
-        break;
+      if (max_frames_each > 0 && frames >= max_frames_each) break;
       Sleep(1);
     }
     video_fmv_close();
-    if (skipped)
-      wait_esc_up();
+    if (skipped) wait_esc_up();
   }
   video_fmv_set_block_osd(false);
   wait_esc_up();

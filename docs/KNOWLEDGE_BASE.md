@@ -1385,3 +1385,13 @@ warnings (#105) were observed in this test; the backend still opened and the
 test passed. Actual DirectShow decoder fallback, intro playback and FMV texture
 allocation/release during playback remain manual validation; the synthetic
 copy tests do not claim to cover a full decoder graph.
+
+
+Intro cancellation follow-up (#102): `video_fmv_play_boot_intros` now takes a
+boolean pump callback. False aborts the sequence, including ESC-release waits,
+closes the active video and clears OSD blocking. Boot returns through renderer
+cleanup before starting Init when the window was closed during intros. The
+video_safety suite checks cancellation both before opening a decoder and after
+opening a generated silent AVI; no later intro is opened. Immediate LibVLC
+cancellation can log demux errors in this fixture; actual rendered frames are
+not asserted. Release build and the suite pass.
