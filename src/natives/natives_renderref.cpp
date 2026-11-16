@@ -363,7 +363,7 @@ void register_renderref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& section
           if (osd) osd_world_to_ndc(osd, px, py, &nx, &ny);
           auto already = self->fields.find("_osd_wi");
           if (already != self->fields.end() &&
-              already->second.tag == ValueTag::Int) {
+              already->second.tag == ValueTag::Int && osd_widget_mut(already->second.v.i)) {
             osd_set_widget_pos(already->second.v.i, nx, ny);
             if (tid != 0 || !texpath.empty())
               osd_set_widget_icon(
@@ -401,9 +401,8 @@ void register_renderref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& section
               if (git != group->fields.end() && git->second.tag == ValueTag::Int)
                 w.group = git->second.v.i;
             }
-            const int32_t wi = static_cast<int32_t>(osd_widgets().size());
+            const int32_t wi = osd_add_widget(std::move(w));
             self->fields["_osd_wi"] = Value::make_int(wi);
-            osd_add_widget(std::move(w));
             osd_attach_button_picture(self);
           }
         }

@@ -832,6 +832,12 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
   void LibBgfxBackend::flush()
 {
     ++frames_;
+    for (auto it=font_tex_.begin();it!=font_tex_.end();) {
+      if (!slrr_font_asset_live(it->first)) {
+        if (bgfx::isValid(it->second)) bgfx::destroy(it->second);
+        it=font_tex_.erase(it);
+      } else ++it;
+    }
     if (!ready_) return;
     struct FrameCache {
       FrameCache() { scene_instances_frame_cache(true); }

@@ -112,6 +112,12 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
                         const std::vector<bgfx::TextureHandle>* tex, bgfx::TextureHandle mix,
                         bool receive_static_shadow, const SceneSun* sun, const float* sky)
 {
+    // UI draws must not inherit atlas transforms from the last world mesh.
+    if (!group) {
+      const float identity_uv[4]={1.f,1.f,0.f,0.f};
+      bgfx::setUniform(u_mesh_base_uv_,identity_uv);
+      bgfx::setUniform(u_mesh_mix_uv_,identity_uv);
+    }
     const float no_sky[4]{};
     bgfx::setUniform(u_local_light_, no_sky);
     bgfx::setUniform(u_cloud_sky_, sky ? sky : no_sky);
