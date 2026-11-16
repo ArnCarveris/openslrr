@@ -543,7 +543,7 @@ run time.
 | Risk | Where |
 | --- | --- |
 | DirectShow frame copy trusts `width × height × 4` against the sample size | `src/platform/video_fmv.cpp` (`grab_frame`) |
-| TUFA and RPK readers reserve declared counts before checking the remaining bytes | `src/jvm/tufa.cpp:parse_constants`, `src/resources/rpk_index.cpp:parse_rpak` |
+| RPK reader reserves declared TOC counts before checking the remaining bytes | `src/resources/rpk_index.cpp:parse_rpak` |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
@@ -1168,3 +1168,50 @@ implementation was copied.
 PR #145 was validated and merged at the user's request; #127/#101/#77 are
 closed. For this resource wave, in-game menu/garage/city/track loading still
 requires user confirmation before merge. No production Java is modified.
+
+
+### Issues #88 / #89 / #74: reject malformed TUFA before execution
+
+`src/jvm/tufa.cpp` bounds collection counts by remaining bytes before
+reserving storage: constants >=8 bytes, field/method records 16/20, trees
+4, nodes 3, interfaces 4. File sizing, allocation and reads are inside the
+load exception boundary; failed tellg is rejected. Parser failure clears
+all previously parsed blobs, so a malformed tail cannot publish a valid
+prefix from a concatenated class container. Null nonempty input is rejected.
+
+`parse_one_blob` validates pool links and the constant-bearing TREE opcodes
+before the VM seeds static fields. UTF8, Class, Resource and reference
+carriers must match the operation, while reference() still accepts the
+existing bare UTF8/NameAndType compatibility forms. This prevents malformed
+string/RID initializers and lazy RID fixups from encountering bad constants
+after class publication. Static enrichment also catches TREE exceptions.
+No unsupported constant kinds or new opcode semantics are introduced.
+
+`kTufaMaxLocals` is 65536: method local counts and local load/declaration
+slots are checked by the parser. TREE evaluation additionally bounds method
+locals/arguments and declarations before allocating or indexing; size_t
+arithmetic avoids imm+1 wrapping. These runtime checks also protect
+in-memory TREE callers that bypass file parsing.
+
+Validation: Release host compiles. The tufa_validation suite compiles a
+valid two-class TUFA container, mutates collection counts, method-local
+counts, three extreme declaration slots, static string/RID constants and
+the concatenated tail, and checks clean parser/VM rejection. It also checks
+the runtime declaration/local-count guards directly and executes the valid
+fixture after a rejected file. No production Java is modified.
+
+`-Suite tufa_validation -CorpusOnly` scans actual game classes; with
+`-BaselineRef origin/main` it substitutes only the baseline parser. Both
+parsers accept 1546 classes from the same 1501 files, rejecting only the
+pre-existing `game/system/Scripts/render/osd/Dialog.class` (CONS kind 2).
+This wave adds no new corpus rejection. Corpus comparison deliberately
+does not run huge-count malformed fixtures against the unsafe parser.
+Logs: `assets/validation/tufa-validation/`. Existing tree_numbers and
+save_io suites pass. SLRR_rev `SLRR_rev:docs/formats/tufa.md` and
+`SLRR_rev:src/formats/tufa.ts` were consulted for container/record contracts;
+validation is implemented locally, without copied code.
+
+PR #146 was validated and merged at the user's request; #107/#94 are closed.
+For this wave, confirm menu/options, career loading, garage/city and catalog
+behaviour in game before merge; parser corpus compatibility is separate
+from gameplay validation. RPK TOC count validation remains a separate risk.
