@@ -788,3 +788,22 @@ animation playback or agent in-game validation is claimed. Manual check: in
 Valo face a walking pedestrian, pause for several seconds, confirm limbs are
 frozen, resume without pose catch-up, then repeat. Also check mechanic/driver
 animations during normal play. Save/section changes should remain functional.
+
+
+### Pedestrian worker after pause (PR #136 follow-up)
+
+User reports walkers blocking each other after pause, near the first garage.
+Direct deterministic crossing checks pass without changing avoidance forces.
+Inspection found the worker cleared posted before calculating a step, allowing
+another pre-result snapshot to be queued. A result can also become ready between
+the main thread's consume and submit locks. Keep posted through calculation,
+clear it only on result publication, and defer submission while posted OR ready.
+Zero-duration (pause) ticks consume results/update poses but submit no new job.
+This prevents stale snapshots and zero-time jobs from rolling back movement.
+
+Release x64 rebuilt. Twenty head-on crossings on real city.walk corridors pass;
+these are avoidance regression checks, not proof of the worker race fix or the
+specific first-garage encounter. No adjustment to avoidance weights, density or
+freecam range. In-game retest remains necessary: watch first-garage pedestrians,
+pause/resume repeatedly, then watch opposing pairs pass. Freecam behavior was
+explicitly deferred by the user. Knowledge check: 219 references, zero errors.
