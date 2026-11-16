@@ -807,3 +807,22 @@ specific first-garage encounter. No adjustment to avoidance weights, density or
 freecam range. In-game retest remains necessary: watch first-garage pedestrians,
 pause/resume repeatedly, then watch opposing pairs pass. Freecam behavior was
 explicitly deferred by the user. Knowledge check: 219 references, zero errors.
+
+
+### Initial garage steering (#125)
+
+The setsteer command updated steering_input/request but placed attached parts
+using the existing dynamic hub matrices. The steering wheel read the new scalar
+while the wheels kept the prior pose until another operation recomputed it.
+When dynamic_frames are already available, setsteer now calls pose_wheels,
+which rebuilds steered/rolling frames from the current suspension state and
+places/relinks the assembly. It does not integrate physics, change chassis pose,
+repark the car or reset wheel spin. Before dynamic frame initialization the
+existing rest placement path is preserved; later parking reads the saved steer.
+
+Release x64 compiles; knowledge references 219 checked, zero errors. Source
+trace: Garage.java sends setsteer -0.7 on entry and mechanic-mode changes.
+No automated assembled-vehicle regression or agent in-game validation claimed.
+Manual check: enter/load the garage and inspect wheel braquage before touching
+any part; change mechanic modes and return from catalog/dealer, then confirm
+normal driving steering still works. Notes stay in KNOWLEDGE_BASE.md.
