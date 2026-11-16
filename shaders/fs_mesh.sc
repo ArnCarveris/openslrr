@@ -276,6 +276,8 @@ void main()
 		illumination += vec3(1.0, 0.94, 0.80) * (fade * fade * facing * 3.0 / (1.0 + d2))
 		              * mix(0.35, 1.0, visibility);
 	}
+	// Authored night facade layers must remain luminous without sun/ambient.
+	if (u_alphaTest.y > 1.5) illumination = vec3(1.0, 1.0, 1.0);
 	vec3 shaded = tex.rgb * bake * tint * placement * illumination;
 	// Sky and OSD set u_alphaTest.y. Their fragments stay sharp.
 	if (u_fogColor.a > 0.5 && u_alphaTest.y < 0.5) {

@@ -325,7 +325,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       // transparent function bit alone also appears on opaque rail frames.
       const bool glass = group && !preview && part.geo.info.version == 4 &&
           (flags & 0x40000000u) && (group->material_type & 0x04u);
-      const bool blend = !instance.sky && (glass ||
+      const bool blend = !instance.sky && (instance.emissive_overlay || glass ||
           (part.geo.info.version == 3 && (flags & 0x101u) == 0x101u));
       if (pass != int(blend)) return;
       const auto tex = texture(texture_index);
@@ -344,7 +344,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
           (reset_flags_ & BGFX_RESET_MSAA_MASK) &&
           part.geo.info.path.find("fa_tibi") != std::string::npos;
       const bool vertex_mix = group && group->mix_vertex_color;
-      const float settings[4] = {alpha_test, instance.sky || blend || vertex_mix ? 1.f : preview ? .5f : 0.f,
+      const float settings[4] = {alpha_test, instance.emissive_overlay ? 2.f : instance.sky || blend || vertex_mix ? 1.f : preview ? .5f : 0.f,
                                  foliage_coverage ? 2.f : blend ? 1.f : 0.f, material_mix ? -2.f : vertex_mix ? -1.f :
                                  outdoor_lighting_ && !preview && part.geo.ground_polygons ? -3.f :
                                  !blend && preview && tex.idx != white_tex_.idx ? 1.f : 0.f};
@@ -387,7 +387,12 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;
       if (instance.cull_backfaces && !(flags & 0x02000000u))
         state |= BGFX_STATE_CULL_CW;
-      if (blend) {
+      if (instance.emissive_overlay) {
+        // Authored self-illumination is coplanar with the daytime facade.
+        // Reverse-Z equality keeps it visible; never replace the opaque depth.
+        state |= BGFX_STATE_DEPTH_TEST_GEQUAL |
+                 BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE);
+      } else if (blend) {
         std::string extension = texture_index < part.geo.textures.size()
             ? std::filesystem::path(part.geo.textures[texture_index]).extension().string() : "";
         std::transform(extension.begin(), extension.end(), extension.begin(),

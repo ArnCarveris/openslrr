@@ -874,3 +874,22 @@ map-object-stream/category sources were checked for an applicable night policy
 but none was adopted. Knowledge reference check: 219 checked, zero errors.
 Visual validation pending: Valo facade windows at midday/night and after moving
 time back; check no daytime overlays, duplicate flicker, or reflection mismatch.
+
+
+### Night facade illumination follow-up (PR #139)
+
+User reports registered overlays still look unlit, and requests lights start
+at 18:30. Visibility now starts at 18.5h (off at 06:00 as before). Night meshes
+under _krthaz_selfillum are marked emissive_overlay in SceneInstance, kept out
+of opaque instance batches and drawn in the blended pass after facades. They
+use reverse-Z GEQUAL, no depth write and SRC_ALPHA/ONE additive blending for
+coplanar lit detail. The shader ignores sun/ambient/shadow attenuation for these
+layers; ordinary geometry lighting is unchanged. Emissive overlays do not cast
+solid shadows. Reflection draws reuse the same instance flags.
+
+Release x64 and embedded shaders compile. The real-asset test now checks just
+before 18:30, exactly 18:30, noon/night/dawn/noon again and verifies emissive
+metadata on the collected night mesh. Checks pass; they do not prove GPU output.
+User must retest illumination, coplanar flicker and overly bright wall regions.
+This supersedes the 18:00 threshold documented above. Knowledge check: 219
+references, zero errors. No simulation, Java or physical light-source changes.

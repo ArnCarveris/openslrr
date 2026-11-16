@@ -1954,7 +1954,7 @@ namespace {
 bool night_props_visible() {
   const float seconds = std::fmod(scene_sun_time(), 86400.f);
   const float hour = (seconds < 0.f ? seconds + 86400.f : seconds) / 3600.f;
-  return hour < 6.f || hour >= 18.f;
+  return hour < 6.f || hour >= 18.5f;
 }
 }
 
@@ -2016,6 +2016,7 @@ std::vector<SceneInstance> scene_instances_collect(
           instance.cull_backfaces = true;
           instance.type_id = static_cast<int32_t>(prop.render_id);
           instance.color = prop.color;
+          instance.emissive_overlay = prop.night_only;
           instance.lighting = lighting;
           instance.geometry = std::move(mesh);
           instance.transform = part_matrix_multiply(shell, prop.pose);
@@ -2549,7 +2550,8 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
   std::unordered_set<uint32_t> batchable;
   for (const auto id : props_map.resources) {
     const auto mesh = geometry(id);
-    if (mesh && prop_mesh_batchable(*mesh)) batchable.insert(id);
+    if (mesh && !ground_prop_is_night(*g_resources, id) && prop_mesh_batchable(*mesh))
+      batchable.insert(id);
   }
   std::vector<GroundPropCell*> jobs;
   jobs.reserve(cells.size());
