@@ -739,6 +739,7 @@ void scene_instances_set_resources(const RpkIndex *resources) {
   g_world = g_sky = nullptr;
   g_preview_lamps = false;
   g_meshes.clear();
+  g_shadow_info.clear();
   g_overrides.clear();
   g_collision_overrides.clear();
   g_ground_props.clear();
