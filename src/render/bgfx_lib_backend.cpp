@@ -1355,9 +1355,10 @@ SceneFrustum LibBgfxBackend::view_frustum(const float* view, const float* projec
         if (previous != deformed_meshes_.end()) {
           auto old = instance_meshes_.find(previous->second);
           if (old != instance_meshes_.end() && old->second.geo.textures == part.geo.textures &&
-              old->second.geo.info.path == part.geo.info.path)
+              old->second.geo.info.path == part.geo.info.path) {
             part.tex = std::move(old->second.tex);
             part.shared_texture_paths = std::move(old->second.shared_texture_paths);
+          }
         }
       }
       if (part.tex.empty()) load_part_textures(part, map_prop);
