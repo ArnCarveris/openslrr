@@ -304,6 +304,18 @@ reference wrappers do not justify duplicating the underlying object.
 world. Geometry can be shared. Pose, color, and texture replacements are
 instance properties. Avoid modifying shared geometry to fix a single car.
 
+File-backed textures created by `ResourceRef.makeTexture` must reach the same
+per-instance material path as RPK textures through `changeResource`,
+`duplicate`, and `RenderRef.create`. Copy the replacement path by value; do not
+make the render depend on a temporary Java texture wrapper or mutate shared
+mesh textures. Standalone dynamic texture ID queries remain incomplete.
+
+An active camera with a non-null viewport may render only while that viewport
+exists and is active. `Viewport.deactivate` / OSD hiding must stop an old
+preview even when the script retains its camera and scene. Reactivation may
+reuse those objects. Do not implement this by recognizing a mod's selector
+class or forcibly deleting its model.
+
 A map is not necessarily one SCX. `GroundMapData` distinguishes render and
 collision meshes, exterior packs, and placements. Valo City requires resolving
 map chains and their placed objects.

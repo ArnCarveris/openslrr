@@ -1516,3 +1516,12 @@ changes preserve prior copies. It also tests viewport deactivate/reactivate/
 destroy against fullscreen camera selection. Synthetic paths do not assert
 image decoding or a visual skin comparison; gameplay remains to validate.
 Evidence: `assets/validation/driver-selector/after.txt`.
+
+
+PR #155 gameplay validation (17 November 2026): the user confirmed seated
+driver behavior and then the MWM DriverSelect skin/menu fixes. No production
+Java was modified. NATIVE_AUDIT.md now records file-backed texture propagation,
+viewport lifetime eligibility and remaining dynamic-texture-ID limits; its
+stock registration totals are synchronized with the Python checker (339
+bodies, 3 explicit no-ops, 34 missing, 376 total; 31 active missing plus 3
+leftovers). ENGINE_CONTRACT.md states the generic material/camera rules.
