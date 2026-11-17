@@ -1483,3 +1483,36 @@ alias/cycle traversal, original hidden visibility, removal/reused keys and
 clear/release. This tests the shared production mask used by pose_driver, not
 seated animation or a full garage transition. Evidence:
 `assets/validation/driver-mask/after.txt`. No production Java/native API change.
+
+
+### File texture replacement and hidden preview viewports
+
+The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,
+RenderRef.changeResource and RenderRef.create. makeTexture supplies a file path
+rather than an RPK texture ID. RenderRef now stores per-instance
+texture_file_replacements alongside RPK replacements; duplicate and instance
+creation copy the paths by value. Scene collection maps the original texture
+resource to matching mesh slots and publishes the replacement path. Replacing
+the same source updates its file entry; replacing it with an RPK texture clears
+the file entry. Geometry/shared mesh textures are unchanged. This closes the
+file-backed material path without changing production Java or inventing an
+executable special case for DriverSelect. It does not implement all possible
+dynamic texture resource queries such as standalone makeTexture IDs.
+
+`gameref_active_cameras` excludes bound aliases and cameras whose non-null
+viewport is inactive or missing. Cameras with no viewport retain their prior
+eligibility. Thus Osd.hide / Viewport.deactivate stops the scene preview even
+when a script retains its scene camera and render objects. Reactivating the
+viewport makes its camera eligible again; no model is forcibly destroyed.
+
+Reference checks: DriverSelect.java RefreshRender/exit and Osd.hide, SLRR_rev
+src/runtime/viewport-native.ts deactivate, plus slrr-reverse native signatures
+for makeTexture/changeResource. No external implementation copied.
+
+Release build and driver_selector, driver_mask, physics_position pass. The
+selector fixture uses actual humans.rpk / vin.SCX and verifies the file path
+reaches a collected material slot through registered natives; subsequent
+changes preserve prior copies. It also tests viewport deactivate/reactivate/
+destroy against fullscreen camera selection. Synthetic paths do not assert
+image decoding or a visual skin comparison; gameplay remains to validate.
+Evidence: `assets/validation/driver-selector/after.txt`.

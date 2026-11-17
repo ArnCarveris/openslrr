@@ -1024,8 +1024,14 @@ void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
 std::vector<GameRefState*> gameref_active_cameras() {
   std::vector<GameRefState*> out;
   for (auto& kv : g_refs) {
-    if (kv.second.kind == GameRefKind::Camera && kv.second.cam_active)
-      out.push_back(&kv.second);
+    if (kv.second.kind != GameRefKind::Camera || !kv.second.cam_active || kv.second.binding) continue;
+    // A camera cannot render through a hidden or destroyed viewport. Scene
+    // ownership alone does not end its lifetime when a dialog/section exits.
+    if (kv.second.viewport) {
+      const auto* viewport = gameref_get(kv.second.viewport);
+      if (!viewport || !viewport->vp_active) continue;
+    }
+    out.push_back(&kv.second);
   }
   std::sort(out.begin(), out.end(),
             [](const GameRefState* a, const GameRefState* b) {

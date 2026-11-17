@@ -178,6 +178,8 @@ struct GameRefState {
   uint32_t color = 0xffffff;
   uint32_t paint_source = 0, paint_texture = 0;
   std::vector<std::pair<uint32_t, uint32_t>> texture_replacements;
+  // Per-instance makeTexture files, independent of temporary resource wrappers.
+  std::vector<std::pair<uint32_t, std::string>> texture_file_replacements;
   bool vehicle_material = false;
   // Cfg light bits (1 brake, 2 reverse, 4 city, 16 indicator). Drawn only
   // while that light is on.

@@ -539,9 +539,11 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
             gameref_set_type(*dst, id);
             if (const auto* source = gameref_get(src)) {
               dst->texture_replacements = source->texture_replacements;
+              dst->texture_file_replacements = source->texture_file_replacements;
               dst->directional_light.flare = source->directional_light.flare;
             } else {
               dst->texture_replacements.clear();
+              dst->texture_file_replacements.clear();
               dst->directional_light.flare = {};
             }
           }
