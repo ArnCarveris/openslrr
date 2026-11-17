@@ -1605,6 +1605,36 @@ Release build, vm_lookup, tree_numbers, save_io and TUFA corpus checks pass.
 The corpus is unchanged: 1,501 files, 1,546 accepted classes and the existing
 Dialog.class CONS-kind-2 rejection. vm_lookup now checks immutable definitions
 in the running VM and refreshed metadata in a fresh VM. No native signatures
-or production Java changed. Static ++ behavior (#63) remains outside this
-change; the constructor counter fixture uses explicit addition to isolate
-constructor dispatch.
+or production Java changed. Static ++ behavior is covered separately by #63 below; the constructor
+counter fixture uses explicit addition to isolate constructor dispatch.
+
+
+### Static increment/decrement writeback and career days (#63)
+
+TREE previously computed ++/-- but only wrote back locals, instance fields or
+array elements. Static field reads now retain their actual owner/name through
+both direct/quick field opcodes and resolved name paths. Statement and
+expression ++/-- use a shared field-writeback helper; postfix retains the old
+expression result and prefix exposes the stepped value. Instance reads clear
+the static target so an earlier static access cannot redirect a later write.
+Integer stepping keeps 32-bit wrap and floats remain floats. No GameLogic/day
+special case, production Java change or new native is involved.
+
+The actual shipped GameLogic.spendTime TREE now advances day when time crosses
+its existing strict `> 24*3600` condition. The exact-midnight boundary is not
+changed; a positive step beyond it advances the day. Multi-day steps increment
+once per wrap and still notify timeRefresher and call System.syncGameTime.
+
+Validation: static_increment has 0/2 passing on baseline 4de3d3c and 2/2 on the
+fix. A compiled generic fixture covers statement/expression pre/post ++/--,
+float fields, uninitialized statics, foreign owners, both 0x1b/0x1c encodings,
+multiple increments in one expression, int overflow and local/instance
+regressions. A TreeHost harness executes the actual GameLogic.class method,
+checking exact midnight, single/multiple day crossings and expected notification/
+clock-sync calls. It isolates the VM method from the rest of the career; full
+career persistence and header display require in-game validation. Evidence:
+`assets/validation/static-increment/before.txt` and
+`assets/validation/static-increment/after.txt`.
+
+Release build, tree_numbers, class_lifetime and save_io pass. Native coverage
+--check remains current; stock registration counts are unchanged.

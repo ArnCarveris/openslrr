@@ -243,6 +243,8 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
   Object* last_ifield_recv = nullptr;
   std::string last_ifield_name;
   bool last_ifield_fresh = false;
+  std::string last_sfield_owner, last_sfield_name;
+  bool last_sfield_fresh = false;
   std::string pending_method_owner;
   std::string pending_method_name;
   std::string pending_method_desc;
@@ -436,6 +438,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
 
   auto push_instance_field = [&](Object* recv, const std::string& fname,
                                  const std::string& fdesc) {
+    last_sfield_fresh = false;
     last_ifield_recv = recv;
     last_ifield_name = fname;
     last_ifield_fresh = recv != nullptr;
@@ -784,6 +787,22 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
     const uint8_t op = tree[ip + 1].op;
     return op == 0x07 || op == 0x08;
   };
+  auto push_static_field = [&](const std::string& owner, const std::string& name) {
+    push(host->tree_get_static(owner, name));
+    last_sfield_owner = owner;
+    last_sfield_name = name;
+    last_sfield_fresh = true;
+    last_ifield_fresh = false;
+  };
+  auto write_incremented_field = [&](Value value) {
+    if (last_ifield_fresh && last_ifield_recv && !last_ifield_name.empty()) {
+      last_ifield_recv->fields[last_ifield_name] = value;
+      last_ifield_fresh = false;
+    } else if (last_sfield_fresh) {
+      host->tree_set_static(last_sfield_owner, last_sfield_name, value);
+      last_sfield_fresh = false;
+    }
+  };
   auto commit_assign = [&](bool keep) {
     put_recv_from_path = false;
     if (pending_arr) {
@@ -1022,11 +1041,8 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
           const auto& prev = tree[ip - 1];
           if (prev.op == 0x01 && prev.wide && prev.imm < locals.size()) {
             locals[prev.imm] = next;
-          } else if ((prev.op == 0x1b || prev.op == 0x1c) &&
-                     last_ifield_fresh && last_ifield_recv &&
-                     !last_ifield_name.empty()) {
-            last_ifield_recv->fields[last_ifield_name] = next;
-            last_ifield_fresh = false;
+          } else if (prev.op == 0x1b || prev.op == 0x1c) {
+            write_incremented_field(next);
           } else if (prev.op == 0x20 && last_arr && last_arr->is_array &&
                      last_arr_idx >= 0 &&
                      static_cast<size_t>(last_arr_idx) < last_arr->slots.size()) {
@@ -1148,11 +1164,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
             next.v.f = cur.v.f + static_cast<float>(step);
           else
             next = arithmetic(16, cur, Value::make_int(step));
-          if (last_ifield_fresh && last_ifield_recv &&
-              !last_ifield_name.empty()) {
-            last_ifield_recv->fields[last_ifield_name] = next;
-            last_ifield_fresh = false;
-          }
+          write_incremented_field(next);
         } else if (tag == 34) {  // ctor stmt — often after super_init
           // no-op: ctor body continues
         } else if ((tag >= 36 && tag <= 40) || (tag >= 44 && tag <= 46)) {
@@ -1234,6 +1246,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
         push(Value::make_int(n.imm ? 1 : 0));
         break;
       case 0x11: {  // path
+        last_sfield_fresh = false;
         // After call/call_on this is the name-path header; the segments run
         // as the call. Otherwise imm is the segment count of a field path
         // (`player.controller`, `GameLogic.gameMode`) and only the last
@@ -1313,6 +1326,9 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
                                        ? kind_owner
                                        : (owner.empty() ? cls.name() : owner);
             result = host->tree_get_static(so, fname);
+            last_sfield_owner = so;
+            last_sfield_name = fname;
+            last_sfield_fresh = true;
             last_ifield_fresh = false;
             last_ifield_recv = nullptr;
             last_ifield_name.clear();
@@ -1428,6 +1444,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
         break;
       }
       case 0x1b: {  // field ref
+        last_sfield_fresh = false;
         if (!n.wide) return fail("field missing imm");
         TufaClass::Ref ref;
         try {
@@ -1543,7 +1560,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
                 ref.owner.empty()
                     ? (pending_class.empty() ? cls.name() : pending_class)
                     : ref.owner;
-            push(host->tree_get_static(owner, pending_field));
+            push_static_field(owner, pending_field);
             last_ifield_fresh = false;
             pending_field.clear();
             pending_field_desc.clear();
@@ -1578,6 +1595,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
         break;
       }
       case 0x1c: {  // field quick — get, or put when the next stmt is assign
+        last_sfield_fresh = false;
         if (!n.wide) return fail("getfield missing imm");
         const auto ref = cls.reference(n.imm);
         // Own statics (CMD_EXIT and the other menu commands) are read with
@@ -1614,8 +1632,12 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
             pop();
             if (on_inst)
               push(iit->second);
-            else
+            else {
               push(on_class);
+              last_sfield_owner = recv->class_name;
+              last_sfield_name = ref.name;
+              last_sfield_fresh = true;
+            }
             last_ifield_recv = recv;
             last_ifield_name = ref.name;
             last_ifield_fresh = on_inst;
@@ -1625,7 +1647,7 @@ TreeEvalResult tree_eval(TreeHost* host, const TufaClass& cls,
         if (own_static) {
           const std::string owner =
               ref.owner.empty() ? cls.name() : ref.owner;
-          push(host->tree_get_static(owner, ref.name));
+          push_static_field(owner, ref.name);
           last_ifield_fresh = false;
           break;
         }
