@@ -721,7 +721,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     }
     // Fallback veil only when there is no plate and no movie. Over prime.avi
     // it reads as a black opacity layer on top of the FMV.
-    if (!have_bg_tex && osd_overlay_ && !garage_ && !video_fmv_is_playing()) {
+    // A driving HUD has no menu plate. Its active world camera must remain
+    // visible instead of receiving the menu-only fallback veil.
+    if (!have_bg_tex && osd_overlay_ && !garage_ &&
+        !video_fmv_is_playing() && !fullscreen_script_camera()) {
       OsdWidget plate;
       plate.x = 0.f;
       plate.y = 0.f;
@@ -729,11 +732,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       plate.half_h = 1.f;
       plate.background = true;
       // White tex + darken via color uniform — draw after setting color.
-      const float dark[4] = {0.05f, 0.05f, 0.07f, 0.82f};
-      bgfx::setUniform(u_color_, dark);
+      // draw_osd_quad owns the tint uniform; pass the color into the draw.
       const float u_at[4] = {0.f, 1.f, 1.f, 0.f};
       bgfx::setUniform(u_alpha_test_, u_at);
-      draw_osd_quad(plate);
+      draw_osd_quad(plate, 0.05f, 0.05f, 0.07f, 0.82f);
       const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
       bgfx::setUniform(u_color_, white_c);
     }

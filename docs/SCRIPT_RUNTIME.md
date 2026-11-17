@@ -138,3 +138,18 @@ and does not request a new career. With `-BaselineRef a5184d2`, the same test
 fails with two timers; the corrected build passes with one. Existing
 `inventory_transition` tests pass 4/4. Windowed FMV/splash visual continuity
 still requires user validation. See [evidence](../assets/validation/splash-boot/results.txt).
+
+### Track presentation without a menu plate
+
+A driving HUD normally has no fullscreen menu background. The renderer's
+missing-menu backdrop must therefore be suppressed when
+`fullscreen_script_camera` selects an active world camera. Without that check,
+Select Track can display a solid white mask above the map but below the HUD;
+opening a pause menu supplies a background and temporarily removes the mask.
+The fallback's dark tint must also be passed to `draw_osd_quad`, which writes
+its own color uniform; setting that uniform before the call is overwritten.
+
+Release build and `map_views`, `ui_lifetime`, `splash_boot` checks pass. A local
+headless TestTrack investigation confirmed an active scene camera and no
+remaining loading overlay; it did not validate pixels. Test normal Select Track
+entry, Escape/Continue, another track, Valo, and FMV/menu backgrounds in game.

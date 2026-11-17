@@ -1841,3 +1841,5 @@ changed bytes. A declaration scan found no repeated attribute/varying names.
 This is a declaration cleanup with unchanged compiled shader output; a new
 in-game visual difference is not expected. Evidence:
 assets/validation/worldpos-varying/validation.txt.
+
+Track HUDs do not require a menu background: `src/resources/gameref.cpp:fullscreen_script_camera` suppresses the fallback veil while a world camera is active. See [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#track-presentation-without-a-menu-plate).
