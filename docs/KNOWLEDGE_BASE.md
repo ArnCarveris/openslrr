@@ -1638,3 +1638,26 @@ career persistence and header display require in-game validation. Evidence:
 
 Release build, tree_numbers, class_lifetime and save_io pass. Native coverage
 --check remains current; stock registration counts are unchanged.
+
+## Garage main-menu inventory save ordering (#59)
+
+The verified MWM Garage.class main-menu command saves before changing section.
+This differs from sources/sl/Scripts/game/src/Garage.java, which already changes
+section first. A save taken before Garage.exit sees player.parts empty because
+the purchased parts still belong to the mechanic's VisualInventory.
+
+The distributed patch/sl/Scripts/game/Garage.class swaps the two standalone
+TREE statements. GameLogic.changeActiveSection now runs Garage.exit and
+Mechanic.flushInventory before autoSaveQuiet snapshots player.parts. The VM,
+natives and save format are unchanged. scripts/patch_garage_save_order.py
+reproduces the binary patch from one SHA-256 verified MWM input and rejects
+other mods; do not apply binary offsets to an unknown Garage container.
+
+Validation: inventory_transition executes the actual shipped GameLogic transition,
+Mechanic.flushInventory and Garage.osdCommand/exit with isolated presentation
+callbacks. The original records zero transferred items at save and three after
+exit; the patched handler records all three before save, with one exit/enter.
+This verifies call ordering, not a complete career file round-trip or gameplay.
+The suite also checks generic interface dispatch; no class-specific VM workaround
+is needed. In-game validation must buy parts, leave via Main Menu, reload and
+check the inventory, then repeat with normal Exit Game saving.
