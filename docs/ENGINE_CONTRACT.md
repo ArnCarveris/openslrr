@@ -465,6 +465,14 @@ This is a host loose-body approximation, not a general dynamic triangle-mesh
 engine: loose bodies collide with the car and the static scene, not with
 each other.
 
+Rigid-body validation exceptions are contained by the owning body runtime.
+Keep strict kernel checks; do not catch a whole frame and silently skip the
+remaining bodies. Invalid GameRef poses and wheel inputs are rejected before
+mutation. A failed chassis is suspended at its last finite published pose,
+a failed loose map prop returns to scenery, and a failed free PhysicsRef stops
+simulation. Native map-body creation is transactional. See the #75 entry in
+KNOWLEDGE_BASE.md for recovery, retry and testing limits.
+
 The frequency currently declared is **120 Hz**, with an update frequency
 declared at **60 Hz** in `vehicle_dynamics.hpp`. `advance(seconds)` uses an
 accumulator. Do not bring back "once per frame" integration, and do not
