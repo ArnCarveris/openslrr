@@ -1873,3 +1873,13 @@ and unregistered-object creation. Main 784a760: 1 pass / 2 fail; corrected:
 3 pass / 0 fail. Run `./scripts/run_save_io_tests.ps1 -Suite gameref_alias`,
 or add `-BaselineRef 784a760` to reproduce. In-game validation remains pending;
 these tests exercise the actual state primitives but not Java event dispatch.
+
+PR #121 integration update (2026-11-17): conflicts were limited to this
+knowledge base and the test runner; current main's suites and fixes are kept.
+Release x64 rebuild succeeds. Against main 4e4b782, gameref_alias still reports
+1 pass / 2 fail; the integrated branch reports 3 pass / 0 fail. live_lookup and
+trigger_markers pass too. The trigger animation regression now samples two
+bob heights and both yaw basis components, avoiding equal-value samples at
+animation extrema, and reports caught exceptions instead of aborting silently.
+These remain automated host checks; no additional in-game validation is claimed.
+Evidence: assets/validation/gameref-alias/integration.txt.

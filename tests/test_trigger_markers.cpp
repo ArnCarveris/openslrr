@@ -64,7 +64,7 @@ void check_trigger_events() {
   scene_instances_select(nullptr,nullptr,false);scene_instances_set_resources(nullptr);
 }
 
-int main() {
+int run_markers() {
   Fixture f;
   f.packs.set_root(fs::absolute("game").string()); f.packs.open_all();
   scene_instances_set_resources(&f.packs);
@@ -98,8 +98,15 @@ int main() {
     if (asset.second == 0x70 && !before.empty()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(120));
       auto after = scene_instances_collect_root(&world);
-      check(after.size() == 1 && std::fabs(after[0].transform[13] - before[0].transform[13]) > .001f &&
-            std::fabs(after[0].transform[0] - before[0].transform[0]) > .001f,
+      std::this_thread::sleep_for(std::chrono::milliseconds(120));
+      auto later = scene_instances_collect_root(&world);
+      // Two bob samples avoid an equal-height pair straddling the sine peak.
+      // Rotation uses both basis components, including near a cosine extremum.
+      check(after.size() == 1 && later.size() == 1 &&
+            std::max(std::fabs(after[0].transform[13] - before[0].transform[13]),
+                     std::fabs(later[0].transform[13] - before[0].transform[13])) > .001f &&
+            std::hypot(after[0].transform[0] - before[0].transform[0],
+                       after[0].transform[2] - before[0].transform[2]) > .001f,
             "cue rotates and bobs");
       check(before[0].opacity > 0 && before[0].opacity < 1, "cue alpha enabled");
       check(gameref_get(&marker)->pos[1] == 3, "animation leaves script pose fixed");
@@ -122,4 +129,10 @@ int main() {
   scene_instances_select(nullptr, nullptr, false); scene_instances_set_resources(nullptr);
   check_trigger_events();
   return failures ? 1 : 0;
+}
+
+int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  try { return run_markers(); }
+  catch (const std::exception& e) { std::fprintf(stderr, "trigger_markers: %s\n", e.what()); return 1; }
 }
