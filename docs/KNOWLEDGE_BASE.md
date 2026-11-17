@@ -1694,6 +1694,68 @@ Check M in Valo: map tiles/roads and available markers, bottom-right driving
 view, then M again; repeat, drive to move the GPS and check garage/catalog
 previews. Evidence is in assets/validation/map-views/{before,after}.txt.
 
+## Authored map alpha versus colour mixing (#50)
+
+The opaque bridge and construction openings are not missing texture alpha:
+their SCX4 ColorMixTex sections (type 3) carry explicit alpha-test flags. The
+previous material_mix shortcut treated every type-3 surface as opaque paint,
+turning texture alpha into a solid colour weight and bypassing discard in both
+ordinary and instanced rendering and the static shadow pass. The dealer's
+korlat panels instead use type 0 with explicit blending; the old glass test
+required material_type bit 0x04, so their texture alpha was ignored too.
+
+include/slrr/scx_mesh.hpp:scx_surface separates colour function from coverage.
+SCX4 0x40000000 selects blending; otherwise 0x20000000 selects alpha testing.
+ColorMixTex paint mixing applies only when neither flag is present. SCX3's
+existing flags 1 (cutout), 0x101 (blend) and 0x100 (paint without alpha opacity)
+keep their previous coverage classification. This policy is shared by map
+materials in draw_instance, draw_prop_batches, update_static_shadow and prop
+batch eligibility. Vehicle-specific shaders retain their own material path.
+Blended props stay out of opaque batches and static shadow casting, as with
+existing glass. This does not add transparent-depth sorting or blended shadows.
+
+Verified assets: roadtest26_egyedi has five type-3 tested sections at reference
+56 for the bridge grids/cables; area_200_egyedi and area_19_egyedi each have two
+such sections (references 25 and 56 respectively). The dealer marketkulso
+korlat is type 0 with flags 0xc0000000. No asset files or map names are used
+as rendering exceptions. SLRR_rev's scxDiffuseUsesAlpha was consulted for its
+SCX3 alphaOpacity distinction; the correction is based on the local materials
+and the renderer's own flags, not copied code.
+
+Validation: map_alpha passes three tests covering the real bridge, both worksite
+meshes and dealer rail, plus opaque paint and legacy classification controls.
+night_props still passes (including sign emission). Release builds and native
+coverage --check pass. These tests check asset/material contracts, not GPU
+pixels. Visual in-game validation is pending: inspect the bridge grids from
+both sides, the worksite grids/cables and dealer rails; also check ordinary
+facades, foliage and the resulting cutout shadows. Evidence is recorded under
+assets/validation/map-alpha. No native was added or changed.
+
+### Storefront colour/opacity follow-up
+
+The maintainer validated the bridge, worksite and dealer fix in game, then
+reported solid white city storefront panes. Real storefront glass meshes use
+COLOR_DIFFUSE opacity around 0.247 or 0.498. The 06x5_shop_uveg and
+12x6_uveges_uveg type-0x32/0x33 variants deliberately omit a diffuse texture;
+other storefront Tex families have textures but black diffuse RGB. The generic
+map draw previously used white fallback RGB and forced tint alpha to one.
+
+scx_modulate_blend now carries authored opacity into the existing straight-alpha
+mesh output for blended SCX4 surfaces and applies diffuse RGB when the texture
+slot is deliberately absent. Textured families retain sampled RGB, so their
+black diffuse colour does not black out the window. Absent diffuse maps use
+straight-alpha blending; decoded premultiplied images also scale RGB by material
+opacity. Opaque surfaces, legacy
+SCX3, emissive overlays and the vehicle material path are unchanged. This adds
+no new reflection implementation; it corrects the existing mesh pass modulation.
+
+map_alpha now passes four tests, including five actual storefront glass meshes:
+two without diffuse textures and three textured variants. The test checks tint,
+material opacity and opaque/legacy controls. The original bridge/worksite/dealer
+tests remain passing. Storefront visual verification is pending; the screenshot
+provided by the maintainer is stored as storefront-before.png under the same
+validation directory and is explicitly a before image.
+
 ## Version metadata before compilation on every generator (#103)
 
 CMakeLists.txt now defines slrr_version as an always-run custom target whose
