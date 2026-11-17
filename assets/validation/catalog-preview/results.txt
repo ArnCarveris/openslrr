@@ -1,0 +1,8 @@
+Catalog vehicle preview, 17 November 2026, Release x64
+car_select_view baseline a2095e8: 0 passed / 2 failed.
+car_select_view corrected: 2 passed / 0 failed.
+Tests catalog inset/main-world separation, pose preservation, repeated cursor-hover synchronization, fullscreen showroom and cursor-only UI exclusion.
+map_views: 1 passed / 0 failed.
+tooltip_render: 1 passed / 0 failed.
+ui_lifetime passed. Release build succeeded.
+No pixel/gameplay success claimed; user validation pending.

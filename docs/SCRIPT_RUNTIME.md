@@ -186,3 +186,25 @@ mesh beneath a cursor world. Baseline `d988359` fails the one-owner assertion;
 the corrected build passes visible/hidden/retired rectangle suppression and
 ordinary-mesh preservation. `ui_lifetime` and `map_views` also pass. Requires
 read-only local frontend assets. Pixel validation remains an in-game check.
+
+### Catalog vehicle preview versus fullscreen showroom
+
+Catalog's vehicle page uses an inset CarViewport and CarScene, while the
+main-menu CarSelect has a fullscreen camera. An inset CarScene stays out of
+the primary world selection: the normal preview pass draws it over the page,
+clears depth without clearing its background color, and uses its script
+look/move pose. Promoting it to the primary world produced a brown rectangle
+and applied main-world orbit logic to the preview framing. Fullscreen CarScene
+showrooms continue to supply the main world.
+
+The fullscreen MouseCursor camera is UI-only and cannot supply the main 3D
+camera, including when a tooltip appears. It remains registered for UI use.
+This avoids a cursor preview replacing the selected world/camera on hover.
+
+`run_save_io_tests.ps1 -Suite car_select_view` covers catalog inset selection,
+script pose preservation, repeated cursor-hover synchronization, fullscreen
+showroom preservation and cursor-only UI. Baseline `a2095e8`: 0 passed /
+2 failed; corrected: 2 passed / 0 failed. `map_views`, `tooltip_render` and
+`ui_lifetime` also pass. No Java changes or native signature changes.
+These are host selection/collection tests; rendered framing and long-hover
+visibility still require in-game validation.

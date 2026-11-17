@@ -581,7 +581,8 @@ GameRefState* fullscreen_script_camera() {
     // Osd) after the scene camera. It exists for 3D widgets; those are drawn
     // as 2D. Taking it as the world camera looks past the car.
     if (GameRefState* parent = c->parent ? gameref_get(c->parent) : nullptr)
-      if (parent->class_name.find("Osd") != std::string::npos) continue;
+      if (parent->class_name.find("Osd") != std::string::npos ||
+          parent->class_name == "java.io.MouseCursor") continue;
     if (!found || c->cam_seq >= found->cam_seq) found = c;
   }
   return found;
