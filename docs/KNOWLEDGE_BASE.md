@@ -1782,3 +1782,48 @@ rebuild, reporting the previous clean version from the boot consumer. These are
 build-graph tests, not a game launch or a full Ninja build of the bgfx project.
 The full game's Visual Studio Release target also builds. Native bindings and
 runtime gameplay are unchanged. Evidence: assets/validation/version-order.
+
+## Per-body physics failure containment (#75)
+
+The rigid-body kernel deliberately throws on invalid mass/bounds/orientation,
+non-finite frames and non-finite integration state. Keep those kernel checks:
+the owning runtime now contains failures at each chassis, loose-part and free
+PhysicsRef body rather than allowing a frame pump to unwind a Java dialog or
+terminate the host. std::exception failures are reported and handled locally.
+
+Chassis configuration is transactional (configure/set_frame on a candidate).
+An invalid chassis is suspended with physics_pending_placement cleared; a step
+failure restores its saved rigid body and the last finite local pose, resets
+motion and interpolation and leaves other chassis ticking. Pose orientation is
+reconstructed as in dynamics_sync. With no valid pose to restore, the node is
+hidden. The normal start/wakeup path can retry simulation; unchanged bad data
+will suspend it again. A chassis failure is logged once per record lifetime.
+
+Loose-body creation also configures a candidate. Failed native map promotion
+cleans partial nodes, keeps the ordinary scenery and suppresses repeated retries
+for that resource until the part runtime is reset. A failed active loose body
+is removed; a promoted map prop returns to its authored placement. A failed free
+PhysicsRef restores its last published finite pose and is removed from simulated
+bodies. Failed loose/free contact steps restore the collision partner's saved
+rigid body too. These guards do not roll back arbitrary script/asset mutations
+or promise recovery from allocation failure.
+
+GameRef.setMatrix rejects non-finite position/rotation before mutation. WheelRef
+setters reject non-finite scalar or Vector3/Ypr fields atomically; finite values
+retain their existing semantics. Numeric overflow generated later in the solver
+is caught before an invalid body frame is published. Free bodies now have an
+explicit first-configuration flag (live_id can legitimately still be zero), and
+free-body state plus failed-native-type suppression reset with part registration.
+No native signature is added; the kernel and normal physics tick remain intact.
+
+Validation: physics_recovery is 0/8 passing on f3638a1 and 8/8 on the fix. Its
+isolated synthetic RPK/CFG/SCX fixtures cover NaN poses, malformed free-body
+bounds, invalid free frames, zero-height chassis bounds, corrupted chassis
+pose/orientation, wheel updates, extreme finite velocity overflowing the render
+frame, and transactional invalid map-body creation. A native pump callback
+returns after the numerical failure while a healthy chassis keeps ticking.
+This is not an automated real Dialog.display test. Active detached-panel failure
+and contact-partner rollback paths are implemented but not separately fault-
+injected by this suite. map_props and physics_position regressions pass. The
+Release build and native audit checks pass. In-game driving/collision/dialog
+smoke validation is pending. Evidence: assets/validation/physics-recovery.
