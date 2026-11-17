@@ -3,6 +3,7 @@
 #include "slrr/scene_collision.hpp"
 #include <limits>
 #include "slrr/gameref.hpp"
+#include "slrr/object.hpp"
 #include "slrr/part_config.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/rpk_index.hpp"
@@ -1786,6 +1787,18 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     return out;
   const auto lighting=scene_instances_light(root);
   for (auto *n : render_nodes_in_world(root)) {
+    // Rectangle.setMatrix already projected this instance into the 2D OSD.
+    // Cursor/OSD cameras must not draw the unscaled template mesh again.
+    // Keep hidden/retired UI rectangles out too: their visibility is owned
+    // by the OSD registry, not by the surviving resource instance.
+    if (auto* script = static_cast<Object*>(n->script)) {
+      const auto rect = script->fields.find("_rect");
+      const auto widget = script->fields.find("_osd_wi");
+      if (rect != script->fields.end() && rect->second.tag == ValueTag::Int &&
+          rect->second.v.i != 0 && widget != script->fields.end() &&
+          widget->second.tag == ValueTag::Int)
+        continue;
+    }
     // Source scripts replace Scene.skydome; a superseded handle may remain
     // alive until script cleanup. Never render it as ordinary foreground.
     if (n->sky_render && n->key != g_sky)

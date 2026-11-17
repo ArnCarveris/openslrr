@@ -1845,3 +1845,5 @@ assets/validation/worldpos-varying/validation.txt.
 Track HUDs do not require a menu background: `src/resources/gameref.cpp:fullscreen_script_camera` suppresses the fallback veil while a world camera is active. See [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#track-presentation-without-a-menu-plate).
 
 Menu hotkey presses use a shared 250 ms cancel/menu gate and a separate select gate, without delaying release or driving: `src/platform/host_input.cpp:host_input_check_hotkeys`. Validation and scope are in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#menu-input-debounce).
+
+UI rectangles handed to the OSD registry are excluded from 3D scene/preview collection, including cursor tooltip templates: `src/resources/scene_instances.cpp:collect_root`. See [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#ui-rectangles-have-one-render-owner).
