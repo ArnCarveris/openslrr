@@ -159,3 +159,13 @@ driver behavior, skin changes and return to the menu in game for PR #155
 (#112 and #156). Evidence logs live in assets/validation/driver-mask and
 assets/validation/driver-selector; see KNOWLEDGE_BASE.md for implementation
 entry points and remaining limits.
+
+
+Issue #130 changes scene collision/render collection, not native registrations.
+RenderRefs no longer acquire collision merely from their visible mesh; trigger
+sensors are excluded, while explicit physics and ground collision survive.
+The trigger_markers suite exercises native-car ON/OFF notification delivery
+and the visual/physics separation with MWM resources. See SCRIPT_RUNTIME.md,
+"Trigger cues and physical bodies", for reconstructed cue settings and the
+remaining in-game validation. Registration counts do not imply that the full
+MWM challenge is validated.
