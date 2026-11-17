@@ -599,6 +599,11 @@ Do not collect casters using only the visible camera frustum.
 The list must respect the useful light volume. When the time of day changes,
 sun-dependent matrices and caches must be invalidated.
 
+The renderer factory always selects libbgfx for Bgfx in the supported build.
+NullBackend is retained for headless probes and tests; there is no separate
+WGL fallback. Image and font decoders do not depend on an optional renderer
+macro. The Windows x64/MSVC toolchain requirement remains in CMake.
+
 ### Sky and lights
 
 The Enhanced sky must be driven by game time and by parameters consistent

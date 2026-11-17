@@ -208,7 +208,6 @@ target_include_directories(slrr_host PRIVATE
 )
 target_link_libraries(slrr_host PRIVATE bgfx bx bimg slrr_script_compiler)
 target_compile_features(slrr_host PRIVATE cxx_std_20)
-target_compile_definitions(slrr_host PRIVATE SLRR_HAS_LIBBGFX=1)
 message(STATUS "slrr_host: libbgfx + mesh shaders enabled")
 
 install(TARGETS slrr_host RUNTIME DESTINATION bin)

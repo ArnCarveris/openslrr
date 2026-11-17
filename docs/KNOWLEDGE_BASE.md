@@ -179,9 +179,6 @@ Code that exists but is not used:
 - `src/render/bgfx_shadows.cpp:draw_vehicle_shadows` (the legacy projected
   car shadow) is never called. Its two shader programs are still created at
   init but only used by that function.
-- `src/render/null_backend.cpp` is not compiled. The WGL fallback in
-  `src/render/bgfx_backend.cpp` is disabled because `SLRR_HAS_LIBBGFX` is
-  always defined.
 - `src/physics/sl2_pacejka.cpp` only serves `--probe-pacejka`. The active tyre
   model is `src/physics/tire_model.cpp:tire_forces`.
 
@@ -525,7 +522,7 @@ reads, and `Part.setSfxLoopParams` stores values without applying them.
 | Statement | Code reality |
 | --- | --- |
 | HOST_NATIVE_UTILITIES: engine-loop audio not yet implemented | `update_engine_audio` runs every physics frame |
-| Stale comments: "no green-thread budget yet" in `src/boot/mainloop.cpp`, "240 Hz tick" in `src/resources/scene_instances.cpp`, "WGL until libbgfx is linked" in `include/slrr/render_backend.hpp` | Fibers have budgets, physics is 120/60 Hz, libbgfx is always linked |
+| Stale comments: "no green-thread budget yet" in `src/boot/mainloop.cpp`, "240 Hz tick" in `src/resources/scene_instances.cpp` | Fibers have budgets, physics is 120/60 Hz |
 
 ## 10. Open risk register
 
@@ -1911,3 +1908,34 @@ Fixtures/logs remain under build/ for inspection. They reference the existing
 sources through directory junctions without modifying dependency checkouts.
 A tiny fixture-only compile_game_sources.cpp isolates the independent missing
 utility file in HEAD; the pre-existing local optional-target edit stays excluded.
+
+## Removed inactive renderer/video fallbacks (#113)
+
+The supported Windows x64 build always uses libbgfx for game rendering.
+The obsolete, non-compiling WGL branch has been removed from the renderer
+factory. The implemented NullBackend remains in bgfx_backend.cpp for headless
+probes/tests and the existing unwired D3D9 selection; only the unused three-line
+null_backend.cpp stub was removed. This does not remove bgfx's own renderer
+backends or add cross-platform support.
+
+SLRR_HAS_LIBBGFX no longer gates the factory or PNG/PTX decoders, and CMake
+no longer defines it. Font PNG and PTX/JPEG/PNG decoding always use the same
+existing stb implementation, with no replacement decoder or asset changes.
+The GPU regression runner no longer injects the obsolete define either.
+
+The non-Win64 DirectShow soft-success branch was deleted: graph setup failure
+now takes the existing error return after graph cleanup rather than inventing
+a playing video without a decoder. The supported Win64 playback path already
+used that error behavior. Other VLC/AVIFile/DirectShow selection and playback
+lifetime code remain unchanged. No unsupported x86 build is claimed.
+
+Validation/evidence: assets/validation/dead-fallbacks. This cleanup is checked
+by building the supported host without the old define and exercising existing
+renderer/video/font regressions. It does not establish non-Windows or x86
+compatibility or reproduce the removed dormant branch as a supported runtime.
+
+Issue #113 checks passed: Release x64 compile/link without the old renderer
+macro; video_safety, ui_lifetime, splash_boot and osd_text_gpu. The D3D11 text
+capture retains the #82 pixel hash and 20 text draws for 1,000 glyphs. Native
+coverage remains current; knowledge references pass. These are supported-host
+regressions, not execution of the removed x86/WGL branches.
