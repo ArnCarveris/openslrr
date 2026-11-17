@@ -340,23 +340,21 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
           (!group || (group->emission_index == 0xffff &&
            group->emission_color[0] == 0.f && group->emission_color[1] == 0.f &&
            group->emission_color[2] == 0.f))) return;
-      // SCX3 alpha-blended sprites, including map markers, belong above
-      // the opaque tiles. Their JPEG/PNG alpha is already premultiplied.
-      // SCX4 glass requests texture alpha in the material word. The
-      // transparent function bit alone also appears on opaque rail frames.
-      const bool glass = group && !preview && part.geo.info.version == 4 &&
-          (flags & 0x40000000u) && (group->material_type & 0x04u);
-      const bool blend = !instance.sky && (instance.emissive_overlay || glass ||
-          (part.geo.info.version == 3 && (flags & 0x101u) == 0x101u));
+      // Colour function and alpha coverage are independent. In particular,
+      // type-0 rail panels still blend, and type-3 bridge trusses still cut out.
+      const auto surface = group ? scx_surface(part.geo.info.version, *group) : ScxSurface{};
+      const bool blend = !instance.sky && (instance.emissive_overlay ||
+          (!preview && surface.blend) ||
+          (part.geo.info.version == 3 && surface.blend));
       if (pass != int(blend)) return;
       const auto tex = texture(texture_index);
       // SCX4 storefronts use texture alpha to mix their paint colour with
       // the detail texture. Low-alpha texels are solid wall, not holes.
       const bool material_mix = group && instance.cull_backfaces &&
-          part.geo.info.version == 4 && group->material_type == 0x03u;
+          part.geo.info.version == 4 && surface.color_mix;
       const bool authored_alpha = instance.cull_backfaces && part.geo.info.version == 4;
       const bool cut = !material_mix && !blend && !preview && !instance.sky &&
-          (authored_alpha ? (flags & 0x20000000u) != 0
+          (authored_alpha ? surface.cutout
                           : part.geo.info.version != 3 || (flags & 1));
       // V4 map foliage specifies GREATER with an 8-bit reference (default 0x38).
       const float alpha_test = !cut ? 0.f : authored_alpha && group
@@ -494,9 +492,9 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
         // The same alpha rules as a single placement (draw_instance and the
         // static shadow pass). Batched meshes have no blended sections.
         const bool v4 = part.geo.info.version == 4;
-        const bool material_mix = group && v4 && group->material_type == 0x03u;
-        const bool cut = !material_mix && (v4 ? (flags & 0x20000000u) != 0
-                                              : part.geo.info.version != 3 || (flags & 1u) != 0);
+        const auto surface = group ? scx_surface(part.geo.info.version, *group) : ScxSurface{};
+        const bool material_mix = surface.color_mix;
+        const bool cut = surface.cutout || (part.geo.info.version != 3 && !v4);
         if (shadow) {
           const float threshold = !cut || !group ? -1.f
               : v4 ? group->alpha_reference / 255.f : .5f;

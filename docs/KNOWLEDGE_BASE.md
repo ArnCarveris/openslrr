@@ -1693,3 +1693,40 @@ build and driver_selector regression pass; visual in-game validation is pending.
 Check M in Valo: map tiles/roads and available markers, bottom-right driving
 view, then M again; repeat, drive to move the GPS and check garage/catalog
 previews. Evidence is in assets/validation/map-views/{before,after}.txt.
+
+## Authored map alpha versus colour mixing (#50)
+
+The opaque bridge and construction openings are not missing texture alpha:
+their SCX4 ColorMixTex sections (type 3) carry explicit alpha-test flags. The
+previous material_mix shortcut treated every type-3 surface as opaque paint,
+turning texture alpha into a solid colour weight and bypassing discard in both
+ordinary and instanced rendering and the static shadow pass. The dealer's
+korlat panels instead use type 0 with explicit blending; the old glass test
+required material_type bit 0x04, so their texture alpha was ignored too.
+
+include/slrr/scx_mesh.hpp:scx_surface separates colour function from coverage.
+SCX4 0x40000000 selects blending; otherwise 0x20000000 selects alpha testing.
+ColorMixTex paint mixing applies only when neither flag is present. SCX3's
+existing flags 1 (cutout), 0x101 (blend) and 0x100 (paint without alpha opacity)
+keep their previous coverage classification. This policy is shared by map
+materials in draw_instance, draw_prop_batches, update_static_shadow and prop
+batch eligibility. Vehicle-specific shaders retain their own material path.
+Blended props stay out of opaque batches and static shadow casting, as with
+existing glass. This does not add transparent-depth sorting or blended shadows.
+
+Verified assets: roadtest26_egyedi has five type-3 tested sections at reference
+56 for the bridge grids/cables; area_200_egyedi and area_19_egyedi each have two
+such sections (references 25 and 56 respectively). The dealer marketkulso
+korlat is type 0 with flags 0xc0000000. No asset files or map names are used
+as rendering exceptions. SLRR_rev's scxDiffuseUsesAlpha was consulted for its
+SCX3 alphaOpacity distinction; the correction is based on the local materials
+and the renderer's own flags, not copied code.
+
+Validation: map_alpha passes three tests covering the real bridge, both worksite
+meshes and dealer rail, plus opaque paint and legacy classification controls.
+night_props still passes (including sign emission). Release builds and native
+coverage --check pass. These tests check asset/material contracts, not GPU
+pixels. Visual in-game validation is pending: inspect the bridge grids from
+both sides, the worksite grids/cables and dealer rails; also check ordinary
+facades, foliage and the resulting cutout shadows. Evidence is recorded under
+assets/validation/map-alpha. No native was added or changed.
