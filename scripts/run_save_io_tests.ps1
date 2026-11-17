@@ -39,7 +39,7 @@ try {
   $suiteIncludes = @()
   if ($Suite -eq 'osd_text_gpu') {
     $includePaths = $project.SelectSingleNode("//*[local-name()='ItemDefinitionGroup' and contains(@Condition,'Release|x64')]/*[local-name()='ClCompile']/*[local-name()='AdditionalIncludeDirectories']").InnerText
-    $suiteIncludes = @('/Isrc/render', '/Zc:__cplusplus', '/Zc:preprocessor', '/DBX_CONFIG_DEBUG=0', '/DBGFX_CONFIG_DEBUG_ANNOTATION=0', '/DBGFX_CONFIG_MULTITHREADED=1', '/DBGFX_CONFIG_VIDEO=1', '/DSLRR_HAS_LIBBGFX=1', '/DNDEBUG') + @($includePaths.Split(';') | Where-Object { $_ -and -not $_.StartsWith('%(') } | ForEach-Object { "/I$_" })
+    $suiteIncludes = @('/Isrc/render', '/Zc:__cplusplus', '/Zc:preprocessor', '/DBX_CONFIG_DEBUG=0', '/DBGFX_CONFIG_DEBUG_ANNOTATION=0', '/DBGFX_CONFIG_MULTITHREADED=1', '/DBGFX_CONFIG_VIDEO=1', '/DNDEBUG') + @($includePaths.Split(';') | Where-Object { $_ -and -not $_.StartsWith('%(') } | ForEach-Object { "/I$_" })
   }
   $label = 'after'
   if ($BaselineRef) {
