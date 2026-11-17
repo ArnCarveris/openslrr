@@ -1,0 +1,34 @@
+Shared race primitives / tracker #179 (#60 #61 #62)
+Date: 2026-11-18. Base: e04e082. Windows x64 Release.
+Source: SLRR_rev v221 cbb99147a126b098fa776dab158b5d4493cdab2c.
+
+Build: cmake --build build --config Release --target slrr_host --parallel 8
+PASS.
+
+scripts/run_save_io_tests.ps1 -Suite road_routes: 4/4
+- directed lane links; one-way/two-way partial routes
+- desired crossing radius
+- real city.trc: 928 directed edges, first route 139.8 m
+- alignment array identity; cached metre queries; navigator ribbon; miss clears cache
+-Suite race_brain: 2/2
+- ROC closed spline starts instead of instantly finishing at the shared start/end
+- countdown/stop/suspend, unknown commands, destruction, path restrictions
+-Suite traffic_runtime: 1/1
+- Controller retains player; traffic IDs/deduplication; notification enable/disable
+- finite positioned insertion stays near requested road, does not spawn while paused
+- actual Taxi CFG/body/wheels rendered and moved; balanced add/rem; Java rival survives
+-Suite race_vehicle: 1/1
+- copies bytecode into an isolated temporary game root; original game assets read only
+- original MWM Bot.startRace and Bot.followSplineTrack execute their command builders
+- actual Baiern assembly: 77 parts; existing mechanical engine/gears/wheels solver
+- controlled flat surface, 600 host ticks / 1200 solver ticks / 10 s
+- displacement 135.841 m, final speed 21.979 km/h, RPM 1717.7, gear 1
+- ROC spline command produces active driving input at its real first point
+-Suite physics_recovery: 8/8
+-Suite gameref_alias: 3/3
+
+Not a gameplay recording. No full career race completion/results, horn challenge,
+night spectator placement, repeat track transitions or full ROC lap was verified.
+No original-engine parity claim for traffic signals/contact reactions, pursuit,
+behaviour flags, driver seating, spline metadata, AI tuning or streaming constants.
+The three issues and tracker remain open until their own in-game acceptance passes.

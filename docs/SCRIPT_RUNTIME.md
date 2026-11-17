@@ -298,3 +298,57 @@ off-screen and captures it; it does not launch the game or modify assets/saves.
 the new 20-draw assertion. Evidence and screenshots:
 assets/validation/osd-text-batch. Full menu/catalog/HUD gameplay checks remain
 for user validation; no OpenGL runtime or general FPS improvement is claimed.
+
+
+## Shared road, traffic and race runtime (#179 / #60 / #61 / #62)
+
+`road_routes.cpp` reads the TRC declared by the selected GroundRef resource.
+Crossing/lane links establish directed streets; Hermite samples, endpoint
+projection and Dijkstra produce routes in script metres. A 64 m segment grid
+accelerates nearest-road queries. There is no fallback to Valo for another map.
+`race_runtime.cpp` caches the graph by ground incarnation, resource generation,
+root and type. Failed queries clear the cached route; ground destruction clears
+it. `alignToRoad` returns two independent Vector3 objects: position, direction.
+`getRoutePos` takes metres along the last route; `getRouteDist` projects onto it.
+These latter contracts are host interpretations, not recovered original code.
+`RenderRef.plotRoute` creates a navigator-owned coloured ribbon from that cache;
+its texture argument is not yet sampled.
+
+`traffic_runtime.cpp` keeps per-ground model weights, individual registration
+IDs and temporary road/crossing restrictions. `addTrafficP` is a finite positioned
+insertion request, separate from permanent `addTrafficN` weights. Active density
+is bounded at 0–50 cars. Ordinary unscripted CFG cars use external lane motion;
+scripted club cars retain their assembly, engine and physical driver. Hidden
+rivals receive coarse five-second lane estimates and are excluded from rendering,
+physics and trigger checks. Notification enable/disable and stream changes emit
+balanced `car_add <live-id> <registration-id>` / `car_rem <live-id>` strings to
+original Java, after placement. Java remains responsible for opponent lists,
+markers, challenges, countdowns, results and transitions. Removing a registration
+does not destroy a Java-owned rival; native-owned traffic is destroyed.
+
+`race_brain.cpp` interprets the brain's controllable/AI commands and produces
+throttle, brake and steering for `part_runtime.cpp`'s existing mechanical solver.
+It does not consume player controls or route Controller commands away from the
+player. BeginRace/stop/suspend hold the car; AI_race/GoToTarget plan a route;
+AI_spline samples the supplied MWM spline; GoToTraffic follows road edges and
+halts; AI_follow periodically replans toward the target. Closed splines must
+advance along their route before the shared start/finish can count as finished.
+NightRace preserves the destination supplied by Bot.startRace.
+
+Limitations: traffic behaviour flags are stored but do not yet alter driving;
+model trailing parameters, spline width/speed metadata and the spline opponent
+ID do not tune the controller. AI_follow offsets are world-space, pursuit and
+traffic signals/contact reactions are incomplete, and renderinstance does not
+seat an opponent's driver. Controller tuning, lane offset and streaming radii
+are host models, not original-engine parity. These limitations remain visible
+in NATIVE_AUDIT and the PR; binding counts do not establish race completion.
+
+Validation: road_routes (4), race_brain (2), traffic_runtime (1) and race_vehicle
+(1) tests use the Release host objects. The vehicle integration executes original
+MWM Bot.startRace/followSplineTrack bytecode, builds a 77-part Baiern and advances
+its mechanical physics on a controlled flat test surface. It travels 135.84 m in
+10 s. The traffic integration renders and moves actual Taxi CFG assemblies and
+checks balanced notifications, positioned reinsertion, pause and cleanup.
+These are deterministic integrations, not a completed day/night/ROC gameplay
+session. Full finish/results, challenge UI and repeat map entry await in-game
+validation. Evidence: assets/validation/shared-races.txt.

@@ -74,6 +74,10 @@ add_executable(slrr_host
   src/resources/scene_ambience.cpp
   src/resources/scene_triggers.cpp
   src/resources/trigger_volume.cpp
+  src/resources/road_routes.cpp
+  src/resources/race_runtime.cpp
+  src/resources/race_brain.cpp
+  src/resources/traffic_runtime.cpp
   src/resources/scx_mesh.cpp
   src/resources/skeleton.cpp
   src/resources/character.cpp

@@ -1028,7 +1028,7 @@ bool scene_instances_ground_frame(void *ground, float *matrix) {
 namespace {
 void collect_render_nodes(GameRefState* node, std::vector<GameRefState*>& out,
                           unsigned depth = 0, bool physics = false) {
-  if (!node || node->empty || (node->flags & kWorldTreeLeaf) ||
+  if (!node || node->empty || node->streamed_hidden || (node->flags & kWorldTreeLeaf) ||
       (depth && (node->flags & kWorldTreeRoot)) || depth >= 128)
     return;
   const bool render = node->kind == GameRefKind::RenderRef &&

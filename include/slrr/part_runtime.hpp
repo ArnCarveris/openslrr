@@ -52,6 +52,8 @@ bool part_camera_pose(void* car, int camera, float* matrix);
 void *part_shadow_source(void *render, float *frame);
 // Advance only cars belonging to the active world, at a fixed physics step.
 void part_physics_advance(double seconds);
+// External traffic motion owns pose/velocity; physics resumes from that pose on release.
+void part_set_external_motion(Object*,bool);
 // GroundRef pedestrian natives. Density is people per square metre after the
 // script's Config factor. Types are the GameRefs Valocity registers.
 void part_set_pedestrian_density(void* ground, float density);

@@ -1,3 +1,4 @@
+#include "slrr/race_runtime.hpp"
 #include "slrr/gc_roots.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/pedestrian_lines.hpp"
@@ -67,6 +68,7 @@ struct SfxItem {
   float pitch = 1, pmin = 0, pmax = 0, vmin = 0, vmax = 0;
 };
 struct Record {
+  bool external_motion = false;
   std::unique_ptr<physics::DeformationCage> deformation;
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
@@ -2222,7 +2224,14 @@ void update_steering(Record &rec, bool controls) {
 void configure_drive(Object *chassis, Record &rec, bool controlled) {
   auto &drive = rec.dynamics.drive;
   drive.torque = {};
-  if (!controlled) {
+  RaceDriveInput ai;
+  const auto forward = rec.dynamics.body.orientation.rotate({0,0,-1});
+  const auto position = rec.dynamics.body.position;
+  const bool autonomous = !controlled && race_drive_input(chassis,
+      {float(position.x),float(position.y),float(position.z)},
+      float(std::atan2(-forward.x,-forward.z)),
+      float(rec.dynamics.body.velocity.dot(forward)),1.f/60.f,ai);
+  if (!controlled && !autonomous) {
     if (rec.steering_correction != 0.f) {
       rec.steering_correction = 0.f;
       for (size_t i = 0; i < drive.wheels.size(); ++i)
@@ -2232,8 +2241,11 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   }
   if (rec.driving_options_revision != host_driving_options_revision())
     apply_driving_options(rec);
-  const bool controls = !osd_has_modal();
-  update_steering(rec, controls);
+  const bool controls = autonomous || !osd_has_modal();
+  if (autonomous) {
+    rec.steering_input = rec.steering_request = ai.steer;
+    rec.steering_correction = 0;
+  } else update_steering(rec, controls);
   for (size_t i = 0; i < drive.wheels.size(); ++i)
     drive.wheels[i].steer = wheel_steering_angle(rec, i);
   auto *ratios = part_field(chassis, "ratio");
@@ -2245,23 +2257,23 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   }
   if (!dyno || comp(chassis, "maxRPM") <= 0) return;
   const auto &in = host_input();
-  drive.throttle = controls ? in.drive_throttle : 0.f;
-  drive.brake = controls ? in.drive_brake : 0.f;
-  drive.handbrake = controls && in.drive_handbrake ? .3 : 0;
+  drive.throttle = autonomous ? ai.throttle : controls ? in.drive_throttle : 0.f;
+  drive.brake = autonomous ? ai.brake : controls ? in.drive_brake : 0.f;
+  drive.handbrake = !autonomous && controls && in.drive_handbrake ? .3 : 0;
   drive.abs_strength = rec.abs_strength;
   drive.launch_help = rec.launch_help;
   drive.differential_lock = std::clamp(comp(chassis, "diff_lock"), 0.f, 1.f);
-  drive.clutch = controls ? 1.f - std::clamp(in.drive_clutch, 0.f, 1.f) : 0.f;
+  drive.clutch = autonomous ? (ai.start ? 1.f : 0.f) : controls ? 1.f - std::clamp(in.drive_clutch, 0.f, 1.f) : 0.f;
   drive.idle = std::max(400.f, comp(chassis, "engine_rpm_idle"));
   drive.limit = std::max(drive.idle + 100.0, double(comp(chassis, "RPM_limit")));
   drive.inertia = .28 + .01 * std::max(0.f, comp(chassis, "engine_inertia"));
   drive.torque = [dyno](double rpm) { return dyno_sample(dyno, float(rpm), 0, false); };
   drive.engaged = rec.physics_released;
-  drive.reverse = controls && in.drive_reverse;
-  drive.shift = !controls ? 0 : in.drive_shift > .5f ? 1 : in.drive_shift < -.5f ? -1 : 0;
-  drive.automatic_shift = rec.transmission == 1;
-  drive.automatic_first = rec.transmission == 5;
-  drive.auto_clutch = rec.transmission != 2;
+  drive.reverse = !autonomous && controls && in.drive_reverse;
+  drive.shift = autonomous || !controls ? 0 : in.drive_shift > .5f ? 1 : in.drive_shift < -.5f ? -1 : 0;
+  drive.automatic_shift = autonomous || rec.transmission == 1;
+  drive.automatic_first = autonomous || rec.transmission == 5;
+  drive.auto_clutch = autonomous || rec.transmission != 2;
   drive.starter = std::max(0.f, comp(chassis, "starter_torque"));
   const double brake_inertia = std::max(.01f, rec.config->brake_inertia);
   drive.bearing_scale = .1 / brake_inertia;
@@ -2275,7 +2287,7 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   drive.ratios[0] = 0;
   for (int i = 1; i < 8; ++i)
     drive.ratios[i] = scalar(ratios->slots, i, 0) * final_drive;
-  const bool horn = controls && in.drive_horn;
+  const bool horn = !autonomous && controls && in.drive_horn;
   if (horn && !rec.horn_down && index) {
     auto it = rec.horns.find(1);
     if (it != rec.horns.end()) {
@@ -3381,11 +3393,11 @@ void advance_chassis_tick() {
     }
     rec.engine_running = false;
     rec.render_blend = false;
-    if (rec.config->native_kind != "car" || rec.state.parent ||
+    if (rec.external_motion || rec.config->native_kind != "car" || rec.state.parent ||
         (rec.physics_suspended && !rec.physics_pending_placement))
       continue;
     auto *node = gameref_get(chassis);
-    if (!node)
+    if (!node || node->streamed_hidden)
       continue;
     const auto saved_body = rec.dynamics.body;
     const auto saved_local = node_local(chassis);
@@ -4493,6 +4505,7 @@ bool part_vehicle_hud(VehicleHudState &state) {
   return true;
 }
 
+void part_set_external_motion(Object*car,bool external){auto*rec=record(as_part(car));if(rec){rec->external_motion=external;rec->physics_ready=false;}}
 bool part_physics_state(Object *key, PartPhysicsState &state) {
   auto *rec = record(as_part(key));
   if (!rec)
@@ -4543,7 +4556,7 @@ std::vector<PartVehiclePosition> part_vehicle_positions() {
     PartMatrix frame;
     if (!scene_instances_script_matrix(object, frame.data())) continue;
     const auto* state = gameref_get(object);
-    if (!state) continue;
+    if (!state || state->streamed_hidden) continue;
     PartVehiclePosition vehicle;
     vehicle.chassis = object;
     vehicle.id = state->live_id ? state->live_id : state->type_id;
@@ -4717,6 +4730,8 @@ void register_part_natives(Jvm &jvm, RpkIndex &resources) {
     auto *state = gameref_get(self);
     auto *p = record(self);
     const int query = number(args, 0);
+    if (query == 56) return Value::make_int(race_traffic_pointer(self));
+    if (query == 7 && race_traffic_pointer(self)) return Value::make_int(5);
     if (query == 25 && state && state->alias == "controller") {
       const float axis = host_input_controller_axis(
           static_cast<Object*>(state->key), number(args, 1));

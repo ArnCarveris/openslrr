@@ -1,0 +1,53 @@
+#pragma once
+#include "slrr/format/trc.hpp"
+#include <optional>
+#include <unordered_map>
+namespace slrr {
+struct RoadRoute {
+  float length = 0;
+  RoadPoint direction{};
+  std::vector<RoadPoint> points;
+  std::vector<uint32_t> roads;
+};
+struct RoadProjection {
+  RoadPoint position{}, direction{};
+  float distance = 0, along = 0;
+  size_t edge = 0;
+};
+// Port of SLRR_rev v221 cbb99147: engine/road-route.ts. Sampled host model,
+// not recovered original solver. Lane crossing links establish direction.
+class RoadRoutes {
+public:
+  struct Edge {
+    uint32_t id = 0, from = 0, to = 0;
+    std::vector<RoadPoint> points;
+    std::vector<float> distances;
+    float length = 0;
+    std::vector<uint32_t> roads;
+  };
+  explicit RoadRoutes(const RoadNetwork &network);
+  std::optional<RoadRoute> query(const RoadPoint &, const RoadPoint &) const;
+  std::optional<RoadProjection> project(const RoadPoint &) const;
+  std::optional<RoadPoint> nearest_cross(const RoadPoint &,
+                                         float radius = 0) const;
+  const std::vector<Edge> &edges() const { return edges_; }
+
+private:
+  struct Anchor {
+    uint32_t node = 0;
+    std::optional<RoadProjection> projection;
+    float distance = 0;
+  };
+  std::vector<Edge> edges_;
+  std::vector<std::pair<uint32_t, RoadPoint>> nodes_;
+  std::unordered_map<uint32_t, float> radii_;
+  std::unordered_map<uint64_t, std::vector<std::pair<size_t, size_t>>> cells_;
+  bool complete_grid_ = true;
+  Anchor anchor(const RoadPoint &) const;
+  std::optional<RoadRoute> between(const RoadPoint &, const RoadPoint &,
+                                   const Anchor &, const Anchor &) const;
+};
+float road_distance(const RoadPoint &, const RoadPoint &);
+RoadPoint road_normalize(RoadPoint);
+RoadPoint road_at(const RoadRoute &, float distance);
+} // namespace slrr

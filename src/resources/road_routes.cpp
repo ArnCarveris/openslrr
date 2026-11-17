@@ -1,0 +1,371 @@
+#include "slrr/road_routes.hpp"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <queue>
+#include <unordered_set>
+namespace slrr {
+namespace {
+RoadPoint sub(const RoadPoint &a, const RoadPoint &b) {
+  return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+float dot(const RoadPoint &a, const RoadPoint &b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+RoadPoint lerp(const RoadPoint &a, const RoadPoint &b, float t) {
+  return {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t};
+}
+bool finite(const RoadPoint &p) {
+  return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]);
+}
+RoadPoint edge_at(const RoadRoutes::Edge &e, float at) {
+  auto it = std::upper_bound(e.distances.begin(), e.distances.end(), at);
+  size_t i =
+      std::clamp<size_t>(it - e.distances.begin(), 1, e.points.size() - 1);
+  return lerp(e.points[i - 1], e.points[i],
+              std::clamp((at - e.distances[i - 1]) /
+                             (e.distances[i] - e.distances[i - 1]),
+                         0.f, 1.f));
+}
+} // namespace
+float road_distance(const RoadPoint &a, const RoadPoint &b) {
+  auto d = sub(a, b);
+  return std::sqrt(dot(d, d));
+}
+RoadPoint road_normalize(RoadPoint p) {
+  const auto l = road_distance(p, {});
+  if (l > 1e-8f)
+    for (auto &v : p)
+      v /= l;
+  return p;
+}
+RoadPoint road_at(const RoadRoute &r, float distance) {
+  if (r.points.empty())
+    return {};
+  for (size_t i = 1; i < r.points.size(); ++i) {
+    float l = road_distance(r.points[i - 1], r.points[i]);
+    if (distance <= l)
+      return lerp(r.points[i - 1], r.points[i],
+                  l > 0 ? std::clamp(distance / l, 0.f, 1.f) : 0);
+    distance -= l;
+  }
+  return r.points.back();
+}
+RoadRoutes::RoadRoutes(const RoadNetwork &net) {
+  for (const auto &n : net.nodes)
+    nodes_.push_back({n.id, n.position});
+  auto node = [&](uint32_t id) -> const RoadPoint * {
+    for (const auto &n : nodes_)
+      if (n.first == id)
+        return &n.second;
+    return nullptr;
+  };
+  auto add = [&](uint32_t id, uint32_t from, uint32_t to,
+                 const std::vector<RoadSegment> &segments,
+                 std::vector<uint32_t> lanes) {
+    const auto *a = node(from), *b = node(to);
+    if (!a || !b || from == to)
+      return;
+    std::vector<RoadPoint> samples;
+    for (const auto &s : segments) {
+      int count = int(std::clamp(std::ceil(double(s.length) / 2), 8., 512.));
+      for (int i = 0; i <= count; ++i)
+        samples.push_back(trc_sample(s, float(i) / count));
+    }
+    if (samples.size() < 2)
+      return;
+    if (road_distance(samples.front(), *a) + road_distance(samples.back(), *b) >
+        road_distance(samples.front(), *b) + road_distance(samples.back(), *a))
+      std::reverse(samples.begin(), samples.end());
+    for (auto pair : {std::pair{from, road_distance(samples.front(), *a)},
+                      std::pair{to, road_distance(samples.back(), *b)}}) {
+      auto found = radii_.find(pair.first);
+      if (found == radii_.end() || pair.second < found->second)
+        radii_[pair.first] = pair.second;
+    }
+    samples.insert(samples.begin(), *a);
+    samples.push_back(*b);
+    Edge e;
+    e.id = id;
+    e.from = from;
+    e.to = to;
+    e.roads = std::move(lanes);
+    for (const auto &p : samples) {
+      float d = e.points.empty() ? 0 : road_distance(e.points.back(), p);
+      if (!e.points.empty() && d < 1e-7f)
+        continue;
+      e.length += d;
+      e.points.push_back(p);
+      e.distances.push_back(e.length);
+    }
+    if (std::isfinite(e.length) && e.length > 1e-6f)
+      edges_.push_back(std::move(e));
+  };
+  auto linked = [&](uint32_t crossing, uint32_t lane, bool departing) {
+    for (const auto &n : net.nodes)
+      if (n.id == crossing)
+        for (const auto &l : n.links)
+          if (l.target == lane && ((l.flag == 0) == departing))
+            return true;
+    return false;
+  };
+  for (const auto &p : net.paths) {
+    std::vector<const RoadOther *> lanes;
+    for (const auto &r : net.others)
+      if (r.refs[0] == p.id)
+        lanes.push_back(&r);
+    for (auto pair :
+         {std::pair{p.refs[1], p.refs[2]}, std::pair{p.refs[2], p.refs[1]}}) {
+      std::vector<uint32_t> ids;
+      for (auto *r : lanes)
+        if (linked(pair.first, r->id, true) &&
+            linked(pair.second, r->id, false))
+          ids.push_back(r->id);
+      if (!ids.empty())
+        add(p.id, pair.first, pair.second, p.segments, std::move(ids));
+    }
+    if (lanes.empty())
+      add(p.id, p.refs[1], p.refs[2], p.segments, {});
+  }
+  if (edges_.empty())
+    for (const auto &r : net.others) {
+      uint32_t a = 0, b = 0;
+      for (const auto &n : net.nodes) {
+        if (linked(n.id, r.id, true) && !a)
+          a = n.id;
+        if (linked(n.id, r.id, false) && !b)
+          b = n.id;
+      }
+      if (a && b)
+        add(r.id, a, b, r.segments, {r.id});
+    }
+  // v221's 64 m segment grid keeps traffic's repeated projections local.
+  for (size_t ei = 0; ei < edges_.size(); ++ei)
+    for (size_t i = 1; i < edges_[ei].points.size(); ++i) {
+      const auto &a = edges_[ei].points[i - 1], &b = edges_[ei].points[i];
+      double x0 = std::floor(std::min(a[0], b[0]) / 64.),
+             x1 = std::floor(std::max(a[0], b[0]) / 64.),
+             z0 = std::floor(std::min(a[2], b[2]) / 64.),
+             z1 = std::floor(std::max(a[2], b[2]) / 64.);
+      if (x0 < INT32_MIN || x1 > INT32_MAX || z0 < INT32_MIN ||
+          z1 > INT32_MAX || (x1 - x0 + 1) * (z1 - z0 + 1) > 4096) {
+        complete_grid_ = false;
+        continue;
+      }
+      for (int64_t x = int64_t(x0); x <= int64_t(x1); ++x)
+        for (int64_t z = int64_t(z0); z <= int64_t(z1); ++z)
+          cells_[(uint64_t(uint32_t(x)) << 32) | uint32_t(z)].push_back(
+              {ei, i});
+    }
+}
+std::optional<RoadPoint> RoadRoutes::nearest_cross(const RoadPoint &p,
+                                                   float radius) const {
+  if (!finite(p) || !std::isfinite(radius))
+    return {};
+  float best = std::numeric_limits<float>::infinity();
+  std::optional<RoadPoint> result;
+  for (const auto &n : nodes_) {
+    float d = std::fabs(road_distance(p, n.second) - std::max(0.f, radius));
+    if (d < best) {
+      best = d;
+      result = n.second;
+    }
+  }
+  return result;
+}
+std::optional<RoadProjection> RoadRoutes::project(const RoadPoint &p) const {
+  if (!finite(p))
+    return {};
+  std::optional<RoadProjection> best;
+  auto visit = [&](size_t e, size_t i) {
+    const auto &edge = edges_[e];
+    const auto delta = sub(edge.points[i], edge.points[i - 1]);
+    float t = std::clamp(
+        dot(sub(p, edge.points[i - 1]), delta) / dot(delta, delta), 0.f, 1.f);
+    auto near = lerp(edge.points[i - 1], edge.points[i], t);
+    float d = road_distance(p, near);
+    if (!best || d < best->distance)
+      best = RoadProjection{near, road_normalize(delta), d,
+                            edge.distances[i - 1] +
+                                t * (edge.distances[i] - edge.distances[i - 1]),
+                            e};
+  };
+  if (complete_grid_ && std::fabs(double(p[0])) < 1.e10 &&
+      std::fabs(double(p[2])) < 1.e10) {
+    int64_t cx = int64_t(std::floor(p[0] / 64.)),
+            cz = int64_t(std::floor(p[2] / 64.));
+    for (int ring = 0; ring < 4; ++ring) {
+      for (int64_t x = cx - ring; x <= cx + ring; ++x)
+        for (int64_t z = cz - ring; z <= cz + ring; ++z)
+          if (!ring || x == cx - ring || x == cx + ring || z == cz - ring ||
+              z == cz + ring) {
+            auto cell =
+                cells_.find((uint64_t(uint32_t(x)) << 32) | uint32_t(z));
+            if (cell != cells_.end())
+              for (auto [e, i] : cell->second)
+                visit(e, i);
+          }
+      double boundary =
+          std::min({p[0] - (cx - ring) * 64., (cx + ring + 1) * 64. - p[0],
+                    p[2] - (cz - ring) * 64., (cz + ring + 1) * 64. - p[2]});
+      if (best && best->distance < boundary)
+        return best;
+    }
+  }
+  for (size_t e = 0; e < edges_.size(); ++e)
+    for (size_t i = 1; i < edges_[e].points.size(); ++i)
+      visit(e, i);
+  return best;
+}
+RoadRoutes::Anchor RoadRoutes::anchor(const RoadPoint &p) const {
+  Anchor a;
+  float distance = std::numeric_limits<float>::infinity();
+  for (const auto &n : nodes_) {
+    float d = road_distance(p, n.second);
+    if (d < distance) {
+      a.node = n.first;
+      distance = d;
+    }
+  }
+  auto r = radii_.find(a.node);
+  float radius = r == radii_.end() ? 0 : r->second;
+  if (a.node && distance <= std::clamp(radius + 1, 3.f, 15.f)) {
+    a.distance = distance;
+    return a;
+  }
+  a.node = 0;
+  a.projection = project(p);
+  if (a.projection)
+    a.distance = a.projection->distance;
+  return a;
+}
+std::optional<RoadRoute> RoadRoutes::query(const RoadPoint &s,
+                                           const RoadPoint &f) const {
+  if (!finite(s) || !finite(f) || edges_.empty())
+    return {};
+  if (road_distance(s, f) < 1e-8f)
+    return RoadRoute{0, {}, {s}, {}};
+  auto choices = [&](Anchor a) {
+    std::vector<Anchor> out{a};
+    if (a.projection) {
+      const auto &e = edges_[a.projection->edge];
+      for (size_t i = 0; i < edges_.size(); ++i)
+        if (edges_[i].id == e.id && edges_[i].from == e.to &&
+            edges_[i].to == e.from) {
+          a.projection->edge = i;
+          a.projection->along = edges_[i].length - a.projection->along;
+          out.push_back(a);
+          break;
+        }
+    }
+    return out;
+  };
+  std::optional<RoadRoute> best;
+  for (const auto &a : choices(anchor(s)))
+    for (const auto &b : choices(anchor(f))) {
+      auto r = between(s, f, a, b);
+      if (r && (!best || r->length < best->length))
+        best = std::move(r);
+    }
+  return best;
+}
+std::optional<RoadRoute> RoadRoutes::between(const RoadPoint &s,
+                                             const RoadPoint &f,
+                                             const Anchor &a,
+                                             const Anchor &b) const {
+  if ((!a.node && !a.projection) || (!b.node && !b.projection))
+    return {};
+  uint32_t source = a.node ? a.node : edges_[a.projection->edge].to,
+           target = b.node ? b.node : edges_[b.projection->edge].from;
+  std::unordered_map<uint32_t, float> distance;
+  std::unordered_map<uint32_t, size_t> previous;
+  using Item = std::pair<float, uint32_t>;
+  std::priority_queue<Item, std::vector<Item>, std::greater<Item>> queue;
+  distance[source] = 0;
+  queue.push({0.f, source});
+  while (!queue.empty()) {
+    auto [d, current] = queue.top();
+    queue.pop();
+    if (d != distance[current])
+      continue;
+    for (size_t i = 0; i < edges_.size(); ++i) {
+      const auto &e = edges_[i];
+      if (e.from != current)
+        continue;
+      float cost = d + e.length;
+      auto found = distance.find(e.to);
+      if (found == distance.end() || cost < found->second) {
+        distance[e.to] = cost;
+        previous[e.to] = i;
+        queue.push({cost, e.to});
+      }
+    }
+  }
+  float length = distance.contains(target)
+                     ? distance[target]
+                     : std::numeric_limits<float>::infinity();
+  if (a.projection)
+    length += edges_[a.projection->edge].length - a.projection->along;
+  if (b.projection)
+    length += b.projection->along;
+  std::vector<size_t> route;
+  if (a.projection && b.projection &&
+      a.projection->edge == b.projection->edge &&
+      b.projection->along >= a.projection->along &&
+      b.projection->along - a.projection->along <= length) {
+    length = b.projection->along - a.projection->along;
+    route.push_back(a.projection->edge);
+  } else {
+    if (!std::isfinite(length))
+      return {};
+    for (auto id = target; id != source;) {
+      auto it = previous.find(id);
+      if (it == previous.end())
+        return {};
+      route.push_back(it->second);
+      id = edges_[it->second].from;
+    }
+    std::reverse(route.begin(), route.end());
+    if (a.projection)
+      route.insert(route.begin(), a.projection->edge);
+    if (b.projection)
+      route.push_back(b.projection->edge);
+  }
+  RoadRoute out;
+  out.length = length + a.distance + b.distance;
+  out.points.push_back(s);
+  std::unordered_set<uint32_t> roads;
+  auto push = [&](const RoadPoint &p) {
+    if (road_distance(out.points.back(), p) > 1e-6f)
+      out.points.push_back(p);
+  };
+  for (size_t i = 0; i < route.size(); ++i) {
+    const auto &e = edges_[route[i]];
+    float lo = i == 0 && a.projection ? a.projection->along : 0,
+          hi = i + 1 == route.size() && b.projection ? b.projection->along
+                                                     : e.length;
+    push(edge_at(e, lo));
+    for (size_t j = 1; j < e.points.size(); ++j)
+      if (e.distances[j] > lo && e.distances[j] < hi)
+        push(e.points[j]);
+    push(edge_at(e, hi));
+    for (auto road : e.roads)
+      if (roads.insert(road).second)
+        out.roads.push_back(road);
+  }
+  push(f);
+  if (out.points.size() > 1)
+    out.direction = road_normalize(sub(out.points[1], s));
+  if (!route.empty()) {
+    const auto &e = edges_[route.front()];
+    float at = a.projection ? a.projection->along : 0;
+    auto it =
+        std::upper_bound(e.distances.begin(), e.distances.end(), at + 1e-7f);
+    size_t i =
+        std::clamp<size_t>(it - e.distances.begin(), 1, e.points.size() - 1);
+    out.direction = road_normalize(sub(e.points[i], e.points[i - 1]));
+  }
+  return out;
+}
+} // namespace slrr

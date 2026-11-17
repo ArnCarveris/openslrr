@@ -358,7 +358,8 @@ Where OpenSLRR gaps already have an SLRR_rev implementation (revision
 | Telemetry export for comparison | `SLRR_rev:src/engine/drive-telemetry.ts` | Same record format as the original-game captures |
 | Car damage | `SLRR_rev:src/engine/deformable-panel.ts`, `SLRR_rev:src/engine/vehicle-damage.ts` | SLRR_rev's own model, not original behaviour |
 
-Missing in SLRR_rev too, so these need original research: all `Painter`
+At the historical `77b0fb6` snapshot these were also missing (the v221
+update below supersedes the road/traffic entries): all `Painter`
 and `ParticleSystem` natives, the `GroundRef` route queries (`findRoute`,
 `getRouteLength`, `getRoutePos`, `getRouteDist`, `alignToRoad`,
 `getStartDirection`), `RenderRef.plotRoute`, `PhysicsRef.create` and
@@ -366,6 +367,34 @@ and `ParticleSystem` natives, the `GroundRef` route queries (`findRoute`,
 `haltTrafficCross`. OpenSLRR implements `pedestrianDistance` and
 `removePedestrianType` from the slrr-reverse notes on 0x00589BE0 and
 0x00484E20.
+
+### v221 shared race port, 18 November 2026
+
+Source branch supplied by the maintainer: [SLRR_rev v221](https://github.com/nedobylskiy/SLRR_rev/tree/v221),
+pinned at `cbb99147a126b098fa776dab158b5d4493cdab2c`.
+The older snapshot above must not be used to describe this branch's coverage.
+
+| Mechanic | v221 source | OpenSLRR adaptation |
+| --- | --- | --- |
+| Directed routes / crossings | `SLRR_rev:src/engine/road-route.ts`, `road-nearest.ts`, `map-roads.ts`; `SLRR_rev:src/runtime/ground-road-native.ts` | C++ selected-ground TRC lookup, lane orientation, Hermite samples, Dijkstra and projection; simulation-clock traffic halts |
+| Traffic identity / lifetime | `SLRR_rev:src/runtime/traffic-native.ts`; `SLRR_rev:src/engine/traffic-models.ts`, `traffic-stream.ts`, `distant-rivals.ts` | Per-ground weights and IDs, original Java car_add/car_rem, bounded nearby population and coarse distant rivals; reuse native CFG assembly rendering |
+| Race input | `SLRR_rev:src/engine/race-driver.ts` and `SLRR_rev:src/render/java-vehicles.ts` | Shared C++ controller supplies the existing Part mechanical solver; player control stays separate |
+
+The upstream branch implements AI_race/BeginRace/stop/suspend, not all MWM
+commands. OpenSLRR adds AI_spline using the local ROC race.spl and verifies the
+original Bot.followSplineTrack command builder. Original City bytecode consumes
+alignToRoad[0] as a position and [1] as a normalized direction. Additional route
+cache queries, positioned reinsertion and follow/traffic commands are host
+extensions, not code already present in v221. No Three/WebGL infrastructure or
+production Java patch is copied.
+
+Read alongside upstream docs `ground-road-routing.md`, `java-race-bots.md`,
+`java-traffic-models.md` and `traffic-java-bridge.md`. Upstream itself disclaims
+original AI parity and complete pursuit. OpenSLRR likewise does not claim exact
+speed, steering, collision response, signals, traffic-behaviour flags or spline
+metadata semantics. Runtime limits and evidence are in SCRIPT_RUNTIME's shared
+race section and assets/validation/shared-races.txt. #179 and its three original
+issues remain open for their separate in-game acceptance checks.
 
 ## 8. Draft PR #3: what it contains and what applies to main
 

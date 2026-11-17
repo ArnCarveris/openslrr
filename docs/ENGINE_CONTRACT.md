@@ -807,3 +807,18 @@ When a behavior is only supposed, write it as a hypothesis.
 When a value or an algorithm is ported, note its source and the revision.
 When a contract changes, update this guide and the matching specialized
 documentation in the same delivery.
+
+
+### Shared race primitives (#179)
+
+Selected GroundRef resources own their road graph, cached route, traffic model
+weights and traffic restrictions (`race_runtime.cpp`, `traffic_runtime.cpp`).
+AI command interpretation belongs to `race_brain.cpp`; its controls feed the
+existing Part mechanical solver. Java still owns the race state machine and
+outcome. Unscripted traffic uses external lane motion, while physical scripted
+rivals use the shared car solver. Streaming visibility must exclude an entire
+car subtree from rendering, physics and triggers without destroying its Java
+identity. Incarnations prevent stale traffic/brain references after removal.
+See SCRIPT_RUNTIME and EXTERNAL_RESEARCH for the pinned v221 sources, host
+approximations and validation limits. Registry coverage is not finish/results
+validation for any of the three race flows.
