@@ -200,6 +200,12 @@ for an already-loaded class after restart. Null and arrays are reference
 arguments during by-name overload selection; null must not tie an integer
 constructor solely because both are one-argument calls.
 
+TREE increment/decrement must write back to the operand's actual storage:
+local, instance field, static owner/field or array slot. Preserve the owner
+resolved by a field path; computing a stepped stack value alone is insufficient.
+Postfix expressions return the old value, prefix expressions the new value.
+The career clock/day transition uses this general static-field behavior.
+
 ## 6. Threads, events, and dialogs
 
 Script threads are cooperative and implemented with Windows fibers. They keep
