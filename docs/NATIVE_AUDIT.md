@@ -10,7 +10,10 @@ The Release x64 registry was compared with the
 The same table is pinned in `assets/progress/stock-natives.json`, and
 `python scripts/render_native_coverage.py` recomputes the counts below and the
 README chart from the registrations in `src/`.
-Matching uses owner, method and parameter types, including overloads. This
+Matching uses owner, method and the full descriptor, including the return
+type derived from the pinned typed signature. Only an omitted void return is
+accepted as a runtime alias. Slash-form descriptors and registered parameter
+matches with no expected return descriptor fail the audit. This
 measures bindings. Behavioral status below comes from reviewing the C++
 implementations and following selected calls to their consumers.
 
@@ -137,8 +140,12 @@ need in-game validation.
 
 `python scripts/render_native_coverage.py` and its `--check` mode confirm the
 stock-manifest counts above and the generated JSON/SVG/README outputs. These
-counts describe registration coverage, not full compatibility; descriptor
-matching limitations tracked by #115 remain outside this change.
+counts describe registration coverage, not full compatibility. The #115
+check now preserves exact return types and dotted object names, permits only
+the omitted-void alias, and keeps exact registrations ahead of aliases.
+Intentional additional return overloads remain allowed when the expected
+descriptor is also registered. Run `python -m unittest discover -s tests -p
+test_native_coverage.py` for the nine descriptor/scanner/CLI regressions.
 
 The driver fixes introduce no new native signature and no production Java
 change. `driver_mask` exercises cache invalidation, visibility restoration and

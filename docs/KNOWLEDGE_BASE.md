@@ -1525,3 +1525,25 @@ viewport lifetime eligibility and remaining dynamic-texture-ID limits; its
 stock registration totals are synchronized with the Python checker (339
 bodies, 3 explicit no-ops, 34 missing, 376 total; 31 active missing plus 3
 leftovers). ENGINE_CONTRACT.md states the generic material/camera rules.
+
+
+### Exact native coverage descriptors (#115)
+
+`scripts/render_native_coverage.py:host_registrations` retains full descriptors
+instead of normalizing slashes and dropping returns. Source diagnostics reject
+slash-form and malformed descriptors with file/line context. Stock return types
+come from the pinned typed_signature via stock_runtime_descriptor; the pinned
+manifest itself is unchanged. classify_rows tries the exact expected descriptor
+first, then only an omitted void return. If the same owner/method/parameters
+exist with no matching return, the audit fails and lists expected/registered
+descriptors. Additional return overloads are allowed when an expected signature
+also exists. Bodies and native_noop remain distinct per exact registration.
+
+Validation: nine standard-library Python tests cover primitive/object/array
+returns, omitted V, exact priority, overloads, missing bindings, slash and syntax
+errors, source diagnostic locations and CLI --check failure before output
+writes. The full source audit and regenerated-output --check pass; counts remain
+339 bodies / 3 explicit no-ops / 34 missing (376 total). Generated coverage JSON
+now states the exact-descriptor scope; README and NATIVE_AUDIT.md agree. No
+runtime source, executable, stock manifest or production Java changed, so no
+new game compilation or in-game validation is needed for this audit-only fix.
