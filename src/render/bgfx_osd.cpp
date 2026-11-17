@@ -798,6 +798,9 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       return false;
     };
 
+    // Cursor tooltips/text can add a lower layer. They must not promote
+    // the page background above preview cameras by changing layers.front().
+    const int32_t page_background_layer = osd_page_background_layer();
     for (int32_t layer : layers) {
       // Credits first, then plates and icons, then labels. The frame and
       // button textures cover the scroller; the header and BACK stay readable.
@@ -819,7 +822,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         // A modal dialog (BUY PART) overlaps the catalog previews. Sending
         // that plate to view 2 put it under the parts and under their names.
         osd_view_ = (!osd_owner_modal(w.owner) &&
-                     (layer == layers.front() || plate_behind_preview(w)))
+                     (layer == page_background_layer || plate_behind_preview(w)))
                         ? kOsdUnder
                         : kOsdView;
         draw_osd_quad(w);

@@ -208,3 +208,14 @@ showroom preservation and cursor-only UI. Baseline `a2095e8`: 0 passed /
 `ui_lifetime` also pass. No Java changes or native signature changes.
 These are host selection/collection tests; rendered framing and long-hover
 visibility still require in-game validation.
+
+Tooltip visibility also changes the set of OSD layers: the script's cursor
+rectangle/text can introduce layer 0 below the catalog page's layer 10.
+`draw_osd` must select its under-preview page plate from visible, owned,
+nonmodal background widgets (`osd_page_background_layer`), not from the
+minimum of all widget/text layers. Otherwise the page is moved above the car
+when the tooltip appears. Modal plates remain above previews. The additional
+`car_select_view` regression models that layer-0 arrival and repeated hiding,
+keeps page layer 10 stable, excludes modal plates, and retires a hidden page.
+The suite now has three cases; the original 0/2 baseline describes only the
+two earlier camera-selection cases.
