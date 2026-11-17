@@ -1454,3 +1454,32 @@ keys and clear/reset. Isolated 100,000 lookups / 8,000 nodes measured about
 2.71 s before and 0.81 ms after; not an in-game FPS measurement. Evidence:
 `assets/validation/live-lookup/before.txt` and
 `assets/validation/live-lookup/after.txt`. Gameplay validation is separate.
+
+
+### Driver duplicate visibility (#112)
+
+`DriverSeat` now owns a `GameRefRenderMask`. The duplicate-render mask is rebuilt
+when the scene revision, root, kept render or resource type changes, rather
+than undoing visibility and breadth-first walking the world on every pose.
+Creation/upsert, removal, clear, alias binding, changed parenting and resource
+type changes invalidate it. All production GameRef type assignments use
+`gameref_set_type`; direct metadata mutation outside these entry points must
+explicitly use upsert or the appropriate setter. Upsert conservatively
+invalidates even an existing entry, as callers may initialize more metadata
+afterwards. Ordinary transform changes and redundant parent assignments do not
+invalidate. Frequent scene mutations can therefore still cause repeated walks;
+there is no measured in-game frame-time claim.
+
+Rebuild traversal has no 4,096-node cutoff and visits each canonical key once,
+terminating even with aliases/cycles. Already-empty renders are left alone.
+Release restores only entries hidden by this mask, checking their per-creation
+incarnation so a recycled key or cleared world is never unhidden accidentally.
+Incarnations continue across clear and do not alter live IDs or Java GC roots.
+
+Release build and driver_mask, live_lookup, script_safety, ped_crossing pass.
+The driver-mask fixture checks a duplicate after 5,000 nodes, 10,000 unchanged
+cache hits, motion/no-op parenting, late creation, type/reparent/world changes,
+alias/cycle traversal, original hidden visibility, removal/reused keys and
+clear/release. This tests the shared production mask used by pose_driver, not
+seated animation or a full garage transition. Evidence:
+`assets/validation/driver-mask/after.txt`. No production Java/native API change.

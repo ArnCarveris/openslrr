@@ -267,7 +267,7 @@ void register_renderref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& section
             if (it != type->fields.end() && it->second.tag == ValueTag::Int)
               tid = it->second.v.i;
           }
-          st->type_id = tid;
+          gameref_set_type(*st, tid);
           self->fields["id"] = Value::make_int(tid);
         }
         if (alias && !alias->str.empty()) st->alias = alias->str;
@@ -426,7 +426,7 @@ void register_renderref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& section
           if (it != type->fields.end() && it->second.tag == ValueTag::Int)
             tid = it->second.v.i;
         }
-        st->type_id = tid;
+        gameref_set_type(*st, tid);
         self->fields["id"] = Value::make_int(tid);
         return Value::make_void();
       });
@@ -611,7 +611,7 @@ void register_renderref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& section
             args[0].v.o == self) return Value::make_int(0);
         auto* line = gameref_upsert(self, GameRefKind::RenderRef);
         line->binding = nullptr;
-        line->type_id = 0;
+        gameref_set_type(*line, 0);
         line->line_end.reset();
         line->line_length = 0.f;
         line->line_geometry = std::make_shared<ScxGeometry>();
