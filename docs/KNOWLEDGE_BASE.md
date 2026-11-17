@@ -547,7 +547,6 @@ run time.
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
 | Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
-| `shaders/varying.def.sc` declares `v_worldPos` twice | `shaders/varying.def.sc` |
 | The `present` and `hiz` programs never link: `fs_present` and `fs_hiz` read only `v_texcoord0` but are paired with `vs_mesh`, so the offscreen scene target and the HiZ pyramid are skipped. Startup logs `[bgfx] program … failed to link` | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open` |
 
 Fixed on `main`: `System.arraycopy` overflow, PTX bounds, dyno session
@@ -1827,3 +1826,18 @@ and contact-partner rollback paths are implemented but not separately fault-
 injected by this suite. map_props and physics_position regressions pass. The
 Release build and native audit checks pass. In-game driving/collision/dialog
 smoke validation is pending. Evidence: assets/validation/physics-recovery.
+
+## Unique world-position varying (#100)
+
+shaders/varying.def.sc keeps the initialized v_worldPos on TEXCOORD4 and removes
+the duplicate TEXCOORD6 declaration. The bundled shaderc inserts declarations
+by name and retains the first entry, so TEXCOORD4 was already the effective
+semantic. No producer/consumer shader or remaining semantic is reassigned.
+The duplicate is removed from the open risk register above.
+
+Validation: the Release target regenerated DXBC and GLSL shaders successfully.
+SHA-256 comparison of all 26 generated shader headers before/after found no
+changed bytes. A declaration scan found no repeated attribute/varying names.
+This is a declaration cleanup with unchanged compiled shader output; a new
+in-game visual difference is not expected. Evidence:
+assets/validation/worldpos-varying/validation.txt.
