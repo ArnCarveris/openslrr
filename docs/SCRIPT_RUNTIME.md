@@ -219,3 +219,42 @@ when the tooltip appears. Modal plates remain above previews. The additional
 keeps page layer 10 stable, excludes modal plates, and retires a hidden page.
 The suite now has three cases; the original 0/2 baseline describes only the
 two earlier camera-selection cases.
+
+
+## Trigger cues and physical bodies (#130)
+
+A RenderRef is visual unless it has explicit collision activation, a physics
+shape, or a registered ground/collision mesh. Physics preparation must not
+silently turn its display mesh into an obstacle. Trigger volumes themselves
+are sensors even when a mesh or physical shape is attached. Ground shells,
+CFG collision bodies and explicit PhysicsRef objects retain their physics.
+This separates the MWM Test Track marker/frame from the actual challenge
+weights; the latter must still hit the car. No production Java is changed.
+
+The frontend finishObject resource uses flags 640 (0x280). The host now
+recognizes that combined cue profile on RenderRefs and applies rotation and
+vertical bobbing to the collected render matrix, leaving the script pose and
+sensor fixed. Untextured SCX3 groups retain their authored diffuse colour;
+the cue uses the transparent pass. User comparison with original MWM confirms
+both movements. The 1 rad/s turn, 0.5 m bob at 2 rad/s and opacity 0.65 are
+host compatibility defaults, not recovered original constants or proven
+independent meanings for the two flag bits. The other matching frontend
+resource (paintcan) shares this profile. Compare its presentation in game too.
+MWM's explicit script animation of the weight/frame remains authoritative.
+
+Research consulted nedobylskiy/SLRR_rev at
+4ca11c265e0b9b3dad09a7f23d4a2af7740d626b and EliasFD3S/slrr-reverse at
+93588c4c6f72ddcb231e1c9ca46429e7db5991b6. Their rendering/animation code does
+not establish those flag bits' original timing or opacity. An offline read of
+the installed MWM executable establishes the resource flags parser only;
+this is ordinary offline analysis, not REA Evidence.
+
+The trigger_markers suite uses the local read-only frontend/DestructionTools
+assets and verifies visibility, lack of marker collision, rotation, bobbing,
+opacity, unchanged script pose, and preservation of a physical box. A sensor
+with an attached physical box stays traversable. A synthetic native car drives
+outside/inside/outside a sphere and delivers exactly one ON/OFF callback with
+its chassis live ID. This checks native event dispatch, not the entire MWM
+challenge dialog. trigger_volume, garage_shell, map_props and physics_recovery
+also pass. In-game marker appearance and challenge activation await validation.
+Evidence: assets/validation/trigger-markers/validation.txt.

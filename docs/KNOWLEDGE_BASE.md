@@ -1851,3 +1851,5 @@ UI rectangles handed to the OSD registry are excluded from 3D scene/preview coll
 Catalog vehicle insets stay in the preview pass, preserving the page background and script camera pose; fullscreen showrooms retain main-world ownership. Cursor cameras are UI-only: `src/boot/mainloop.cpp:mainloop_sync_section_render`, `src/resources/gameref.cpp:fullscreen_script_camera`. See [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#catalog-vehicle-preview-versus-fullscreen-showroom).
 
 Tooltip layer 0 must not promote catalog page backgrounds above preview cameras. Background ordering uses owned nonmodal page plates rather than the lowest arbitrary widget/text layer: `src/ui/osd_registry.cpp:osd_page_background_layer`.
+
+Trigger indicators are visual RenderRefs, while trigger volumes stay sensors; explicit physics and ground collision remain authoritative: `src/resources/scene_instances.cpp:scene_instances_prepare_physics`. Cue rendering and reconstructed motion defaults are documented in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#trigger-cues-and-physical-bodies-130).

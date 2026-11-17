@@ -1205,7 +1205,8 @@ void scene_instances_prepare_physics() {
   if (g_world)
     for (auto *n : render_nodes_in_world(g_world, true)) {
       if (!n || n->empty || n->sky_render || n->vehicle_material || n->line_geometry ||
-          n->dynamic_native || n->physics_simulated)
+          n->dynamic_native || n->physics_simulated ||
+          n->trigger_shape != TriggerShape::None)
         continue;
       // A skinned character is not landscape. Its bind mesh was becoming a
       // solid obstacle, offset from the drawn body, and it destroyed the car.
@@ -1214,6 +1215,13 @@ void scene_instances_prepare_physics() {
       if (!chain_matrix(n->key, g_world, m.data(), false))
         continue;
       const auto id = static_cast<uint32_t>(n->type_id);
+      // RenderRef creates a visual, not a physics body. Ground shells and
+      // explicitly registered collision meshes retain their collision source.
+      if (n->kind == GameRefKind::RenderRef && !n->collision_active &&
+          n->physics_shape == PhysicsShape::None &&
+          g_ground_props.find(id) == g_ground_props.end() &&
+          g_collision_overrides.find(id) == g_collision_overrides.end())
+        continue;
       if (n->kind == GameRefKind::RenderRef) {
         const auto ground = g_ground_props.find(id);
         if (ground != g_ground_props.end()) {
@@ -1830,6 +1838,23 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     if (!instance.gpu_skin && !n->line_geometry && g_resources) {
       if (auto posed = character_posed(n->key, n->type_id, instance.geometry.get(), *g_resources))
         instance.geometry = std::move(posed);
+    }
+    // Legacy resource cues (flags 640, e.g. finishObject) animate independently
+    // of the script pose. Host timing/opacity defaults are documented in
+    // SCRIPT_RUNTIME.md; original per-bit semantics are not established.
+    uint32_t resource_flags = 0;
+    scene_shadow_info(static_cast<uint32_t>(n->type_id), &resource_flags, nullptr);
+    if (n->kind == GameRefKind::RenderRef && (resource_flags & 0x280u) == 0x280u) {
+      const float t = gameref_now();
+      const float c = std::cos(t), s = std::sin(t);
+      auto& m = instance.transform;
+      for (int row = 0; row < 3; ++row) {
+        const float x = m[row], z = m[8 + row];
+        m[row] = c * x - s * z;
+        m[8 + row] = s * x + c * z;
+      }
+      m[13] += .5f * std::sin(2.f * t);
+      instance.opacity = .65f;
     }
     instance.cull_backfaces = instance.geometry->ground_polygons;
     instance.key = n->key;
