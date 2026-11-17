@@ -169,3 +169,9 @@ and the visual/physics separation with MWM resources. See SCRIPT_RUNTIME.md,
 "Trigger cues and physical bodies", for reconstructed cue settings and the
 remaining in-game validation. Registration counts do not imply that the full
 MWM challenge is validated.
+
+
+Issue #82 batches the renderer output of existing Text/OSD natives. It changes
+no registration or Java body. Existing glyph/font/colour/layer semantics are
+retained; controlled D3D11 render evidence and limits are documented under
+"Batched OSD text" in SCRIPT_RUNTIME.md.

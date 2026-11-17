@@ -1883,3 +1883,5 @@ bob heights and both yaw basis components, avoiding equal-value samples at
 animation extrema, and reports caught exceptions instead of aborting silently.
 These remain automated host checks; no additional in-game validation is claimed.
 Evidence: assets/validation/gameref-alias/integration.txt.
+
+OSD text lines share one bounded glyph batcher and an unlit shader, avoiding per-glyph draws/world-light bindings: `src/render/bgfx_osd.cpp:draw_osd_line`. Measured draw counts and pixel comparison are in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#batched-osd-text-82).

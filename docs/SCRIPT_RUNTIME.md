@@ -258,3 +258,43 @@ its chassis live ID. This checks native event dispatch, not the entire MWM
 challenge dialog. trigger_volume, garage_shell, map_props and physics_recovery
 also pass. In-game marker appearance and challenge activation await validation.
 Evidence: assets/validation/trigger-markers/validation.txt.
+
+
+## Batched OSD text (#82)
+
+Text native signatures, registries, ownership and font decoding are unchanged.
+The registry, tooltip-line and HUD-string renderer paths share draw_osd_line.
+Each line retains its original layer/view, hover colour, alignment, byte charset,
+authored quad corners/UVs, advance and straight-alpha blending. There is no
+sorting across text lines or across the background/icon/text stages.
+
+OsdTextRun emits indexed quads with 20-byte position/UV vertices, bounded by
+available transient vertices/indices and 16-bit local indices (16,383 glyphs per
+chunk). Chunks retain pen position; missing glyphs/spaces advance without drawing.
+Reusable scratch vectors avoid per-glyph allocation. Empty or exhausted buffers
+do not submit partial quads. vs_osd_text/fs_osd_text bind only atlas stage 0 and
+colour; world lightmaps, shadows, fog and sun uniforms are absent. Both shader
+profiles (DXBC and GLSL) build; the runtime link check includes the text program.
+
+Icon eligibility/pass is classified once per widget per frame, then traversed
+in the same registry order within layer and highlight/icon/knob pass. This removes
+repeated lower-casing and layer-by-layer triple classification. Widget/background,
+modal and preview ownership rules remain in the existing OSD pipeline.
+
+Validation against c63a8cd: the real Direct3D 11 backend with read-only slii24 font
+assets renders 20 lines / 1,000 glyphs in 20 text draws instead of 1,000 (-98%).
+Total bgfx stats are 23 versus 1,003, including three constant touched views.
+Clearing the text returns to three. The 1280x800 before/after TGA pixel payloads
+are byte-identical, including alternating opaque blue and half-alpha gold lines.
+This is a controlled renderer scene, not an FPS measurement in a running game.
+The existing present/hiz link warnings also occur in the baseline and are outside
+this text change; the text program links and renders successfully.
+
+run_save_io_tests.ps1 suites: osd_text_batch (4 layout/bounds/chunk tests),
+osd_text_gpu (opt-in Windows/GPU/assets integration), car_select_view,
+tooltip_render and ui_lifetime pass. The GPU suite opens its own test window
+off-screen and captures it; it does not launch the game or modify assets/saves.
+-BaselineRef c63a8cd on osd_text_gpu reports 1,000 draws and intentionally fails
+the new 20-draw assertion. Evidence and screenshots:
+assets/validation/osd-text-batch. Full menu/catalog/HUD gameplay checks remain
+for user validation; no OpenGL runtime or general FPS improvement is claimed.

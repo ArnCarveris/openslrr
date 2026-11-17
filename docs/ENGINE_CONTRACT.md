@@ -607,6 +607,13 @@ not leave a noon sun in the materials or in the shadow.
 Animated cloud parameters need a stable time, distinct from a count of
 elapsed frames.
 
+OSD text uses a dedicated position/UV layout and unlit shader pair. A text
+line submits one indexed batch per available transient-buffer chunk, preserving
+font, colour, layer and draw order. Do not route glyphs through world-lighting
+bindings or merge labels across the plates/icons that separate them. Long lines
+must rebase their 16-bit indices while retaining pen advance. See
+`src/render/osd_text_batch.hpp` and `LibBgfxBackend::draw_osd_line`.
+
 OSD surfaces have their own blending contract. Do not apply world lighting
 to them, or a global correction meant for the body.
 For trees and glass, check alpha test, blending, depth write, pass order,
