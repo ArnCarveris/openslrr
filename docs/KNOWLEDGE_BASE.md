@@ -546,7 +546,7 @@ run time.
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
-| Any pad binding disables every XInput fallback axis | `src/platform/host_input.cpp` |
+| Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
 | `shaders/varying.def.sc` declares `v_worldPos` twice | `shaders/varying.def.sc` |
 | The `present` and `hiz` programs never link: `fs_present` and `fs_hiz` read only `v_texcoord0` but are paired with `vs_mesh`, so the offscreen scene target and the HiZ pyramid are skipped. Startup logs `[bgfx] program … failed to link` | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open` |
 
@@ -1547,3 +1547,24 @@ writes. The full source audit and regenerated-output --check pass; counts remain
 now states the exact-descriptor scope; README and NATIVE_AUDIT.md agree. No
 runtime source, executable, stock manifest or production Java changed, so no
 new game compilation or in-game validation is needed for this audit-only fix.
+
+
+### Per-axis gamepad fallback (#96)
+
+`src/platform/host_input_mapping.hpp` shares the production mapping and analog
+steering policy between mapped_axis and host_input_update_controller. Defaults
+(left stick steering, RT throttle, LT brake, B handbrake) remain available when
+an unrelated pad action is added. An explicit pad binding for a driving axis
+replaces that axis's default. A physical channel assigned elsewhere cannot
+also drive its default action; the two steering halves are checked separately.
+Keyboard steering retains priority and its digital classification. Explicit
+analog steering still uses its configured transfer function. Smoothing, forced
+axes, device polling and the Y/reverse fallback are unchanged.
+
+Release build, pad_fallback and script_safety pass. The new fixture supplies
+synthetic physical values to the same pure production mapping helpers, testing
+extra horn/camera buttons, per-axis overrides, reassigned triggers/B, half-stick
+claims, keyboard priority, explicit analog remaps and short input spans. No
+hardware or full options-screen interaction is asserted. Evidence:
+`assets/validation/pad-fallback/after.txt`. Native coverage --check remains
+current; no native signatures or production Java changed.
