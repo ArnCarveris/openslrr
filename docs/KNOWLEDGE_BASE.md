@@ -683,7 +683,7 @@ No in-game validation is claimed yet. Test initial G1, then use fastpromotion
 for club garages and letmeroc for the ROC garage; inspect walls, floor/lift,
 props and reflections for old G1 geometry. Confirm the car remains supported
 by each active garage's collision geometry and that returning to G1 works.
-Issue #93 / PR #121 remains independent and unmerged.
+Issue #93 / PR #121 is independent of the garage lifetime correction.
 
 
 ### Garage shell follow-up: obsolete exclusion removed
@@ -1853,3 +1853,33 @@ Catalog vehicle insets stay in the preview pass, preserving the page background 
 Tooltip layer 0 must not promote catalog page backgrounds above preview cameras. Background ordering uses owned nonmodal page plates rather than the lowest arbitrary widget/text layer: `src/ui/osd_registry.cpp:osd_page_background_layer`.
 
 Trigger indicators are visual RenderRefs, while trigger volumes stay sensors; explicit physics and ground collision remain authoritative: `src/resources/scene_instances.cpp:scene_instances_prepare_physics`. Cue rendering and reconstructed motion defaults are documented in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#trigger-cues-and-physical-bodies-130).
+
+## 14. Validated issue fixes (2026-11-16)
+
+### GameRef aliases: events and timers (#93)
+
+`src/resources/gameref.cpp:gameref_set_event_mask` and
+`src/resources/gameref.cpp:gameref_add_timer` resolve the canonical node before
+creating a new GameType state. Alias writes now reach the same event mask and
+timer queue used by reads, clear/remove operations and timer dispatch. Existing
+canonical kinds are preserved; unregistered objects still create GameType state.
+No Java changes or scene-specific exceptions. This fixes state routing, not the
+scheduler itself. Stock paths mostly use direct objects, so the main impact is
+aliased native instances and mod scripts.
+
+Release x64 compilation succeeds. Three deterministic GameRef tests cover mask
+set/clear and kind preservation, timer canonical destination/one-shot/removal,
+and unregistered-object creation. Main 784a760: 1 pass / 2 fail; corrected:
+3 pass / 0 fail. Run `./scripts/run_save_io_tests.ps1 -Suite gameref_alias`,
+or add `-BaselineRef 784a760` to reproduce. In-game validation remains pending;
+these tests exercise the actual state primitives but not Java event dispatch.
+
+PR #121 integration update (2026-11-17): conflicts were limited to this
+knowledge base and the test runner; current main's suites and fixes are kept.
+Release x64 rebuild succeeds. Against main 4e4b782, gameref_alias still reports
+1 pass / 2 fail; the integrated branch reports 3 pass / 0 fail. live_lookup and
+trigger_markers pass too. The trigger animation regression now samples two
+bob heights and both yaw basis components, avoiding equal-value samples at
+animation extrema, and reports caught exceptions instead of aborting silently.
+These remain automated host checks; no additional in-game validation is claimed.
+Evidence: assets/validation/gameref-alias/integration.txt.

@@ -241,7 +241,8 @@ void gameref_set_matrix(void* key, float px, float py, float pz, float yaw,
 }
 
 void gameref_set_event_mask(void* key, int32_t mask) {
-  GameRefState* n = gameref_upsert(key, GameRefKind::GameType);
+  GameRefState* n = gameref_get(key);
+  if (!n) n = gameref_upsert(key, GameRefKind::GameType);
   if (n) n->event_mask |= mask;
 }
 
@@ -251,7 +252,8 @@ void gameref_clear_event_mask(void* key, int32_t mask) {
 }
 
 void gameref_add_timer(void* key, float deadline_abs, int32_t timer_id) {
-  GameRefState* n = gameref_upsert(key, GameRefKind::GameType);
+  GameRefState* n = gameref_get(key);
+  if (!n) n = gameref_upsert(key, GameRefKind::GameType);
   if (!n) return;
   GameRefTimer t;
   t.deadline = deadline_abs;
