@@ -1693,3 +1693,30 @@ build and driver_selector regression pass; visual in-game validation is pending.
 Check M in Valo: map tiles/roads and available markers, bottom-right driving
 view, then M again; repeat, drive to move the GPS and check garage/catalog
 previews. Evidence is in assets/validation/map-views/{before,after}.txt.
+
+## Version metadata before compilation on every generator (#103)
+
+CMakeLists.txt now defines slrr_version as an always-run custom target whose
+byproduct is generated/slrr_version.h. slrr_host depends on that target, and
+src/boot/boot.cpp explicitly lists the header as OBJECT_DEPENDS.
+The old TARGET PRE_BUILD command behaved as PRE_LINK outside Visual Studio,
+so Ninja/Makefiles could compile or reuse objects with the previous version.
+Configure-time generation no longer hides that ordering problem on first build.
+
+cmake/write_version.cmake still writes only when the computed content changes:
+revision count and short hash follow HEAD, and a dirty checkout adds +. The
+version target is checked every build, but an unchanged header does not trigger
+compilation/relinking. The window-title consumer rebuilds in the same invocation after a
+Git-only metadata change. Paths passed to the generator are quoted.
+
+Validation: tests/test_version_build.py extracts the actual production version
+rule into independent Git fixtures with spaces in their paths and compiles a
+small main plus a header-consuming boot function at the production source paths. It checks
+initial clean build, metadata-only dirty state, new commit without C++ edits,
+an unchanged rebuild (header and executable timestamps preserved), and clean
+rebuild after generated outputs are removed. Ninja, NMake Makefiles and Visual
+Studio 17 2022 all pass. Baseline 9df8920 fails the first dirty-metadata Ninja
+rebuild, reporting the previous clean version from the boot consumer. These are
+build-graph tests, not a game launch or a full Ninja build of the bgfx project.
+The full game's Visual Studio Release target also builds. Native bindings and
+runtime gameplay are unchanged. Evidence: assets/validation/version-order.
