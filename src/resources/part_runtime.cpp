@@ -3203,6 +3203,16 @@ void publish_free_body(GameRefState& state, FreeBody& free, const PartMatrix& pa
 // the controlled car, like loose panels. Bodies outside the active world wait.
 void advance_free_bodies() {
   using physics::Vec3;
+  // Controlled vehicle and its script frame are invariant across this pass.
+  Object* chassis = nullptr;
+  Record* vehicle = nullptr;
+  if (const auto* owner = gameref_find_live(controlled_vehicle)) {
+    chassis = static_cast<Object*>(owner->key);
+    vehicle = record(chassis);
+    PartMatrix car_frame;
+    if (!vehicle || !vehicle->physics_ready ||
+        !scene_instances_script_matrix(chassis, car_frame.data())) vehicle = nullptr;
+  }
   std::unordered_set<void*> live;
   for (auto* state : gameref_simulated_bodies()) {
     void* key = state->key;
@@ -3236,16 +3246,6 @@ void advance_free_bodies() {
     constexpr unsigned rest_ticks = physics::VehicleDynamics::update_frequency / 2;
     const bool sleeping = free.quiet_ticks >= rest_ticks;
     auto& body = free.body;
-    Object* chassis = nullptr;
-    Record* vehicle = nullptr;
-    if (const auto* owner = gameref_find_live(controlled_vehicle)) {
-      chassis = static_cast<Object*>(owner->key);
-      vehicle = record(chassis);
-      PartMatrix car_frame;
-      if (!vehicle || !vehicle->physics_ready ||
-          !scene_instances_script_matrix(chassis, car_frame.data()))
-        vehicle = nullptr;
-    }
     bool near = false;
     PartMatrix previous_carrier = free.carrier_frame;
     if (vehicle) {
