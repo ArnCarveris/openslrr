@@ -6,6 +6,7 @@
 #include "slrr/scene_ambience.hpp"
 #include "slrr/scene_triggers.hpp"
 #include "slrr/scene_instances.hpp"
+#include "slrr/skeleton.hpp"
 #include "slrr/scene_presentation.hpp"
 #include "slrr/natives_boot.hpp"
 #include "slrr/video_fmv.hpp"
@@ -210,9 +211,16 @@ void mainloop_sync_section_render(IRenderBackend& render,
   // CarScene and has no map, so the mesh was never collected.
   void* car_preview = object_field("CarScene");
   void* world = object_field("map");
-  if (!world) world = car_preview;
+  // A catalog's CarScene is an inset over its page, not the main world.
+  // Keep it in the ordinary preview-camera pass (depth-only clear and the
+  // script look/move pose), while fullscreen showrooms can own the main view.
+  auto* preview_camera = gameref_get(object_field("Cam"));
+  auto* preview_view = preview_camera ? gameref_get(preview_camera->viewport) : nullptr;
+  const bool inset_preview = car_preview && preview_view &&
+      (preview_view->vp_w < .99f || preview_view->vp_h < .99f);
+  if (!world && !inset_preview) world = car_preview;
   if (!world) world = object_field("Scene");
-  if (!world)
+  if (!world && !inset_preview)
     if (GameRefState* cam = fullscreen_script_camera()) world = cam->parent;
   scene_instances_select(world, object_field("skydome"), world && world == car_preview);
   const bool in_garage =
@@ -363,6 +371,11 @@ void dispatch_mechanic_pointer(Jvm& jvm) {
 
 MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
                                    SectionMachine& sections, double dt) {
+  if (render.quit_requested()) {
+    MainLoopFrameResult out{};
+    out.quit = true;
+    return out;
+  }
   resource_loading_pump();
   host_music_update();
   host_game_options_update(jvm);
@@ -771,6 +784,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   {
     perf::Scope scope(perf::Zone::Physics);
     sim_seconds = jvm.advance_sim_time(dt);
+    character_set_sim_time(jvm.sim_time());
     part_physics_advance(sim_seconds);
   }
   scene_ambience_tick(sim_seconds);
@@ -790,7 +804,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   // Soft: backend flush pumps FMV SampleGrabber + Present (libbgfx path).
   {
     perf::Scope scope(perf::Zone::Flush);
-    render.flush();
+    if (!render.quit_requested()) render.flush();
   }
 
   // --- PollWindowQuit @ 0x5522A0 ---

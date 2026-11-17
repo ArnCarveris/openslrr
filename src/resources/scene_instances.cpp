@@ -3,6 +3,7 @@
 #include "slrr/scene_collision.hpp"
 #include <limits>
 #include "slrr/gameref.hpp"
+#include "slrr/object.hpp"
 #include "slrr/part_config.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/rpk_index.hpp"
@@ -70,6 +71,7 @@ struct GroundProp {
   bool batched = false;
   bool hidden = false;   // replaced by a live loose body
   int32_t dormant = -1;  // index into GroundPropMap::dormant, or -1
+  bool night_only = false;
 };
 struct GroundPropCell {
   std::vector<GroundProp> props;
@@ -434,6 +436,7 @@ struct PolySection {
 };
 
 struct GroundWalk {
+  std::unordered_set<uint32_t> walked_offsets;
   const std::vector<uint8_t> *file = nullptr;
   std::string params;
   std::vector<PolySection> poly;
@@ -546,6 +549,7 @@ void walk_ground_node(GroundWalk &w, uint32_t offset, uint32_t size,
   const std::vector<uint8_t> &file = *w.file;
   if (size < 8 || offset > file.size() || size > file.size() - offset)
     return;
+  if (!w.walked_offsets.insert(offset).second) return;
   const uint8_t *base = file.data() + offset;
   const uint8_t *end = base + size;
   const uint32_t n0 = rd32(base);
@@ -588,7 +592,7 @@ void walk_ground_node(GroundWalk &w, uint32_t offset, uint32_t size,
     p += rec;
     kids.push_back(Kid{restype, foff, sz, (flags & 0x20u) != 0});
   }
-  while (ok && p + 8 <= end) {
+  while (ok && end - p >= 8) {
     const uint32_t tag = rd32(p);
     const uint32_t csize = rd32(p + 4);
     const uint8_t *data = p + 8;
@@ -738,6 +742,7 @@ void scene_instances_set_resources(const RpkIndex *resources) {
   g_world = g_sky = nullptr;
   g_preview_lamps = false;
   g_meshes.clear();
+  g_shadow_info.clear();
   g_overrides.clear();
   g_collision_overrides.clear();
   g_ground_props.clear();
@@ -1200,7 +1205,8 @@ void scene_instances_prepare_physics() {
   if (g_world)
     for (auto *n : render_nodes_in_world(g_world, true)) {
       if (!n || n->empty || n->sky_render || n->vehicle_material || n->line_geometry ||
-          n->dynamic_native || n->physics_simulated)
+          n->dynamic_native || n->physics_simulated ||
+          n->trigger_shape != TriggerShape::None)
         continue;
       // A skinned character is not landscape. Its bind mesh was becoming a
       // solid obstacle, offset from the drawn body, and it destroyed the car.
@@ -1209,6 +1215,13 @@ void scene_instances_prepare_physics() {
       if (!chain_matrix(n->key, g_world, m.data(), false))
         continue;
       const auto id = static_cast<uint32_t>(n->type_id);
+      // RenderRef creates a visual, not a physics body. Ground shells and
+      // explicitly registered collision meshes retain their collision source.
+      if (n->kind == GameRefKind::RenderRef && !n->collision_active &&
+          n->physics_shape == PhysicsShape::None &&
+          g_ground_props.find(id) == g_ground_props.end() &&
+          g_collision_overrides.find(id) == g_collision_overrides.end())
+        continue;
       if (n->kind == GameRefKind::RenderRef) {
         const auto ground = g_ground_props.find(id);
         if (ground != g_ground_props.end()) {
@@ -1782,6 +1795,18 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     return out;
   const auto lighting=scene_instances_light(root);
   for (auto *n : render_nodes_in_world(root)) {
+    // Rectangle.setMatrix already projected this instance into the 2D OSD.
+    // Cursor/OSD cameras must not draw the unscaled template mesh again.
+    // Keep hidden/retired UI rectangles out too: their visibility is owned
+    // by the OSD registry, not by the surviving resource instance.
+    if (auto* script = static_cast<Object*>(n->script)) {
+      const auto rect = script->fields.find("_rect");
+      const auto widget = script->fields.find("_osd_wi");
+      if (rect != script->fields.end() && rect->second.tag == ValueTag::Int &&
+          rect->second.v.i != 0 && widget != script->fields.end() &&
+          widget->second.tag == ValueTag::Int)
+        continue;
+    }
     // Source scripts replace Scene.skydome; a superseded handle may remain
     // alive until script cleanup. Never render it as ordinary foreground.
     if (n->sky_render && n->key != g_sky)
@@ -1814,6 +1839,23 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
       if (auto posed = character_posed(n->key, n->type_id, instance.geometry.get(), *g_resources))
         instance.geometry = std::move(posed);
     }
+    // Legacy resource cues (flags 640, e.g. finishObject) animate independently
+    // of the script pose. Host timing/opacity defaults are documented in
+    // SCRIPT_RUNTIME.md; original per-bit semantics are not established.
+    uint32_t resource_flags = 0;
+    scene_shadow_info(static_cast<uint32_t>(n->type_id), &resource_flags, nullptr);
+    if (n->kind == GameRefKind::RenderRef && (resource_flags & 0x280u) == 0x280u) {
+      const float t = gameref_now();
+      const float c = std::cos(t), s = std::sin(t);
+      auto& m = instance.transform;
+      for (int row = 0; row < 3; ++row) {
+        const float x = m[row], z = m[8 + row];
+        m[row] = c * x - s * z;
+        m[8 + row] = s * x + c * z;
+      }
+      m[13] += .5f * std::sin(2.f * t);
+      instance.opacity = .65f;
+    }
     instance.cull_backfaces = instance.geometry->ground_polygons;
     instance.key = n->key;
     instance.type_id = n->type_id;
@@ -1821,7 +1863,7 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     instance.color = n->color;
     instance.vehicle_material = n->vehicle_material;
     instance.light_flags = n->light_flags;
-    if (n->paint_source || !n->texture_replacements.empty()) {
+    if (n->paint_source || !n->texture_replacements.empty() || !n->texture_file_replacements.empty()) {
       // The mesh list may prefer a DDS sidecar while the resource names the
       // original image. Match the path without the extension.
       auto key = [](std::string path) {
@@ -1853,6 +1895,13 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
         for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
           if (source == key(instance.geometry->textures[i]))
             instance.texture_replacements.emplace_back(i, scene_instances_texture(to));
+      }
+      for (const auto& [from, path] : n->texture_file_replacements) {
+        const auto source = key(scene_instances_texture(from));
+        if (source.empty()) continue;
+        for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
+          if (source == key(instance.geometry->textures[i]))
+            instance.texture_replacements.emplace_back(i, path);
       }
       if (n->paint_texture)
         instance.paint_texture = scene_instances_texture(n->paint_texture);
@@ -1949,6 +1998,14 @@ void scene_instances_set_hiz(SceneHizTest test, void* user) {
   g_hiz_user = user;
 }
 
+namespace {
+bool night_props_visible() {
+  const float seconds = std::fmod(scene_sun_time(), 86400.f);
+  const float hour = (seconds < 0.f ? seconds + 86400.f : seconds) / 3600.f;
+  return hour < 6.f || hour >= 18.5f;
+}
+}
+
 bool scene_instances_has_ground_props() {
   const auto* world = gameref_get(g_world);
   if (!world || g_ground_props.empty()) return false;
@@ -1995,7 +2052,7 @@ std::vector<SceneInstance> scene_instances_collect(
           if (!g_hiz(cell_world.data(), cell.radius, g_hiz_user)) continue;
         }
         for (const auto& prop : cell.props) {
-          if (prop.batched || prop.hidden) continue;
+          if (prop.batched || prop.hidden || (prop.night_only && !night_props_visible())) continue;
           if (!visible(prop.center, prop.radius)) continue;
           if (g_hiz) {
             const auto prop_world = transform_point(shell, prop.center);
@@ -2007,6 +2064,7 @@ std::vector<SceneInstance> scene_instances_collect(
           instance.cull_backfaces = true;
           instance.type_id = static_cast<int32_t>(prop.render_id);
           instance.color = prop.color;
+          instance.emissive_overlay = prop.night_only;
           instance.lighting = lighting;
           instance.geometry = std::move(mesh);
           instance.transform = part_matrix_multiply(shell, prop.pose);
@@ -2072,7 +2130,8 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
         for (const auto index : batch.indices) {
           if (index >= cell.props.size()) continue;
           const auto& prop = cell.props[index];
-          if (prop.hidden || !visible(prop.center, prop.radius)) continue;
+          if (prop.hidden || (prop.night_only && !night_props_visible()) ||
+              !visible(prop.center, prop.radius)) continue;
           if (g_hiz) {
             const auto prop_world = transform_point(shell, prop.center);
             if (!g_hiz(prop_world.data(), prop.radius, g_hiz_user)) continue;
@@ -2359,15 +2418,23 @@ const NativeCollisionData& native_collision_data(
 
 bool ground_prop_is_mesh(const RpkIndex& rpk, uint32_t resource) {
   const auto* entry = rpk.resolve(resource);
-  if (!entry || (entry->typeof_ != 14 && entry->typeof_ != 5)) return false;
+  return entry && (entry->typeof_ == 14 || entry->typeof_ == 5);
+}
+
+bool ground_prop_is_night(const RpkIndex& rpk, uint32_t resource) {
+  const auto* entry = rpk.resolve(resource);
+  if (!entry) return false;
   std::string alias = entry->alias;
   for (char& c : alias)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  const auto word = alias.find("night");
   constexpr std::string_view separators = "/\\ _-.";
-  return word == std::string::npos ||
-      (word > 0 && separators.find(alias[word - 1]) == std::string_view::npos) ||
-      (word + 5 < alias.size() && separators.find(alias[word + 5]) == std::string_view::npos);
+  for (auto word = alias.find("night"); word != std::string::npos;
+       word = alias.find("night", word + 5)) {
+    if ((word == 0 || separators.find(alias[word - 1]) != std::string_view::npos) &&
+        (word + 5 == alias.size() || separators.find(alias[word + 5]) != std::string_view::npos))
+      return true;
+  }
+  return false;
 }
 
 bool prop_mesh_batchable(const ScxGeometry& mesh) {
@@ -2375,9 +2442,7 @@ bool prop_mesh_batchable(const ScxGeometry& mesh) {
   const bool v3 = mesh.info.version == 3;
   if (mesh.groups.empty() || mesh.ground_polygons || (!v4 && !v3)) return false;
   for (const auto& group : mesh.groups) {
-    const auto flags = group.material_flags;
-    const bool glass = v4 && (flags & 0x40000000u) && (group.material_type & 0x04u);
-    const bool blend = glass || (v3 && (flags & 0x101u) == 0x101u);
+    const bool blend = scx_surface(mesh.info.version, group).blend;
     // Blended sections are drawn after the opaque world, one by one.
     // Alpha-tested foliage, vertex-coloured walls and ColorMixTex facades
     // (fs_mesh mixes the instance colour under the texture) draw instanced.
@@ -2494,6 +2559,7 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
       auto& render_cell = cells[floor_cell(prop_cell(transform[12]), prop_cell(transform[14]))];
       render_cell.props.push_back({resource, transform, color});
       render_cell.props.back().dormant = dormant_index;
+      render_cell.props.back().night_only = ground_prop_is_night(*g_resources, resource);
       used_resources.insert(resource);
       ++props;
     }
@@ -2530,7 +2596,8 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
   std::unordered_set<uint32_t> batchable;
   for (const auto id : props_map.resources) {
     const auto mesh = geometry(id);
-    if (mesh && prop_mesh_batchable(*mesh)) batchable.insert(id);
+    if (mesh && !ground_prop_is_night(*g_resources, id) && prop_mesh_batchable(*mesh))
+      batchable.insert(id);
   }
   std::vector<GroundPropCell*> jobs;
   jobs.reserve(cells.size());

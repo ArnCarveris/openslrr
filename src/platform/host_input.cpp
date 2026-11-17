@@ -1,3 +1,4 @@
+#include "host_input_mapping.hpp"
 #include "slrr/host_input.hpp"
 #include "slrr/host_game_options.hpp"
 
@@ -91,28 +92,7 @@ XINPUT_GAMEPAD poll_gamepad() {
 #endif
 
 float mapped_axis(const ControllerInput& input, int axis) {
-  float positive = 0.f, negative = 0.f;
-  for (const auto& binding : input.bindings) {
-    if (binding.axis != axis || binding.from == binding.to) continue;
-    const float value = host_input_physical_axis(binding.device, binding.physical);
-    const float t = std::clamp((value - binding.from) / (binding.to - binding.from), 0.f, 1.f);
-    const float mapped = std::lerp(binding.low, binding.high, t);
-    positive = std::max(positive, mapped);
-    negative = std::min(negative, mapped);
-  }
-  const bool default_pad_axis = axis == 1 || axis == 28 || axis == 29 || axis == 48;
-  if (default_pad_axis && std::none_of(input.bindings.begin(), input.bindings.end(),
-          [](const InputBinding& b) { return b.device == kPad; })) {
-    switch (axis) {
-      case 1:
-        if (positive + negative == 0.f) return pad[0] - pad[1];
-        break;
-      case 28: return std::max(positive, pad[9]);
-      case 29: return std::max(positive, pad[8]);
-      case 48: return std::max(positive, pad[21]);
-    }
-  }
-  return positive + negative;
+  return input_mapping::mapped_axis(input, axis, host_input_physical_axis, pad);
 }
 
 bool hotkey_down(const Hotkey& hotkey, const Object* controller) {
@@ -304,19 +284,8 @@ void host_input_update_controller(Object* controller, float dt) {
   in.drive_steer = axis(1);
   in.drive_steer_analog = false;
   if (controller && controller->input) {
-    const auto& bindings = controller->input->bindings;
-    bool has_pad = false, digital_steering = false;
-    for (const auto& binding : bindings) {
-      has_pad |= binding.device == kPad;
-      if (binding.axis != 1) continue;
-      const bool analog = binding.device == kPad && binding.physical < 10;
-      const bool active = std::abs(host_input_physical_axis(binding.device, binding.physical)) > .01f;
-      in.drive_steer_analog |= analog && active;
-      digital_steering |= !analog && active;
-    }
-    if (!has_pad && !digital_steering && std::abs(pad[0] - pad[1]) > .01f)
-      in.drive_steer_analog = true;
-    in.drive_steer_analog &= !digital_steering;
+    in.drive_steer_analog = input_mapping::steering_is_analog(
+        *controller->input, host_input_physical_axis, pad);
   }
   in.drive_throttle = axis(28);
   in.drive_brake = axis(29);
@@ -394,6 +363,16 @@ void host_input_check_hotkeys(Jvm& jvm, Object* controller, Object* focus) {
     if (it == hotkeys.end()) continue;
     const Hotkey hk = *it;
     hk.key->fields["state"] = Value::make_int(hk.down ? 1 : 0);
+    // MENU and CANCEL can be the same physical Escape/Start press across
+    // two different dialogs. Debounce the action, not its per-dialog command.
+    const bool virtual_axis = (hk.flags & 1) != 0;
+    const bool cancel = virtual_axis ? (hk.axis == 35 || hk.axis == 36)
+                                     : hk.axis == 0x01;
+    const bool select = virtual_axis ? hk.axis == 34
+                                     : (hk.axis == 0x1c || hk.axis == 0x9c);
+    if ((cancel || select) &&
+        !host_input_allow_ui(cancel ? -0x10000 : -0x10001, hk.down))
+      continue;
     const auto video_command = hk.key->fields.find("command");
     if (video_command != hk.key->fields.end() &&
         video_command->second.tag == ValueTag::Int &&

@@ -139,11 +139,11 @@ namespace slrr {
   bgfx::TextureHandle LibBgfxBackend::tex_for_font(void* font_key)
 {
     if (!font_key) return white_tex_;
-    auto it = font_tex_.find(font_key);
-    if (it != font_tex_.end()) return it->second;
     const SlrrFont* font = slrr_font_get(font_key);
     if (!font || font->rgba.empty() || font->atlas_w <= 0 || font->atlas_h <= 0)
       return white_tex_;
+    auto it = font_tex_.find(font->cache_key);
+    if (it != font_tex_.end()) return it->second;
     const bgfx::Memory* mem = bgfx::copy(
         font->rgba.data(),
         static_cast<uint32_t>(font->rgba.size()));
@@ -156,7 +156,7 @@ namespace slrr {
             BGFX_SAMPLER_MIP_POINT,
         mem);
     if (!bgfx::isValid(th)) return white_tex_;
-    font_tex_[font_key] = th;
+    font_tex_[font->cache_key] = th;
     return th;
   }
 #endif
@@ -721,7 +721,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     }
     // Fallback veil only when there is no plate and no movie. Over prime.avi
     // it reads as a black opacity layer on top of the FMV.
-    if (!have_bg_tex && osd_overlay_ && !garage_ && !video_fmv_is_playing()) {
+    // A driving HUD has no menu plate. Its active world camera must remain
+    // visible instead of receiving the menu-only fallback veil.
+    if (!have_bg_tex && osd_overlay_ && !garage_ &&
+        !video_fmv_is_playing() && !fullscreen_script_camera()) {
       OsdWidget plate;
       plate.x = 0.f;
       plate.y = 0.f;
@@ -729,11 +732,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       plate.half_h = 1.f;
       plate.background = true;
       // White tex + darken via color uniform — draw after setting color.
-      const float dark[4] = {0.05f, 0.05f, 0.07f, 0.82f};
-      bgfx::setUniform(u_color_, dark);
+      // draw_osd_quad owns the tint uniform; pass the color into the draw.
       const float u_at[4] = {0.f, 1.f, 1.f, 0.f};
       bgfx::setUniform(u_alpha_test_, u_at);
-      draw_osd_quad(plate);
+      draw_osd_quad(plate, 0.05f, 0.05f, 0.07f, 0.82f);
       const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
       bgfx::setUniform(u_color_, white_c);
     }
@@ -796,6 +798,9 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       return false;
     };
 
+    // Cursor tooltips/text can add a lower layer. They must not promote
+    // the page background above preview cameras by changing layers.front().
+    const int32_t page_background_layer = osd_page_background_layer();
     for (int32_t layer : layers) {
       // Credits first, then plates and icons, then labels. The frame and
       // button textures cover the scroller; the header and BACK stay readable.
@@ -817,7 +822,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         // A modal dialog (BUY PART) overlaps the catalog previews. Sending
         // that plate to view 2 put it under the parts and under their names.
         osd_view_ = (!osd_owner_modal(w.owner) &&
-                     (layer == layers.front() || plate_behind_preview(w)))
+                     (layer == page_background_layer || plate_behind_preview(w)))
                         ? kOsdUnder
                         : kOsdView;
         draw_osd_quad(w);
