@@ -1825,7 +1825,7 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     instance.color = n->color;
     instance.vehicle_material = n->vehicle_material;
     instance.light_flags = n->light_flags;
-    if (n->paint_source || !n->texture_replacements.empty()) {
+    if (n->paint_source || !n->texture_replacements.empty() || !n->texture_file_replacements.empty()) {
       // The mesh list may prefer a DDS sidecar while the resource names the
       // original image. Match the path without the extension.
       auto key = [](std::string path) {
@@ -1857,6 +1857,13 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
         for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
           if (source == key(instance.geometry->textures[i]))
             instance.texture_replacements.emplace_back(i, scene_instances_texture(to));
+      }
+      for (const auto& [from, path] : n->texture_file_replacements) {
+        const auto source = key(scene_instances_texture(from));
+        if (source.empty()) continue;
+        for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
+          if (source == key(instance.geometry->textures[i]))
+            instance.texture_replacements.emplace_back(i, path);
       }
       if (n->paint_texture)
         instance.paint_texture = scene_instances_texture(n->paint_texture);

@@ -184,7 +184,7 @@ struct DriverSeat {
   bool owned = false;
   // Other copies of the same driver (the bind-pose Mitch parented to the map)
   // are hidden while this seat is active, then shown again on release.
-  std::vector<void*> hidden;
+  GameRefRenderMask duplicate_mask;
 };
 std::unordered_map<Object*, DriverSeat> drivers;
 
@@ -447,7 +447,7 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
       return;
     Object *render = jvm.new_object("java.util.resource.RenderRef");
     auto *node = gameref_upsert(render, GameRefKind::RenderRef);
-    node->type_id = static_cast<int32_t>(resource);
+    gameref_set_type(*node, static_cast<int32_t>(resource));
     node->script = render;
     node->alias = "part render";
     node->paint_source = rec.config->texture;
@@ -631,7 +631,7 @@ void retarget(Record &rec, uint32_t id) {
   auto *n = gameref_get(rec.renders[0]);
   if (!n)
     return;
-  n->type_id = static_cast<int32_t>(id);
+  gameref_set_type(*n, static_cast<int32_t>(id));
   n->empty = id == 0;
 }
 PartSlot posed_slot(const Record &rec, const PartSlot &slot) {
@@ -1204,7 +1204,7 @@ Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
   }
   records.emplace(part, std::move(rec));
   auto *node = gameref_upsert(part, GameRefKind::GameType);
-  node->type_id = resource;
+  gameref_set_type(*node, resource);
   node->script = part;
   node->class_name = class_name;
   node->alias = alias;
@@ -1219,7 +1219,7 @@ Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
   jvm.invoke_by_name(class_name, "<init>",
                      {Value::make_obj(part), Value::make_int(id)}, false);
   node = gameref_get(part);
-  node->type_id = resource;
+  gameref_set_type(*node, resource);
   node->script = part;
   node->flags &= ~kWorldTreeRoot;
   node->empty = false;
@@ -2951,7 +2951,7 @@ Object* part_add_dynamic_native(const PartConfig& config,
     const uint32_t resource = render.variants.empty()
                                   ? render.resource
                                   : render.variants[static_cast<size_t>(seed) % render.variants.size()];
-    state->type_id = static_cast<int32_t>(resource);
+    gameref_set_type(*state, static_cast<int32_t>(resource));
     if (!render.colors.empty())
       state->color = render.colors[static_cast<size_t>(seed) % render.colors.size()];
     const auto local = part_matrix_multiply(world, part_pose_matrix(render.pose));
@@ -3525,9 +3525,7 @@ float wheel_rim_radius(Object* wheel) {
 void* chassis_root(Object* chassis);
 
 void release_driver(DriverSeat& seat) {
-  for (void* hidden : seat.hidden)
-    if (auto* node = gameref_get(hidden)) node->empty = false;
-  seat.hidden.clear();
+  gameref_release_render_mask(seat.duplicate_mask);
   if (seat.owned && seat.render && gameref_get(seat.render))
     gameref_remove(seat.render);
   seat.render = nullptr;
@@ -3545,22 +3543,7 @@ Object* player_render() {
 }
 
 void hide_duplicate_drivers(Object* chassis, Object* keep, int32_t type, DriverSeat& seat) {
-  for (void* hidden : seat.hidden)
-    if (auto* node = gameref_get(hidden)) node->empty = false;
-  seat.hidden.clear();
-  std::vector<void*> pending{chassis_root(chassis)};
-  for (size_t i = 0; i < pending.size() && i < 4096; ++i) {
-    auto* node = gameref_get(pending[i]);
-    if (!node) continue;
-    const bool kept = node->key == keep || node->script == keep;
-    if (!kept && node->kind == GameRefKind::RenderRef && node->type_id == type && node->key) {
-      node->empty = true;
-      seat.hidden.push_back(node->key);
-    } else if (kept && node->empty) {
-      node->empty = false;
-    }
-    for (void* child : node->children) pending.push_back(child);
-  }
+  gameref_mask_duplicate_renders(seat.duplicate_mask, chassis_root(chassis), keep, type);
 }
 
 void pose_driver() {
@@ -3591,7 +3574,7 @@ void pose_driver() {
     if (!pack || !index->model_for_resource(pack->pack_id, 0x000C).ok) return;
     Object* render = runtime->new_object("java.util.resource.RenderRef");
     auto* node = gameref_upsert(render, GameRefKind::RenderRef);
-    node->type_id = static_cast<int32_t>(RpkIndex::make_full_id(pack->pack_id, 0x000C));
+    gameref_set_type(*node, static_cast<int32_t>(RpkIndex::make_full_id(pack->pack_id, 0x000C)));
     node->script = render;
     node->alias = "driver";
     node->empty = false;
@@ -4021,7 +4004,7 @@ void tick_pedestrians(double seconds) {
       const PedKind& kind = crowd.kinds[agent.kind];
       Object* render = runtime->new_object("java.util.resource.RenderRef");
       auto* node = gameref_upsert(render, GameRefKind::RenderRef);
-      node->type_id = static_cast<int32_t>(kind.render);
+      gameref_set_type(*node, static_cast<int32_t>(kind.render));
       node->script = render;
       node->alias = "pedestrian";
       node->empty = true;

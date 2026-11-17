@@ -66,7 +66,7 @@ void spawn_ground_shell(Jvm& jvm, const RpkIndex& rpk, Object* ground) {
     shell->script = node;
     shell->class_name = node->class_name;
     shell->empty = false;
-    shell->type_id = static_cast<int32_t>(full);
+    gameref_set_type(*shell, static_cast<int32_t>(full));
     node->fields["id"] = Value::make_int(static_cast<int32_t>(full));
     gameref_set_parent(node, ground);
     scene_ambience_attach(node, rpk, map);
@@ -211,7 +211,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
         GameRefState* st = gameref_upsert(self);
         if(st)st->binding=nullptr;
         if (st) {
-          st->type_id = id;
+          gameref_set_type(*st, id);
           if (id != 0) {
             st->empty = false;
             const RpkEntry* e = rpk.resolve(static_cast<uint32_t>(id));
@@ -240,7 +240,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           // set(null) → clear bind (PE sub_545FC0(handle,0)).
           if (GameRefState* st = gameref_upsert(self)) {
             st->binding=nullptr;
-            st->type_id = 0;
+            gameref_set_type(*st, 0);
             st->empty = true;
           }
           res_sync_id_field(self, 0);
@@ -260,7 +260,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
         GameRefState* st = gameref_upsert(self);
         if (st) {
           st->binding = nullptr;
-          st->type_id = id;
+          gameref_set_type(*st, id);
           st->empty = (id == 0);
         }
         res_sync_id_field(self, id);
@@ -281,7 +281,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           auto it = self->fields.find("id");
           if (it != self->fields.end() && it->second.tag == ValueTag::Int)
             id = it->second.v.i;
-          if (st) st->type_id = id;
+          if (st) gameref_set_type(*st, id);
         }
         const RpkEntry* e = rpk.resolve(static_cast<uint32_t>(id));
         self->fields["loaded"] = Value::make_int(e ? 1 : 0);
@@ -400,7 +400,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
     if (!o) return Value::make_obj(nullptr);
     o->fields["id"] = Value::make_int(static_cast<int32_t>(full));
     if (GameRefState* st = gameref_upsert(o)) {
-      st->type_id = static_cast<int32_t>(full);
+      gameref_set_type(*st, static_cast<int32_t>(full));
       st->empty = false;
     }
     return Value::make_obj(o);
@@ -495,7 +495,7 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           return Value::make_void();
         auto* sound = gameref_upsert(self);
         sound->binding = nullptr;
-        sound->type_id = 0;
+        gameref_set_type(*sound, 0);
         sound->sound_file = file.string();
         gameref_set_parent(self, args[0].v.o);
         res_sync_id_field(self, gameref_make_live(self));
@@ -536,12 +536,14 @@ void register_resref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
         if (id != 0) {
           self->fields["id"] = Value::make_int(id);
           if (GameRefState* dst = gameref_upsert(self, GameRefKind::RenderRef)) {
-            dst->type_id = id;
+            gameref_set_type(*dst, id);
             if (const auto* source = gameref_get(src)) {
               dst->texture_replacements = source->texture_replacements;
+              dst->texture_file_replacements = source->texture_file_replacements;
               dst->directional_light.flare = source->directional_light.flare;
             } else {
               dst->texture_replacements.clear();
+              dst->texture_file_replacements.clear();
               dst->directional_light.flare = {};
             }
           }
