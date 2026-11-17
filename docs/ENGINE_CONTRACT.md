@@ -193,6 +193,13 @@ A native with a body is not necessarily complete. Distinguish, in the audits:
 absent, explicit no-op, fixed/mock value, partial, implemented, and validated
 in a defined scenario. See `NATIVE_AUDIT.md`.
 
+Loaded class definitions are immutable for the VM lifetime, whether requested
+by name or `.class` path. Never replace a class's methods/TREE vectors or rerun
+its statics under executing or suspended frames. Recompilation takes effect
+for an already-loaded class after restart. Null and arrays are reference
+arguments during by-name overload selection; null must not tie an integer
+constructor solely because both are one-argument calls.
+
 ## 6. Threads, events, and dialogs
 
 Script threads are cooperative and implemented with Windows fibers. They keep
