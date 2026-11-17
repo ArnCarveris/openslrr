@@ -1730,3 +1730,28 @@ pixels. Visual in-game validation is pending: inspect the bridge grids from
 both sides, the worksite grids/cables and dealer rails; also check ordinary
 facades, foliage and the resulting cutout shadows. Evidence is recorded under
 assets/validation/map-alpha. No native was added or changed.
+
+### Storefront colour/opacity follow-up
+
+The maintainer validated the bridge, worksite and dealer fix in game, then
+reported solid white city storefront panes. Real storefront glass meshes use
+COLOR_DIFFUSE opacity around 0.247 or 0.498. The 06x5_shop_uveg and
+12x6_uveges_uveg type-0x32/0x33 variants deliberately omit a diffuse texture;
+other storefront Tex families have textures but black diffuse RGB. The generic
+map draw previously used white fallback RGB and forced tint alpha to one.
+
+scx_modulate_blend now carries authored opacity into the existing straight-alpha
+mesh output for blended SCX4 surfaces and applies diffuse RGB when the texture
+slot is deliberately absent. Textured families retain sampled RGB, so their
+black diffuse colour does not black out the window. Absent diffuse maps use
+straight-alpha blending; decoded premultiplied images also scale RGB by material
+opacity. Opaque surfaces, legacy
+SCX3, emissive overlays and the vehicle material path are unchanged. This adds
+no new reflection implementation; it corrects the existing mesh pass modulation.
+
+map_alpha now passes four tests, including five actual storefront glass meshes:
+two without diffuse textures and three textured variants. The test checks tint,
+material opacity and opaque/legacy controls. The original bridge/worksite/dealer
+tests remain passing. Storefront visual verification is pending; the screenshot
+provided by the maintainer is stored as storefront-before.png under the same
+validation directory and is explicitly a before image.

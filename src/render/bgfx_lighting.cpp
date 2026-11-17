@@ -348,6 +348,13 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
           (part.geo.info.version == 3 && surface.blend));
       if (pass != int(blend)) return;
       const auto tex = texture(texture_index);
+      std::string extension = blend && texture_index < part.geo.textures.size()
+          ? std::filesystem::path(part.geo.textures[texture_index]).extension().string() : "";
+      std::transform(extension.begin(), extension.end(), extension.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      // Decoded images are premultiplied; DDS and an absent diffuse map are
+      // straight alpha. A white fallback for untextured glass is not an image.
+      const bool premultiplied = texture_index != 0xffff && extension != ".dds";
       // SCX4 storefronts use texture alpha to mix their paint colour with
       // the detail texture. Low-alpha texels are solid wall, not holes.
       const bool material_mix = group && instance.cull_backfaces &&
@@ -372,6 +379,8 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       float tint[4]={((color>>16)&255)/255.f,((color>>8)&255)/255.f,(color&255)/255.f,1};
       if (material_mix)
         for (int i = 0; i < 3; ++i) tint[i] *= group->diffuse[i];
+      if (blend && !instance.emissive_overlay && group)
+        scx_modulate_blend(part.geo.info.version, *group, tint, premultiplied);
       if (instance.emissive_overlay && group && group->emission_index == 0xffff)
         for (int c = 0; c < 3; ++c) tint[c] *= group->emission_color[c];
       const ScxTextureMap identity;
@@ -427,89 +436,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         state |= BGFX_STATE_DEPTH_TEST_GEQUAL |
                  BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE);
       } else if (blend) {
-        std::string extension = texture_index < part.geo.textures.size()
-            ? std::filesystem::path(part.geo.textures[texture_index]).extension().string() : "";
-        std::transform(extension.begin(), extension.end(), extension.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        state |= BGFX_STATE_DEPTH_TEST_GREATER | (extension == ".dds" ? BGFX_STATE_BLEND_ALPHA
-            : BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA));
-      } else if (!instance.sky) {
-        state |= BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
-      }
-      bgfx::setState(state);
-      bgfx::submit(view_id, skinned ? skin_program_ : program_);
-    };
-    if(part.geo.groups.empty())draw(0,static_cast<uint32_t>(part.geo.indices.size()),0,0,nullptr);
-    else for(const auto&g:part.geo.groups)draw(g.index_start,g.index_count,g.texture_index,g.material_flags,&g);
-  }
-
-void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
-                                       const std::vector<SceneBatch>& batches,
-                                       bool shadow, bool conservative) {
-  const auto program = shadow ? inst_shadow_program_ : inst_program_;
-  if (!bgfx::isValid(program) || batches.empty()) return;
-  float identity[16];
-  bx::mtxIdentity(identity);
-  const auto& graphics = host_enhanced_graphics();
-  struct PropInstance {
-    float matrix[16];
-    float color[4];
-  };
-  static_assert(sizeof(PropInstance) == 80);
-  for (const auto& batch : batches) {
-    if (batch.instances.empty() || !batch.geometry) continue;
-    const auto found = instance_meshes_.find(batch.geometry.get());
-    if (found == instance_meshes_.end()) continue;
-    const auto& part = found->second;
-    if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh)) continue;
-    const auto& groups = part.geo.groups;
-    const uint32_t group_count = groups.empty() ? 1u : static_cast<uint32_t>(groups.size());
-    for (size_t base = 0; base < batch.instances.size();) {
-      const auto want = static_cast<uint32_t>(std::min<size_t>(128, batch.instances.size() - base));
-      const auto stride = static_cast<uint16_t>(sizeof(PropInstance));
-      const uint32_t count = bgfx::getAvailInstanceDataBuffer(want, stride);
-      if (!count) break;
-      bgfx::InstanceDataBuffer idb;
-      bgfx::allocInstanceDataBuffer(&idb, count, stride);
-      auto* dst = reinterpret_cast<PropInstance*>(idb.data);
-      for (uint32_t i = 0; i < count; ++i) {
-        const auto& src = batch.instances[base + i];
-        std::memcpy(dst[i].matrix, src.transform.data(), sizeof(dst[i].matrix));
-        dst[i].color[0] = ((src.color >> 16) & 255) / 255.f;
-        dst[i].color[1] = ((src.color >> 8) & 255) / 255.f;
-        dst[i].color[2] = (src.color & 255) / 255.f;
-        dst[i].color[3] = 1.f;
-      }
-      for (uint32_t group_index = 0; group_index < group_count; ++group_index) {
-        const ScxGroup* group = groups.empty() ? nullptr : &groups[group_index];
-        const uint32_t first = group ? group->index_start : 0;
-        const uint32_t index_count = group ? group->index_count
-                                           : static_cast<uint32_t>(part.geo.indices.size());
-        const uint16_t slot = group ? group->texture_index : 0;
-        const uint32_t flags = group ? group->material_flags : 0;
-        const auto tex = slot < part.tex.size() && bgfx::isValid(part.tex[slot])
-                             ? part.tex[slot] : white_tex_;
-        // The same alpha rules as a single placement (draw_instance and the
-        // static shadow pass). Batched meshes have no blended sections.
-        const bool v4 = part.geo.info.version == 4;
-        const auto surface = group ? scx_surface(part.geo.info.version, *group) : ScxSurface{};
-        const bool material_mix = surface.color_mix;
-        const bool cut = surface.cutout || (part.geo.info.version != 3 && !v4);
-        if (shadow) {
-          const float threshold = !cut || !group ? -1.f
-              : v4 ? group->alpha_reference / 255.f : .5f;
-          const float params[4] = {0.f, threshold,
-                                   group ? static_cast<float>(group->base_map.channel) : 0.f, 0.f};
-          bgfx::setUniform(u_static_shadow_params_, params);
-          bgfx::setTexture(0, s_tex_, tex);
-          bgfx::setTransform(identity);
-          bgfx::setVertexBuffer(0, part.vbh);
-          bgfx::setIndexBuffer(part.ibh, first, index_count);
-          // Like a single caster in update_static_shadow: both faces cast.
-          uint64_t state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
-          if (conservative) state |= BGFX_STATE_CONSERVATIVE_RASTER;
-          bgfx::setState(state);
-        } else {
+        state |= BGFX_STATE_DEPTH_TEST_GREATER | (premultiplied
+            ? BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA)
+            : BGFX_STATE_BLEND_ALPHA);
+      } else {
           const float alpha_test = !cut ? 0.f : v4 && group
               ? -(1.f + group->alpha_reference) / 255.f : 1.f;
           const bool foliage_coverage = cut && v4 && view_id < 72 &&

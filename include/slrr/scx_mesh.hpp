@@ -70,6 +70,19 @@ inline ScxSurface scx_surface(int version, const ScxGroup& group) {
   return surface;
 }
 
+// Blended SCX4 surfaces still carry material opacity. A deliberately absent
+// diffuse map uses COLOR_DIFFUSE, not an opaque white fallback. Textured Tex
+// families may have black COLOR_DIFFUSE and must keep their sampled RGB.
+inline void scx_modulate_blend(int version, const ScxGroup& group, float (&tint)[4],
+                               bool premultiplied = false) {
+  if (version != 4 || !scx_surface(version, group).blend) return;
+  tint[3] *= group.diffuse[3];
+  if (group.texture_index == 0xffff)
+    for (int i = 0; i < 3; ++i) tint[i] *= group.diffuse[i];
+  if (premultiplied)
+    for (int i = 0; i < 3; ++i) tint[i] *= group.diffuse[3];
+}
+
 // CPU mesh for GPU upload. Positions/normals/uv in original SCX units
 // (CFG world uses ×0.01 → meters — apply at draw).
 struct ScxGeometry {
