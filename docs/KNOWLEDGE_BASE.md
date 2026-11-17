@@ -1,4 +1,4 @@
-# OpenSLRR knowledge base for coding agents
+| `FindFile` and File share canonical physical-root confinement (#84). Enumeration alone may address the root; leading separators remain game-relative, parent traversal and external junctions are rejected, and internal junctions are allowed. File.delete remains nonrecursive (#68, #71). Invalid SDAT writes preserve alignment (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_boot.cpp:findfile_start`, `src/natives/natives_io.cpp:register_io_natives` |
 
 Verified against `main` at `b907b6b` (12 November 2026). Every code reference
 below is written as `path` or `path:symbol` and can be rechecked with
