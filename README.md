@@ -114,7 +114,7 @@ Headless diagnostics cover all four music sets (muted), audio-volume save/reload
 - Windows Media Foundation for music decoding (included in standard Windows installations; Windows N editions need the Media Feature Pack).
 - An Internet connection while preparing and initially configuring dependencies.
 
-Open SLRR builds for Windows x64 and uses bgfx for rendering. It loads the original game scripts and assets.
+Open SLRR builds for Windows x64 with an MSVC-compatible compiler and uses bgfx for rendering. CMake rejects non-MSVC toolchains (including MinGW), x86 and ARM64 before adding targets. It loads the original game scripts and assets.
 
 Install **VLC 3.x for Windows x64** for the original Cinepak AVI intros, the menu background, and formats such as H.264/AAC in MP4. Open SLRR looks in the standard VideoLAN installation directory. For a custom installation, set `SLRR_VLC_DIR` to the absolute folder containing `libvlc.dll`, `libvlccore.dll`, and `plugins`.
 
@@ -141,6 +141,17 @@ cmake --build build --config Release --target slrr_host --parallel
 ```
 
 The executable is generated at `build/Release/slrr_host.exe`. The first build includes bgfx and its shader tools, so it may take a while.
+
+Dependency locations follow the paths selected by the pinned `bgfx.cmake`:
+its in-tree `bgfx`/`bimg`/`bx` checkouts, explicit `BGFX_DIR`/`BIMG_DIR`/`BX_DIR`,
+or FetchContent. A custom `FETCHCONTENT_BASE_DIR` is supported; the host uses
+the same sources for ImGui, shader includes and bimg headers as the libraries.
+For pre-existing source checkouts, pass absolute paths with
+`-DFETCHCONTENT_SOURCE_DIR_BGFX=...`, `-DFETCHCONTENT_SOURCE_DIR_BIMG=...` and
+`-DFETCHCONTENT_SOURCE_DIR_BX=...`. Keep their revisions aligned with the pinned
+wrapper. `FETCHCONTENT_FULLY_DISCONNECTED=ON` requires sources already present;
+it does not download a missing dependency.
+
 
 ## Run
 
