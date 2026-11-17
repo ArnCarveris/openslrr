@@ -117,3 +117,24 @@ budgeted cooperative pump and sleeping VM threads. The source declarations and
 actual callers in SLRR_rev/the installed TUFA classes supply the script
 contracts. The fiber scheduler is the host implementation, not a literal
 copy of the original VM's internal stack layout.
+
+## Boot section adoption (#76)
+
+The stock Init/GameLogic chain already enters SplashScreen in Java. After Init,
+boot uses `mainloop_adopt_section`, as the frame loop does, to synchronize the
+host without invoking enter again. Replaying enter replaces the OSD reference
+and schedules a second timer; adoption preserves the existing presentation.
+
+Windowed startup still removes/re-arms only the splash timer after startup
+work. GameRef timers use steady wall-clock deadlines, so loading may otherwise
+consume the three-second display interval even with one enter. The initial
+splash frame is still presented immediately after adoption; FMV/loading-frame
+handling is unchanged. No Java or native-signature change is required.
+
+`run_save_io_tests.ps1 -Suite splash_boot` runs real shipped Init/Splash code
+with the Null renderer and checks one pending timer and stable OSD identity
+across repeated adoption. Requires local `game` assets; it opens no window
+and does not request a new career. With `-BaselineRef a5184d2`, the same test
+fails with two timers; the corrected build passes with one. Existing
+`inventory_transition` tests pass 4/4. Windowed FMV/splash visual continuity
+still requires user validation. See [evidence](../assets/validation/splash-boot/results.txt).

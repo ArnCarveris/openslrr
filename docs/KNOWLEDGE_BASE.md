@@ -544,7 +544,7 @@ run time.
 | --- | --- |
 | DirectShow dynamic media-format renegotiation is not supported; malformed/short RGB32 frames are rejected | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
-| Boot enters the Splash section again after Java already entered it | `src/boot/boot.cpp:boot_game` (`change_active_section` instead of `adopt_actual`) |
+| Boot adopts the section already entered by Java Init without replaying lifecycle (#76). Windowed startup retains a timer-only reset so startup work cannot consume the splash display interval. | `src/boot/boot.cpp:boot_game`, `src/boot/mainloop.cpp:mainloop_adopt_section` |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
 | Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
 | The `present` and `hiz` programs never link: `fs_present` and `fs_hiz` read only `v_texcoord0` but are paired with `vs_mesh`, so the offscreen scene target and the HiZ pyramid are skipped. Startup logs `[bgfx] program … failed to link` | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open` |
