@@ -146,10 +146,11 @@ class Jvm : public TreeHost {
   // Class files currently inside load_class_file. A field path during static
   // init must not enrich the same file again.
   std::unordered_set<std::string> loading_paths_;
+  std::unordered_set<std::string> loaded_paths_;
   std::vector<std::unique_ptr<Object>> heap_;
   std::unordered_map<std::string, std::unordered_map<std::string, Value>>
       statics_;
-  // Immutable initializer metadata, rebuilt whenever a class is loaded again.
+  // Immutable initializer metadata, initialized once per class for this VM.
   // Absent fields have no eligible RID literal; mutable static Values stay separate.
   std::unordered_map<std::string,
       std::unordered_map<std::string, std::vector<TufaClass::Resource>>> static_rids_;

@@ -1313,12 +1313,11 @@ Late registrations work without negative-cache invalidation.
 once per class load in `static_rids_`. `Jvm::get_static` consults this index
 instead of rescanning fields and trees for every small integer. Values remain
 mutable; an unresolved local RID is retried against the active resource index,
-and class replacement rebuilds metadata. This does not change the existing
-class-reload/static-reset policy tracked by #73.
+and loaded definitions and metadata stay immutable until restart (see #73/#66 below).
 
 Validation: Release build; `vm_lookup` before/after compatibility tests cover
 void aliases, exact priority, missing/duplicate natives, late registration,
-mutable statics, unresolved-to-resolved RIDs and class reload. The isolated
+mutable statics, unresolved-to-resolved RIDs and recompile/restart separation. The isolated
 100,000-miss / 4,000-registration benchmark measured about 1.43 s before and
 7 ms after on this machine; this is not an in-game FPS claim. `tree_numbers`
 passes. TUFA corpus remains 1,501 files / 1,546 accepted classes, with the same
@@ -1568,3 +1567,44 @@ claims, keyboard priority, explicit analog remaps and short input spans. No
 hardware or full options-screen interaction is asserted. Evidence:
 `assets/validation/pad-fallback/after.txt`. Native coverage --check remains
 current; no native signatures or production Java changed.
+
+
+### Immutable loaded classes and reference overloads (#73, #66)
+
+`Jvm::load_class_file` caches successfully loaded absolute, lexically normalized
+paths (case-folded on Windows). Failed/empty loads are not cached. A new file
+may introduce new classes, including siblings concatenated with an existing
+class; exact loaded class names are never overwritten or reinitialized. Class
+storage is published before its literal/static enrichment, so recursive class
+queries see the existing definition. Live methods, TREE vectors, statics and
+RID initializer metadata remain valid for the VM lifetime. Changed files,
+including new blobs appended to a previously loaded path, require restart.
+A fresh VM sees the new disk contents. No live hot-reload API is introduced.
+
+`find_method_by_name` scores null as a reference instead of tying primitive
+arguments. Primitive arrays are reference parameters as well. This fixes the
+ordinary this(null)/this(parent) overload chain without recognizing Dummy or
+any particular mod class. Numeric conversion scoring is retained. Selection
+among multiple equally scored reference overloads remains declaration-order;
+this does not implement full source-language overload inference.
+
+Validation: baseline dede4b5 fails all three class_lifetime scenarios; current
+code passes them. Coverage includes repeated/normalized-path load with mutable
+statics, reload inside an executing native callback/TREE frame, new concatenated
+containers with an existing class and a new sibling, failed-load retry and an
+already-loaded file later corrupted on disk. Constructor fixtures cover four
+Dummy-shaped overloads, null/int selection and primitive-array parameters.
+The actual game Dummy.class is also executed with production GameType natives;
+all four constructors produce native roots and preserve parent/flags. This is
+not a full career, catalog or suspended-fiber gameplay run. The minimal test
+pack setup logs unrelated frontend RID misses. Evidence:
+`assets/validation/class-lifetime/before.txt` and
+`assets/validation/class-lifetime/after.txt`.
+
+Release build, vm_lookup, tree_numbers, save_io and TUFA corpus checks pass.
+The corpus is unchanged: 1,501 files, 1,546 accepted classes and the existing
+Dialog.class CONS-kind-2 rejection. vm_lookup now checks immutable definitions
+in the running VM and refreshed metadata in a fresh VM. No native signatures
+or production Java changed. Static ++ behavior (#63) remains outside this
+change; the constructor counter fixture uses explicit addition to isolate
+constructor dispatch.

@@ -61,14 +61,18 @@ public class Lookup {
   SLRR_REQUIRE(static_cast<uint32_t>(f.vm.get_static("probe.Lookup", "resource").v.i) == resolved);
   f.vm.set_static("probe.Lookup", "resource", Value::make_int(77));
   SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "resource").v.i == 77);
-  // Loading the same class again must replace initializer metadata too.
+  // Loaded definitions stay immutable; a fresh VM observes recompiled metadata.
   std::ofstream(source) << "package probe; public class Lookup { static int resource = 149; static int command = 456; }";
   fs::remove(compiled);
   report = script_compile_all(f.root.string(), "probe");
   SLRR_REQUIRE(report.failed == 0 && report.succeeded > 0);
   SLRR_REQUIRE(f.vm.load_class_file(compiled.string()));
-  SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "command").v.i == 456);
-  SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "resource").v.i == 149);
+  SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "command").v.i == 321);
+  SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "resource").v.i == 77);
+  Jvm restarted(&f.registry);restarted.set_game_root(f.root.string());
+  SLRR_REQUIRE(restarted.load_class_file(compiled.string()));
+  SLRR_REQUIRE(restarted.get_static("probe.Lookup", "command").v.i == 456);
+  SLRR_REQUIRE(restarted.get_static("probe.Lookup", "resource").v.i == 149);
   rpk_set_active(nullptr);
   SLRR_REQUIRE(f.vm.get_static("probe.Lookup", "missing").tag == ValueTag::Void);
   std::puts("PASS descriptor aliases, exact priority, late registration, mutable statics and class reload");
