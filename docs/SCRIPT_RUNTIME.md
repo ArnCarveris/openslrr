@@ -153,3 +153,20 @@ Release build and `map_views`, `ui_lifetime`, `splash_boot` checks pass. A local
 headless TestTrack investigation confirmed an active scene camera and no
 remaining loading overlay; it did not validate pixels. Test normal Select Track
 entry, Escape/Continue, another track, Valo, and FMV/menu backgrounds in game.
+
+### Menu input debounce
+
+Menu-toggle and cancel hotkey presses share a 250 ms cooldown across dialog
+commands: virtual axes 36/35 and physical Escape use the same gate. Select
+(axis 34, physical Enter/numpad Enter) has a separate gate. A suppressed
+press still updates held state, so it is not delivered later when the timeout
+expires; release and a new press are required. Release events and driving axes
+are not delayed. The existing command gate for directional UI navigation stays
+unchanged. This is a UI-action guard, not a global keyboard or simulation delay.
+
+`run_save_io_tests.ps1 -Suite menu_debounce` exercises the actual hotkey
+dispatcher through a compiled Java native handler. Baseline `c6e563f` fails
+when MENU is followed immediately by CANCEL; the corrected build passes held
+input, cross-command cancellation, physical Escape, release, independent
+accept and driving checks. Repressing after 275 ms succeeds. `pad_fallback`
+also passes. In-game pause/Continue behavior still needs user validation.

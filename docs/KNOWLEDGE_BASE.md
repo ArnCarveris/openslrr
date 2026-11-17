@@ -1843,3 +1843,5 @@ in-game visual difference is not expected. Evidence:
 assets/validation/worldpos-varying/validation.txt.
 
 Track HUDs do not require a menu background: `src/resources/gameref.cpp:fullscreen_script_camera` suppresses the fallback veil while a world camera is active. See [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#track-presentation-without-a-menu-plate).
+
+Menu hotkey presses use a shared 250 ms cancel/menu gate and a separate select gate, without delaying release or driving: `src/platform/host_input.cpp:host_input_check_hotkeys`. Validation and scope are in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md#menu-input-debounce).
