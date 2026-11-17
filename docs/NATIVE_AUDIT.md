@@ -38,6 +38,7 @@ that category. It is not a compatibility score or a complete runtime trace.
 
 | Native or group | Current behavior |
 | --- | --- |
+| `FindFile` and File path operations | Share canonical physical confinement (#84). Enumeration alone can address the root. Leading separators are game-relative; external junctions are rejected and internal junctions allowed. Masks and dotted names remain supported. See [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md). |
 | `GameRef.setState` | Sets pose and linear/angular velocities. Cars receive the state in the live solver. Generic GameRefs retain the state but have no general dynamic-body solver yet. |
 | `GameRef.setActiveCollision` | Queues an idempotent activation request. The next physics preparation enables the generic object's CFG-defined collision and clears the queued flag. Existing vehicle and legacy RenderRef collision remain independent. |
 | `PhysicsRef` | `create`, `createBox`, `createSphere`, `setMatrix`, `setStatic`, `getPos`, `getOri`, `getVel` (both overloads) and `getAngVel` are bound. World boxes, spheres and resource CFG bodies join scene collision; OSD click boxes remain separate. `getVel(Vector3)` returns point velocity. `setStatic(0)` hands the body to the host free-body solver (gravity, scene and car contacts; a primitive gets a 500 kg/m³ density); `setStatic(1)` fixes it again. Free bodies do not collide with each other. |
