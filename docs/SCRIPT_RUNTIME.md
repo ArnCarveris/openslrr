@@ -170,3 +170,19 @@ when MENU is followed immediately by CANCEL; the corrected build passes held
 input, cross-command cancellation, physical Escape, release, independent
 accept and driving checks. Repressing after 275 ms succeeds. `pad_fallback`
 also passes. In-game pause/Continue behavior still needs user validation.
+
+### UI rectangles have one render owner
+
+RenderRef.setMatrix projects script Rectangle instances into the OSD registry.
+Once `_rect` and `_osd_wi` identify that handoff, scene collection must not also
+submit the unscaled template mesh through a cursor or OSD preview camera. That
+second submission produced a large black tooltip panel behind the compact
+2D tooltip. Hidden/retired UI rectangles stay excluded while their resource
+instance survives; ordinary 3D meshes are unaffected. No texture-ID or
+particular-tooltip special case is used.
+
+`run_save_io_tests.ps1 -Suite tooltip_render` uses the real frontend rectangle
+mesh beneath a cursor world. Baseline `d988359` fails the one-owner assertion;
+the corrected build passes visible/hidden/retired rectangle suppression and
+ordinary-mesh preservation. `ui_lifetime` and `map_views` also pass. Requires
+read-only local frontend assets. Pixel validation remains an in-game check.
