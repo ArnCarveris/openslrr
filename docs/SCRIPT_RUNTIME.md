@@ -313,6 +313,14 @@ position/direction vectors. Route position/distance queries use metres along
 the last route; these contracts are host interpretations. plotRoute creates a
 navigator-owned coloured ribbon, without sampling its texture argument.
 
+Traffic streaming checks a safe lane position before constructing the Part/CFG
+assembly. Rejected positions allocate no vehicles or Java objects; a population
+cap is not permission to construct and discard cars until it is full. Existing
+rivals keep their persistent assemblies. Search radii, spacing and retry bounds
+remain unchanged. The unavailable-spawn regression checks heap stability without
+GC and fails on cc0f0db; `traffic_runtime -BaselineRef` substitutes both the road
+and streaming implementations for comparison.
+
 `traffic_runtime.cpp` keeps model weights, stable individual IDs and temporary
 road/crossing restrictions per ground. Model declarations may be id-only Java
 resource references, rather than live instances. Positioned reinsertion is a

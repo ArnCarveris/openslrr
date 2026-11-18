@@ -265,7 +265,9 @@ bool place(Registration &r, const RoadRoutes &graph, const Population &p,
     r.edge = edge;
     r.along = at;
     r.unplaced = false;
-    publish(r, graph, at);
+    // A candidate can be checked before allocating a vehicle.
+    if (r.car)
+      publish(r, graph, at);
     return true;
   }
   return false;
@@ -844,6 +846,12 @@ void race_traffic_tick(Jvm &vm, float seconds) {
           break;
         }
       }
+      // Placement rejection must not construct and destroy a complete CFG
+      // assembly every frame. Upstream also selects a safe spawn before it
+      // creates the traffic vehicle. Keep the same search/safety budget.
+      Registration candidate;
+      if (!place(candidate, *graph, *p, focus, true))
+        continue;
       Object *car = part_create(vm, *resources, static_cast<Object *>(key),
                                 selected->type, "streamed traffic");
       if (!car)
@@ -855,10 +863,10 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         continue;
       }
       auto &r = it->second;
-      if (!place(r, *graph, *p, focus, true)) {
-        remove(id);
-        continue;
-      }
+      r.edge = candidate.edge;
+      r.along = candidate.along;
+      r.unplaced = false;
+      publish(r, *graph, r.along);
       r.visible = true;
       if (auto *n = gameref_get(car))
         n->streamed_hidden = false;

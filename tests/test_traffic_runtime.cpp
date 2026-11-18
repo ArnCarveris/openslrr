@@ -686,8 +686,44 @@ void missing_lamp_stop_releases() {
   std::puts("PASS real missing-lamp approach stops then releases instead of "
             "permanent red");
 }
+// An unavailable local spawn must not allocate disposable car assemblies.
+// This is independent of timing and catches per-frame churn at an empty cap.
+void unavailable_spawn_does_not_allocate() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  scene_instances_enable_static_floor(false);
+  f.player = f.car();
+  gameref_set_matrix(f.player, 100000, 0, 100000, 0, 0, 0);
+  f.controller.class_name = "java.io.Controller";
+  gameref_upsert(&f.controller);
+  part_command(&f.controller,
+               "controllable " + std::to_string(gameref_make_live(f.player)));
+  Object type;
+  type.fields["id"] = Value::make_int(
+      RpkIndex::make_full_id(f.packs.open_lib("cars/traffic/Taxi.rpk"), 6));
+  f.call("addTrafficN", "(Ljava.util.resource.GameRef;IFFF)I",
+         {Value::make_obj(&type), Value::make_int(1000), Value::make_float(2),
+          Value::make_float(5), Value::make_float(2)});
+  // Warm graph/resource caches, then require repeated failed placements to
+  // leave the VM heap unchanged without relying on a collection.
+  race_traffic_tick(f.vm, 1.f / 60);
+  const auto objects = f.vm.heap_size();
+  const auto begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < 10; ++i)
+    race_traffic_tick(f.vm, 1.f / 60);
+  std::printf("UNAVAILABLE SPAWN 10 ticks: %.3f ms, %zu disposable objects\n",
+              std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - begin).count(),
+              f.vm.heap_size() - objects);
+  SLRR_REQUIRE(f.vm.heap_size() == objects);
+  f.call("delTraffic", "()V");
+  part_destroy(f.player);
+}
 int main() {
   const standalone::Test tests[] = {
+      unavailable_spawn_does_not_allocate,
       missing_lamp_stop_releases, inline_wheel_contact_and_population,
       native_day_racer_staging,   actual_city_turns_and_wheels,
       lifecycle_and_stream,       red_light_stop_and_release,

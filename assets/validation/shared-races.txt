@@ -155,3 +155,16 @@ Commands:
 - frame_profiler unit verifies snapshot publication, independent stage values,
   window reset and restart clearing. Renderer/debug changes are diagnostic;
   the exact slow manual scene still needs its new stage readings from the user.
+
+Traffic unavailable-spawn allocation follow-up (2026-11-18)
+User capture now attributes 391.58 / 402.88 ms to Traffic, rather than GPU.
+Code review found complete Part/CFG creation before safe-place rejection, up to
+cap*3 assemblies per update. Reorder only: select safe candidate, then construct
+and publish the successful car. SLRR_rev traffic-stream.ts likewise selects a
+safe spawn before creating the vehicle. No density or rendering-quality reduction.
+Deterministic real-City/Taxi test, focus outside reachable lanes, 10 updates:
+cc0f0db: 134.741 ms, 3600 disposable VM objects, regression fails.
+new: 3.378 ms, 0 disposable objects, all 8 traffic_runtime tests pass.
+Times are scenario measurements, not asserted thresholds or claimed in-game FPS.
+Release host build and knowledge-reference checks pass. Manual capture's exact
+391 ms scene has not yet been reproduced; maintainer validation remains pending.
