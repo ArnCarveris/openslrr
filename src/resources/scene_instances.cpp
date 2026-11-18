@@ -30,8 +30,8 @@ namespace slrr {
 namespace {
 const RpkIndex *g_resources = nullptr;
 void *g_world = nullptr;
-SceneHizTest g_hiz = nullptr;
-void* g_hiz_user = nullptr;
+SceneSizeFilter g_size_filter = nullptr;
+void* g_size_filter_user = nullptr;
 void *g_sky = nullptr;
 bool g_preview_lamps = false;
 uint32_t g_environment = 0;
@@ -2083,9 +2083,9 @@ void scene_instances_frame_cache(bool enabled) {
   }
 }
 
-void scene_instances_set_hiz(SceneHizTest test, void* user) {
-  g_hiz = test;
-  g_hiz_user = user;
+void scene_instances_set_size_filter(SceneSizeFilter test, void* user) {
+  g_size_filter = test;
+  g_size_filter_user = user;
 }
 
 namespace {
@@ -2254,16 +2254,16 @@ std::vector<SceneInstance> scene_instances_collect(
     }
     for (const auto& [key, cell] : found->second.cells) {
         if (!visible(cell.center, cell.radius)) continue;
-        if (g_hiz) {
+        if (g_size_filter) {
           const auto cell_world = transform_point(shell, cell.center);
-          if (!g_hiz(cell_world.data(), cell.radius, g_hiz_user)) continue;
+          if (!g_size_filter(cell_world.data(), cell.radius, g_size_filter_user)) continue;
         }
         for (const auto& prop : cell.props) {
           if (prop.signal || prop.batched || prop.hidden || (prop.night_only && !night_props_visible())) continue;
           if (!visible(prop.center, prop.radius)) continue;
-          if (g_hiz) {
+          if (g_size_filter) {
             const auto prop_world = transform_point(shell, prop.center);
-            if (!g_hiz(prop_world.data(), prop.radius, g_hiz_user)) continue;
+            if (!g_size_filter(prop_world.data(), prop.radius, g_size_filter_user)) continue;
           }
           auto mesh = geometry(prop.render_id);
           if (!mesh) continue;
@@ -2309,9 +2309,9 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
     for (const auto& [key, cell] : found->second.cells) {
       (void)key;
       if (cell.batches.empty() || !visible(cell.center, cell.radius)) continue;
-      if (g_hiz) {
+      if (g_size_filter) {
         const auto cell_world = transform_point(shell, cell.center);
-        if (!g_hiz(cell_world.data(), cell.radius, g_hiz_user)) continue;
+        if (!g_size_filter(cell_world.data(), cell.radius, g_size_filter_user)) continue;
       }
       for (const auto& batch : cell.batches) {
         const uint64_t batch_key = (static_cast<uint64_t>(static_cast<uint32_t>(base.type_id)) << 32) |
@@ -2339,9 +2339,9 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
           const auto& prop = cell.props[index];
           if (prop.hidden || (prop.night_only && !night_props_visible()) ||
               !visible(prop.center, prop.radius)) continue;
-          if (g_hiz) {
+          if (g_size_filter) {
             const auto prop_world = transform_point(shell, prop.center);
-            if (!g_hiz(prop_world.data(), prop.radius, g_hiz_user)) continue;
+            if (!g_size_filter(prop_world.data(), prop.radius, g_size_filter_user)) continue;
           }
           auto matrix = part_matrix_multiply(shell, prop.pose);
           for (int col = 0; col < 4; ++col)
