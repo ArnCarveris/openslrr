@@ -2141,3 +2141,24 @@ Baiern chassis and area_205 assets account for 16,076,716 bytes of vertex/index/
 skin arrays the old renderer would duplicate; this is a sample payload count,
 not whole-process memory usage or an FPS gain. See
 assets/validation/mesh-cache-ownership.txt.
+
+
+## GC eligibility cache and mark epochs (#110)
+
+`src/jvm/gc.cpp:needs_finalizer` caches class eligibility, skipping descriptors
+and empty-owner searches. New class insertion, game-root/classpath changes and
+append-only native registration invalidate cached results. Real finalizers still
+run through ordinary VM dispatch and retain once-only/resurrection behavior.
+
+The weak heap address index is updated at allocation/sweep, checked before any
+native-address dereference, and never acts as a GC root. Per-object epochs
+replace temporary managed/marked hash sets; each resurrection trace gets a new
+epoch. Finalizer discovery walks a stable owning-vector prefix instead of
+allocating another pointer snapshot. See docs/VM_GC.md for memory/CPU tradeoffs.
+
+`gc_runtime` covers native/script finalizers, late class/native availability,
+resurrection and allocations, invalid native pointers, roots/pinning/cycles and
+locals/arguments on a suspended cooperative stack. The 60,000 mixed-object
+fixture takes about 11ms to collect versus 168-171ms before; allocation costs
+26-29ms versus 23ms before. The baseline/current logs and limits are recorded in
+assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.

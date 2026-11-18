@@ -280,6 +280,12 @@ Modal contract:
 `Jvm` owns the managed heap. The GC is mark/sweep and non-moving. It does
 not replace resource destructors, cache invalidation, or GPU release.
 
+The allocation/sweep membership index validates addresses before dereference;
+it is weak and does not mark objects. Reachability uses per-object epochs, with
+a fresh epoch for resurrection tracing. Finalizer eligibility is cached per
+class and invalidated by class loading, root/classpath changes and new native
+registrations. Keep these invalidations when adding class or binding APIs.
+
 An `Object*` stored in a C++ structure is not an automatic root.
 A system that actually retains an object must expose its roots. Locals that
 must survive a yield need `Jvm::RootScope`, or an equivalent protection

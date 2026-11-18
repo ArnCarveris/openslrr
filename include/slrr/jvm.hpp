@@ -63,6 +63,7 @@ class Jvm : public TreeHost {
   void gc_safe_point();
   size_t heap_size() const { return heap_.size(); }
   size_t gc_last_freed() const { return gc_last_freed_; }
+  size_t gc_finalizer_lookups() const { return gc_finalizer_lookups_; }
 
   double advance_sim_time(double seconds);
   double sim_time() const { return sim_time_; }
@@ -107,6 +108,12 @@ class Jvm : public TreeHost {
   int gc_report_ = 0;
   size_t gc_allocated_ = 0, gc_last_freed_ = 0, gc_threshold_ = 8192;
   uint32_t gc_next_identity_ = 1;
+  uint64_t gc_epoch_ = 0;
+  // Membership must be checked before dereferencing a native/foreign address.
+  std::unordered_set<const void*> heap_members_;
+  std::unordered_map<std::string, bool> gc_finalizer_cache_;
+  size_t gc_native_count_ = 0, gc_finalizer_lookups_ = 0;
+  bool needs_finalizer(const std::string& class_name);
   std::vector<GcRootProvider> gc_roots_;
   uint64_t gc_frame_id_=0;
   std::unordered_map<uint64_t,GcRootProvider> gc_frames_;
