@@ -1,7 +1,9 @@
 #include "race_fixture.hpp"
 #include "slrr/gameref.hpp"
+#include "slrr/job_system.hpp"
 #include "slrr/race_runtime.hpp"
 #include "slrr/road_routes.hpp"
+#include <chrono>
 #include <cmath>
 using namespace slrr;
 RoadSegment straight(RoadPoint a, RoadPoint b) {
@@ -202,6 +204,102 @@ void traffic_lane_topology() {
         ++bends;
     }
   }
+  auto reference = [&](RoadPoint point, const RoadPoint *heading, bool turns) {
+    std::optional<RoadProjection> result;
+    float best = INFINITY;
+    for (size_t edge = 0; edge < graph->traffic_edges().size(); ++edge) {
+      const auto &e = graph->traffic_edges()[edge];
+      if ((!turns && e.crossing) || e.next.empty())
+        continue;
+      for (size_t i = 1; i < e.points.size(); ++i) {
+        RoadPoint d{e.points[i][0] - e.points[i - 1][0],
+                    e.points[i][1] - e.points[i - 1][1],
+                    e.points[i][2] - e.points[i - 1][2]};
+        float l = d[0] * d[0] + d[2] * d[2];
+        if (l < 1e-8f)
+          continue;
+        float t = std::clamp(((point[0] - e.points[i - 1][0]) * d[0] +
+                              (point[2] - e.points[i - 1][2]) * d[2]) /
+                                 l,
+                             0.f, 1.f);
+        RoadPoint p;
+        for (int axis = 0; axis < 3; ++axis)
+          p[axis] = e.points[i - 1][axis] + t * d[axis];
+        auto direction = road_normalize(d);
+        float distance = road_distance(point, p), score = distance;
+        if (heading)
+          score += 2 * (1 - (direction[0] * (*heading)[0] +
+                             direction[1] * (*heading)[1] +
+                             direction[2] * (*heading)[2]));
+        if (score < best) {
+          best = score;
+          result = RoadProjection{p, direction, distance,
+                                  e.distances[i - 1] +
+                                      t * (e.distances[i] - e.distances[i - 1]),
+                                  edge};
+        }
+      }
+    }
+    return result;
+  };
+  for (size_t i = 0; i < 150; ++i) {
+    const auto &e =
+        graph->traffic_edges()[(i * 7919) % graph->traffic_edges().size()];
+    auto point = e.points[e.points.size() / 2];
+    point[0] += (i % 3) * 2;
+    point[1] += float(i % 4);
+    RoadPoint heading = i % 2 ? RoadPoint{1, 0, 0} : RoadPoint{3, 0, -2};
+    bool turns = i % 3;
+    auto got = graph->traffic_project(point, &heading, turns),
+         want = reference(point, &heading, turns);
+    SLRR_REQUIRE(got && want && got->edge == want->edge &&
+                 road_distance(got->position, want->position) < .001f &&
+                 std::fabs(got->along - want->along) < .001f);
+  }
+  for (auto point : {RoadPoint{999999, 0, -999999}, RoadPoint{0, 5000, 0},
+                     RoadPoint{-64, 0, 64}}) {
+    auto got = graph->traffic_project(point, nullptr, true),
+         want = reference(point, nullptr, true);
+    SLRR_REQUIRE(got && want && got->edge == want->edge &&
+                 road_distance(got->position, want->position) < .001f);
+  }
+  SLRR_REQUIRE(!graph->traffic_project({NAN, 0, 0}, nullptr, true));
+  std::vector<std::optional<RoadProjection>> parallel(128);
+  jobs_parallel_for(parallel.size(), [&](size_t i) {
+    const auto &e =
+        graph->traffic_edges()[(i * 7919) % graph->traffic_edges().size()];
+    parallel[i] =
+        graph->traffic_project(e.points[e.points.size() / 2], nullptr, true);
+  });
+  for (size_t i = 0; i < parallel.size(); ++i) {
+    const auto &e =
+        graph->traffic_edges()[(i * 7919) % graph->traffic_edges().size()];
+    auto serial =
+        graph->traffic_project(e.points[e.points.size() / 2], nullptr, true);
+    SLRR_REQUIRE(parallel[i] && serial && parallel[i]->edge == serial->edge &&
+                 parallel[i]->along == serial->along);
+  }
+  std::printf("TRAFFIC grid: exhaustive oracle comparisons pass; worker pool "
+              "concurrency=%zu\n",
+              jobs_concurrency());
+  auto begin = std::chrono::steady_clock::now();
+  double check = 0;
+  for (size_t i = 0; i < 1000; ++i) {
+    const auto &e =
+        graph->traffic_edges()[(i * 7919) % graph->traffic_edges().size()];
+    auto point = e.points[e.points.size() / 2];
+    point[0] += 1.7f;
+    RoadPoint heading = {1, 0, 0};
+    auto projected = graph->traffic_project(point, &heading, true);
+    SLRR_REQUIRE(projected);
+    check += projected->distance;
+  }
+  std::printf(
+      "TRAFFIC projection benchmark: 1000 queries %.3f ms checksum %.4f\n",
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - begin)
+          .count(),
+      check);
   std::printf("TRAFFIC actual lanes=%zu crossing curves=%zu bends=%zu\n", lanes,
               turns, bends);
   SLRR_REQUIRE(lanes > 100 && turns > 100 && bends > 50);

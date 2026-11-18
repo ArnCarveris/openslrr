@@ -1,4 +1,5 @@
 #include "slrr/road_routes.hpp"
+#include "slrr/job_system.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -123,6 +124,40 @@ RoadRoutes::RoadRoutes(const RoadNetwork &net,
         }
       }
     }
+  // Each worker reads an immutable lane and writes its own index fragment.
+  // Merge/publication happens after the pool joins, before the graph is shared.
+  struct IndexPart {
+    bool complete = true;
+    std::vector<std::pair<uint64_t, size_t>> cells;
+  };
+  std::vector<IndexPart> parts(traffic_edges_.size());
+  jobs_parallel_for(parts.size(), [&](size_t edge) {
+    auto &part = parts[edge];
+    const auto &e = traffic_edges_[edge];
+    for (size_t i = 1; i < e.points.size(); ++i) {
+      auto a = e.points[i - 1], b = e.points[i];
+      double x0 = std::floor(std::min(a[0], b[0]) / 64.),
+             x1 = std::floor(std::max(a[0], b[0]) / 64.);
+      double z0 = std::floor(std::min(a[2], b[2]) / 64.),
+             z1 = std::floor(std::max(a[2], b[2]) / 64.);
+      if (!std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(z0) ||
+          !std::isfinite(z1) || x0 < INT32_MIN || x1 > INT32_MAX ||
+          z0 < INT32_MIN || z1 > INT32_MAX ||
+          (x1 - x0 + 1) * (z1 - z0 + 1) > 4096) {
+        part.complete = false;
+        continue;
+      }
+      for (int64_t x = int64_t(x0); x <= int64_t(x1); ++x)
+        for (int64_t z = int64_t(z0); z <= int64_t(z1); ++z)
+          part.cells.push_back(
+              {(uint64_t(uint32_t(x)) << 32) | uint32_t(z), i});
+    }
+  });
+  for (size_t edge = 0; edge < parts.size(); ++edge) {
+    traffic_complete_grid_ &= parts[edge].complete;
+    for (auto [key, segment] : parts[edge].cells)
+      traffic_cells_[key].push_back({edge, segment});
+  }
   for (const auto &n : net.nodes)
     nodes_.push_back({n.id, n.position});
   auto node = [&](uint32_t id) -> const RoadPoint * {
@@ -504,35 +539,69 @@ namespace slrr {
 std::optional<RoadProjection>
 RoadRoutes::traffic_project(const RoadPoint &point, const RoadPoint *heading,
                             bool include_crossings) const {
+  if (!finite(point) || (heading && !finite(*heading)))
+    return {};
   std::optional<RoadProjection> result;
-  float best = std::numeric_limits<float>::infinity();
-  for (size_t edge = 0; edge < traffic_edges_.size(); ++edge) {
+  float best = INFINITY;
+  std::pair<size_t, size_t> chosen{SIZE_MAX, SIZE_MAX};
+  auto examine = [&](size_t edge, size_t i) {
     const auto &e = traffic_edges_[edge];
     if ((!include_crossings && e.crossing) || e.next.empty())
-      continue;
-    for (size_t i = 1; i < e.points.size(); ++i) {
-      auto delta = sub(e.points[i], e.points[i - 1]);
-      auto planar = delta;
-      planar[1] = 0;
-      float length = dot(planar, planar);
-      if (length < 1e-8f)
-        continue;
-      float t = std::clamp(dot(sub(point, e.points[i - 1]), planar) / length,
-                           0.f, 1.f);
-      auto p = lerp(e.points[i - 1], e.points[i], t),
-           direction = road_normalize(delta);
-      float distance = road_distance(point, p), score = distance;
-      if (heading)
-        score += 2 * (1 - dot(direction, *heading));
-      if (score < best) {
-        best = score;
-        result = RoadProjection{p, direction, distance,
-                                e.distances[i - 1] +
-                                    t * (e.distances[i] - e.distances[i - 1]),
-                                edge};
-      }
+      return;
+    auto delta = sub(e.points[i], e.points[i - 1]), planar = delta;
+    planar[1] = 0;
+    float length = dot(planar, planar);
+    if (length < 1e-8f)
+      return;
+    float t =
+        std::clamp(dot(sub(point, e.points[i - 1]), planar) / length, 0.f, 1.f);
+    auto p = lerp(e.points[i - 1], e.points[i], t),
+         direction = road_normalize(delta);
+    float distance = road_distance(point, p), score = distance;
+    if (heading)
+      score += 2 * (1 - dot(direction, *heading));
+    auto order = std::pair{edge, i};
+    if (score < best || (score == best && order < chosen)) {
+      best = score;
+      chosen = order;
+      result = RoadProjection{
+          p, direction, distance,
+          e.distances[i - 1] + t * (e.distances[i] - e.distances[i - 1]), edge};
+    }
+  };
+  const double cell_x = std::floor(double(point[0]) / 64),
+               cell_z = std::floor(double(point[2]) / 64);
+  if (traffic_complete_grid_ && cell_x > INT32_MIN + 16 &&
+      cell_x < INT32_MAX - 16 && cell_z > INT32_MIN + 16 &&
+      cell_z < INT32_MAX - 16) {
+    int64_t cx = int64_t(cell_x), cz = int64_t(cell_z);
+    double allowance =
+        heading ? std::max(0., 2 * (double(road_distance(*heading, {})) - 1))
+                : 0;
+    for (int ring = 0; ring <= 16; ++ring) {
+      for (int64_t x = cx - ring; x <= cx + ring; ++x)
+        for (int64_t z = cz - ring; z <= cz + ring; ++z) {
+          if (ring && std::abs(x - cx) != ring && std::abs(z - cz) != ring)
+            continue;
+          auto found =
+              traffic_cells_.find((uint64_t(uint32_t(x)) << 32) | uint32_t(z));
+          if (found != traffic_cells_.end())
+            for (auto [edge, i] : found->second)
+              examine(edge, i);
+        }
+      // Every unvisited segment lies outside this square. Its planar distance
+      // (minus the largest possible heading bonus) bounds its score below.
+      double outside = std::min(
+          {point[0] - (cx - ring) * 64., (cx + ring + 1) * 64. - point[0],
+           point[2] - (cz - ring) * 64., (cz + ring + 1) * 64. - point[2]});
+      if (result && best + allowance < outside)
+        return result;
     }
   }
+  // Far-away points and incomplete/extreme input keep exhaustive semantics.
+  for (size_t edge = 0; edge < traffic_edges_.size(); ++edge)
+    for (size_t i = 1; i < traffic_edges_[edge].points.size(); ++i)
+      examine(edge, i);
   return result;
 }
 int RoadRoutes::traffic_signal(size_t edge, double seconds) const {

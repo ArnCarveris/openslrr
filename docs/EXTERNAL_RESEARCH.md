@@ -475,6 +475,17 @@ are OpenSLRR stream tuning prompted by the playtest, not original native count
 semantics. A local City fixture verifies all visible initial cars lie within
 165m, including more than 50 cars when Config.trafficDensity is .8.
 
+### Traffic projection performance
+
+The exhaustive per-driver lane search was too expensive at physical traffic
+frequency. OpenSLRR now extends its existing 64m street-projection grid strategy
+to lane/crossing curves, with a conservative termination bound, stable tie order
+and exhaustive fallback. This is a host acceleration structure, not a change to
+the TRC routes or SLRR_rev driving policy. #58's worker pool constructs per-edge
+index fragments; no worker touches Java, GameRef or the solver. The published
+immutable index supports concurrent queries, checked against serial results.
+Evidence and limitations: assets/validation/shared-races.txt.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6

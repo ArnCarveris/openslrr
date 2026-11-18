@@ -369,6 +369,26 @@ preserves the Java-owned car. Explicit insertion positions are projected onto
 actual lanes and published on the road before becoming visible. There are no
 Valocity-specific VM exceptions.
 
+Traffic projection uses a separate immutable 64m spatial grid for lane and grey
+crossing segments. Query rings expand until a conservative distance/heading bound
+proves that no unvisited segment can beat the result. Equal scores preserve the
+original edge/segment ordering. Far-away or incompletely indexed/extreme geometry
+falls back to exhaustive projection; non-finite query inputs fail safely.
+Construction uses jobs_parallel_for from #58: each worker reads one immutable
+edge and fills its own fragment; the host merges/publishes after the join. The
+VM, GameRefs, physical integration and scene publication stay on the host thread.
+Read-only queries are safe concurrently once the graph is published.
+
+This removes a complete-map search from each physical driver's repeated halt
+and route queries. On the local City fixture, 1,000 identical queries took
+1548ms at f42f1b6 and 5.3ms with the grid, with the same checksum. A 3,600-tick
+native-car integration took 5793ms before and 94-96ms after. A 20-car fleet took
+35ms for 60 physical updates. These are CPU fixture timings, not a promised full
+game framerate. Tests compare 150 indexed projections against an exhaustive
+oracle, including crossing/lane filters, non-unit headings, high/far points and
+cell boundaries, plus serial/parallel results. Reproduce with road_routes and
+its -BaselineRef f42f1b6 option; traffic_runtime also supports that baseline.
+
 Notifications emit balanced car_add <live-id> <registration-id> / car_rem
 <live-id> strings to original Java after placement. Java owns opponent lists,
 markers, challenges, countdowns, results and transitions. Removing a traffic

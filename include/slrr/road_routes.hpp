@@ -64,7 +64,9 @@ private:
   std::vector<std::pair<uint32_t, RoadPoint>> nodes_;
   std::unordered_map<uint32_t, float> radii_;
   std::unordered_map<uint64_t, std::vector<std::pair<size_t, size_t>>> cells_;
-  bool complete_grid_ = true;
+  std::unordered_map<uint64_t, std::vector<std::pair<size_t, size_t>>>
+      traffic_cells_;
+  bool complete_grid_ = true, traffic_complete_grid_ = true;
   Anchor anchor(const RoadPoint &) const;
   std::optional<RoadRoute> between(const RoadPoint &, const RoadPoint &,
                                    const Anchor &, const Anchor &) const;

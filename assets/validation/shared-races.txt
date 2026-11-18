@@ -111,3 +111,28 @@ original signal producer/timing/STOP-YIELD and flare halos.
   of 50, without reducing the inter-car spawn gap. Default remains 20 total.
 - These stream radii and count scale are host policy. Latest City UI driving
   still awaits the maintainer's playtest; native coverage is not gameplay parity.
+
+2026-11-18 traffic CPU performance follow-up
+Baseline: f42f1b6. Same Release host objects/data/test inputs; baseline runner
+substitutes only road_routes.cpp from the specified revision.
+Commands:
+  ./scripts/run_save_io_tests.ps1 -Suite road_routes -BaselineRef f42f1b6
+  ./scripts/run_save_io_tests.ps1 -Suite road_routes
+  ./scripts/run_save_io_tests.ps1 -Suite traffic_runtime
+- Exhaustive 1000-query baseline: 1548.005ms; initial indexed run: 5.280ms.
+  Both checksum 1031.8738. Approximately 293x cheaper on this machine.
+- 150 exhaustive-oracle comparisons pass (lane/crossing eligibility, unit and
+  non-unit headings), along with far/high/boundary/invalid queries. Parallel
+  read-only projection matches serial output exactly.
+- Worker pool concurrency: 24. Index fragments are built in parallel, then
+  merged on the host. Graph/frame ownership and physical solver remain serial.
+- Native City driving 3600 ticks: baseline 5792.922ms; grid 93.741-96.474ms.
+- Physical fleet: 20 cars / 60 ticks / 35.084ms total (about .585ms/update).
+- Separate full executable smoke: isolated save root, linked read-only assets,
+  copied current options, 2560x1440 D3D11, Baiern development car, ValoCity_Track,
+  bench-drive 3 / bench-time 13 / no-vsync. Exit 0 in java.game.Valocity.
+  Stable samples: physics .60-.62ms, frame 3.23-3.64ms. This short development
+  session is not the user's career camera/traffic mix; it is not an FPS promise
+  or a controlled before/after GPU benchmark. Original save files untouched.
+- Release host builds; all seven integration suites and nine Python coverage
+  tests pass. Latest actual career performance awaits user verification.

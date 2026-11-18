@@ -1,5 +1,6 @@
 #include "race_fixture.hpp"
 #include "slrr/host_game_options.hpp"
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -352,6 +353,7 @@ void actual_city_turns_and_wheels() {
       std::copy(child->local_matrix, child->local_matrix + 16, local.begin());
       initial.push_back({key, local});
     }
+  auto simulation_begin = std::chrono::steady_clock::now();
   for (int tick = 0; tick < 3600; ++tick) {
     RoadPoint before{n->pos[0], n->pos[1], n->pos[2]};
     float yaw = n->ypr[0];
@@ -375,6 +377,10 @@ void actual_city_turns_and_wheels() {
         max_steer = std::max(max_steer, std::fabs(angle));
       }
   }
+  std::printf("TRAFFIC physical benchmark: 3600 ticks %.3f ms\n",
+              std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - simulation_begin)
+                  .count());
   int animated = 0;
   for (const auto &[key, base] : initial) {
     auto *wheel = gameref_get(key);
@@ -614,6 +620,15 @@ void inline_wheel_contact_and_population() {
       SLRR_REQUIRE(total == 0);
     if (density > .5f)
       SLRR_REQUIRE(total > 50);
+    if (density == .2f) {
+      auto begin = std::chrono::steady_clock::now();
+      traffic_step(f.vm, 1);
+      std::printf("TRAFFIC fleet benchmark: %zu cars / 60 ticks %.3f ms\n",
+                  total,
+                  std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - begin)
+                      .count());
+    }
   }
   f.vm.set_static("java.util.Config", "trafficDensity", Value::make_float(.2f));
   host_game_options_load(f.vm);
