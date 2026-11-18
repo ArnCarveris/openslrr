@@ -188,26 +188,40 @@ bool blocked(const Population &p, const RoadRoutes::Edge &e) {
   auto cross = p.crossings.find(e.to);
   return cross != p.crossings.end() && cross->second > clock_seconds;
 }
+size_t choose_transition(const std::vector<size_t> &choices,
+                         const RoadRoutes &graph) {
+  // Upstream chooses a destination branch first, then one of its lanes. A wide
+  // outgoing street must not be more likely simply because it has more lanes.
+  std::vector<uint32_t> branches;
+  for (auto i : choices) {
+    auto branch = graph.traffic_edges()[i].branch;
+    if (std::find(branches.begin(), branches.end(), branch) == branches.end())
+      branches.push_back(branch);
+  }
+  auto branch = branches[std::min<size_t>(size_t(random() * branches.size()),
+                                          branches.size() - 1)];
+  std::vector<size_t> lanes;
+  for (auto i : choices)
+    if (graph.traffic_edges()[i].branch == branch)
+      lanes.push_back(i);
+  return lanes[std::min<size_t>(size_t(random() * lanes.size()),
+                                lanes.size() - 1)];
+}
 void publish(Registration &r, const RoadRoutes &graph, float at) {
-  const auto &e = graph.edges()[r.edge];
+  const auto &e = graph.traffic_edges()[r.edge];
   RoadRoute route;
   route.points = e.points;
   auto p = road_at(route, at);
-  auto q = road_at(route, std::min(e.length, at + 1));
-  auto direction = road_normalize({q[0] - p[0], q[1] - p[1], q[2] - p[2]});
-  if (road_distance(direction, {}) < .1f)
-    direction = road_normalize({e.points.back()[0] - e.points.front()[0],
-                                e.points.back()[1] - e.points.front()[1],
-                                e.points.back()[2] - e.points.front()[2]});
-  // A traffic lane sits to the right of the shared street centreline.
-  p[0] -= direction[2] * 1.8f;
-  p[2] += direction[0] * 1.8f;
+  auto q = road_at(route, std::min(e.length, at + .25f));
+  auto previous = road_at(route, std::max(0.f, at - .25f));
+  auto direction = road_normalize(
+      {q[0] - previous[0], q[1] - previous[1], q[2] - previous[2]});
   SceneFloorHit floor;
   if (scene_instances_sample_floor(p[0], p[2], p[1] + 4, r.car, floor))
     p[1] = floor.height;
   gameref_set_matrix(r.car, p[0], p[1], p[2],
                      std::atan2(-direction[0], -direction[2]), 0, 0);
-  if (r.kinematic) {
+  {
     if (!r.ride_height) {
       part_park_chassis(r.car);
       std::vector<std::array<float, 3>> supports;
@@ -237,10 +251,11 @@ void publish(Registration &r, const RoadRoutes &graph, float at) {
 bool place(Registration &r, const RoadRoutes &graph, const Population &p,
            const RoadPoint &focus, bool initial) {
   for (int attempt = 0; attempt < 96; ++attempt) {
-    size_t edge = std::min<size_t>(size_t(random() * graph.edges().size()),
-                                   graph.edges().size() - 1);
-    const auto &e = graph.edges()[edge];
-    if (blocked(p, e) || e.length < 15)
+    size_t edge =
+        std::min<size_t>(size_t(random() * graph.traffic_edges().size()),
+                         graph.traffic_edges().size() - 1);
+    const auto &e = graph.traffic_edges()[edge];
+    if (blocked(p, e) || e.crossing || e.next.empty() || e.length < 15)
       continue;
     float at = std::clamp(random() * e.length, 5.f, e.length - 5);
     RoadRoute line;
@@ -289,16 +304,21 @@ int32_t add_car(const RpkIndex &rpk, void *ground, Object *car, Object *where,
   r.notify = owned;
   r.cruise = (15 + random() * 20) / 3.6f;
   auto cfg = load_part_config(rpk, uint32_t(c->type_id));
-  r.kinematic = owned || cfg.native_kind != "car";
+  r.kinematic = owned || cfg.native_kind != "car" ||
+                r.car->class_name == "java.game.parts.Part" ||
+                !part_chassis(r.car);
   if (r.kinematic)
     part_set_external_motion(r.car, true);
   if (auto p = point(where)) {
     gameref_set_matrix(r.car, (*p)[0], (*p)[1], (*p)[2], 0, 0, 0);
     r.unplaced = false;
     auto graph = race_ground_roads(rpk, ground);
-    if (auto projected = graph ? graph->project(*p) : std::nullopt) {
+    if (auto projected = graph ? graph->traffic_project(*p) : std::nullopt) {
       r.edge = projected->edge;
       r.along = projected->along;
+      publish(r, *graph, r.along);
+    } else {
+      r.unplaced = true;
     }
   }
   c->streamed_hidden = true;
@@ -393,15 +413,21 @@ bool race_traffic_halted(void *ground, const RoadPoint &position, Object *car) {
   if (!p || !resources)
     return false;
   auto graph = race_ground_roads(*resources, ground);
+  if (graph)
+    if (auto street = graph->project(position))
+      for (auto road : graph->edges()[street->edge].roads)
+        if (p->blocked.contains(road))
+          return true;
   PartMatrix frame;
   RoadPoint heading{};
   if (car && scene_instances_script_matrix(car, frame.data()))
     heading = {-frame[8], -frame[9], -frame[10]};
   auto projection =
-      graph ? graph->project(position, car ? &heading : nullptr) : std::nullopt;
+      graph ? graph->traffic_project(position, car ? &heading : nullptr)
+            : std::nullopt;
   if (!projection)
     return false;
-  const auto &e = graph->edges()[projection->edge];
+  const auto &e = graph->traffic_edges()[projection->edge];
   for (auto road : e.roads)
     if (p->blocked.contains(road))
       return true;
@@ -409,7 +435,7 @@ bool race_traffic_halted(void *ground, const RoadPoint &position, Object *car) {
   if (cross != p->crossings.end() && cross->second > clock_seconds &&
       e.length - projection->along < 22)
     return true;
-  auto color = graph->edge_signal(projection->edge, clock_seconds);
+  auto color = graph->traffic_signal(projection->edge, clock_seconds);
   Registration *registered = nullptr;
   if (car)
     for (auto &entry : registrations)
@@ -604,7 +630,7 @@ void race_traffic_tick(Jvm &vm, float seconds) {
       continue;
     auto graph = race_ground_roads(*resources, key);
     auto *p = population(key);
-    if (!graph || !p || graph->edges().empty())
+    if (!graph || !p || graph->traffic_edges().empty())
       continue;
     std::vector<int32_t> ids;
     for (const auto &e : registrations)
@@ -622,13 +648,13 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         remove(id);
         continue;
       }
-      if (r.edge >= graph->edges().size()) {
+      if (r.edge >= graph->traffic_edges().size()) {
         r.edge = 0;
         r.unplaced = true;
       }
       if (r.visible &&
           (visible >= cap || road_distance(position(r.car), focus) > 380 ||
-           blocked(*p, graph->edges()[r.edge]))) {
+           blocked(*p, graph->traffic_edges()[r.edge]))) {
         queue(r, false);
         r.visible = false;
         n->streamed_hidden = true;
@@ -658,31 +684,29 @@ void race_traffic_tick(Jvm &vm, float seconds) {
           if (place(r, *graph, *p, focus, true))
             r.unplaced = false;
         } else if (road_distance(position(r.car), focus) > 300) {
-          auto near = graph->project(position(r.car));
+          auto near = graph->traffic_project(position(r.car));
           if (near) {
             r.edge = near->edge;
             r.along = near->along + r.speed * 5;
             // Coarse updates own hidden rivals only; visible chassis keep
             // physical motion.
             for (int hop = 0;
-                 hop < 32 && r.along > graph->edges()[r.edge].length; ++hop) {
-              const auto &e = graph->edges()[r.edge];
+                 hop < 32 && r.along > graph->traffic_edges()[r.edge].length;
+                 ++hop) {
+              const auto &e = graph->traffic_edges()[r.edge];
               std::vector<size_t> choices;
-              for (size_t i = 0; i < graph->edges().size(); ++i)
-                if (graph->edges()[i].from == e.to &&
-                    graph->edges()[i].to != e.from &&
-                    !blocked(*p, graph->edges()[i]))
+              for (size_t i : e.next)
+                if (!blocked(*p, graph->traffic_edges()[i]))
                   choices.push_back(i);
               if (choices.empty()) {
                 r.along = e.length;
                 break;
               }
               r.along -= e.length;
-              r.edge = choices[std::min<size_t>(
-                  size_t(random() * choices.size()), choices.size() - 1)];
+              r.edge = choose_transition(choices, *graph);
             }
             publish(r, *graph,
-                    std::min(r.along, graph->edges()[r.edge].length));
+                    std::min(r.along, graph->traffic_edges()[r.edge].length));
           }
         }
       }
@@ -693,26 +717,26 @@ void race_traffic_tick(Jvm &vm, float seconds) {
           continue;
         r.visible = true;
         n->streamed_hidden = false;
+        publish(r, *graph, r.along);
         ++visible;
         ++rivals;
         if (!r.kinematic) {
-          part_park_chassis(r.car);
           race_set_traffic_mode(*resources, r.car);
         }
         queue(r, true);
       }
       if (!r.visible || !r.kinematic)
         continue;
-      const auto &e = graph->edges()[r.edge];
+      const auto &e = graph->traffic_edges()[r.edge];
       float desired = r.cruise;
-      if (race_traffic_halted(key, position(r.car)))
+      if (blocked(*p, e))
         desired = 0;
-      auto signal = graph->edge_signal(r.edge, clock_seconds);
-      if (signal == 2 && e.length - r.along <= 12 + r.speed * seconds)
+      auto signal = graph->traffic_signal(r.edge, clock_seconds);
+      if (signal == 2 && e.length - r.along <= 2 + r.speed * seconds)
         r.cleared_crossing = e.to;
       if (r.cleared_crossing == e.to)
         signal = 2;
-      const float stop = std::max(0.f, e.length - r.along - 12.f);
+      const float stop = std::max(0.f, e.length - r.along - 2.f);
       if (signal == 0 || signal == 1)
         desired = std::min(desired, std::sqrt(8 * stop));
       for (const auto &entry : registrations) {
@@ -731,9 +755,9 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         r.speed = 0;
       if (r.along > e.length) {
         std::vector<size_t> choices;
-        for (size_t i = 0; i < graph->edges().size(); ++i) {
-          const auto &next = graph->edges()[i];
-          if (next.from == e.to && next.to != e.from && !blocked(*p, next))
+        for (size_t i : e.next) {
+          const auto &next = graph->traffic_edges()[i];
+          if (!blocked(*p, next))
             choices.push_back(i);
         }
         if (choices.empty())
@@ -741,18 +765,23 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         else {
           r.along -= e.length;
           r.cleared_crossing = 0;
-          r.edge = choices[std::min<size_t>(size_t(random() * choices.size()),
-                                            choices.size() - 1)];
+          r.edge = choose_transition(choices, *graph);
         }
       }
-      publish(r, *graph, std::min(r.along, graph->edges()[r.edge].length));
+      const float previous_yaw = n->ypr[0];
+      publish(r, *graph,
+              std::min(r.along, graph->traffic_edges()[r.edge].length));
+      const float delta = std::remainder(n->ypr[0] - previous_yaw, 6.2831853f);
+      part_animate_external_wheels(
+          r.car, advance,
+          advance > .001f ? std::atan(2.5f * delta / advance) : 0);
     }
     // Positioned reinsertion is a finite request, never a permanent model
     // weight.
     for (auto &seed : p->seeds)
       while (seed.remaining > 0 && visible < cap) {
-        auto projected = graph->project(seed.position);
-        if (!projected || blocked(*p, graph->edges()[projected->edge]))
+        auto projected = graph->traffic_project(seed.position);
+        if (!projected || blocked(*p, graph->traffic_edges()[projected->edge]))
           break;
         Object *car = part_create(vm, *resources, static_cast<Object *>(key),
                                   seed.model.type, "positioned traffic");
@@ -817,7 +846,6 @@ void race_traffic_tick(Jvm &vm, float seconds) {
       if (auto *n = gameref_get(car))
         n->streamed_hidden = false;
       if (!r.kinematic) {
-        part_park_chassis(car);
         race_set_traffic_mode(*resources, car);
       }
       queue(r, true);

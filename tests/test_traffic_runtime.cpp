@@ -118,7 +118,8 @@ void lifecycle_and_stream() {
     bottom = std::min(bottom, point[1]);
   std::printf("TRAFFIC bottom=%.3f road=%.3f origin=%.3f\n", bottom, start[1],
               seed->pos[1]);
-  SLRR_REQUIRE(std::fabs(bottom - start[1]) < .25f);
+  SLRR_REQUIRE(std::fabs(bottom - graph->traffic_project(point)->position[1]) <
+               .25f);
   race_traffic_tick(f.vm, .01f);
   SLRR_REQUIRE(events.size() == 5);
   f.call("delTraffic", "()V");
@@ -166,23 +167,23 @@ void red_light_stop_and_release() {
   f.packs.open_all();
   auto graph = race_ground_roads(f.packs, &f.ground);
   SLRR_REQUIRE(graph && graph->signals().size() > 400);
-  size_t selected = graph->edges().size();
+  size_t selected = graph->traffic_edges().size();
   RoadPoint start;
-  for (size_t i = 0; i < graph->edges().size(); ++i) {
-    const auto &e = graph->edges()[i];
-    if (e.length < 40 || graph->edge_signal(i, 0) != 0)
+  for (size_t i = 0; i < graph->traffic_edges().size(); ++i) {
+    const auto &e = graph->traffic_edges()[i];
+    if (e.length < 40 || graph->traffic_signal(i, 0) != 0)
       continue;
     RoadRoute road;
     road.points = e.points;
-    auto point = road_at(road, e.length - 13);
-    auto projected = graph->project(point);
+    auto point = road_at(road, e.length - 3);
+    auto projected = graph->traffic_project(point);
     if (projected && projected->edge == i) {
       selected = i;
       start = point;
       break;
     }
   }
-  SLRR_REQUIRE(selected < graph->edges().size());
+  SLRR_REQUIRE(selected < graph->traffic_edges().size());
   f.player = f.car();
   gameref_set_matrix(f.player, start[0], start[1], start[2], 0, 0, 0);
   f.controller.class_name = "java.io.Controller";
@@ -265,9 +266,190 @@ void shared_signal_render_cache() {
   std::puts("PASS real City signal lenses share cached emission meshes; phases "
             "refresh groups without per-head draws");
 }
+void actual_city_turns_and_wheels() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  scene_instances_enable_static_floor(false);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph);
+  const RoadRoutes::Edge *lane = nullptr;
+  for (const auto &e : graph->traffic_edges())
+    if (!e.crossing && e.length > 40 && !e.next.empty()) {
+      bool bends = true;
+      for (auto index : e.next) {
+        const auto &t = graph->traffic_edges()[index];
+        auto a = road_normalize({t.points[1][0] - t.points[0][0], 0,
+                                 t.points[1][2] - t.points[0][2]});
+        auto b = road_normalize(
+            {t.points.back()[0] - t.points[t.points.size() - 2][0], 0,
+             t.points.back()[2] - t.points[t.points.size() - 2][2]});
+        bends &= a[0] * b[0] + a[2] * b[2] < .8f;
+      }
+      if (bends) {
+        lane = &e;
+        break;
+      }
+    }
+  SLRR_REQUIRE(lane);
+  RoadRoute line;
+  line.points = lane->points;
+  auto start = road_at(line, lane->length - 8);
+  f.player = f.car();
+  gameref_set_matrix(f.player, start[0], start[1], start[2], 0, 0, 0);
+  f.controller.class_name = "java.io.Controller";
+  gameref_upsert(&f.controller);
+  part_command(&f.controller,
+               "controllable " + std::to_string(gameref_make_live(f.player)));
+  Object type;
+  type.fields["id"] = Value::make_int(
+      RpkIndex::make_full_id(f.packs.open_lib("cars/traffic/Taxi.rpk"), 6));
+  auto *where = vec(f.vm, start);
+  SLRR_REQUIRE(f.call("addTrafficP",
+                      "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I",
+                      {Value::make_obj(&type), Value::make_obj(where),
+                       Value::make_int(1), Value::make_float(4),
+                       Value::make_float(4), Value::make_float(2.5f)})
+                   .v.i == 1);
+  race_traffic_tick(f.vm, .01f);
+  Object *car = nullptr;
+  for (const auto &p : part_vehicle_positions())
+    if (p.chassis != f.player && race_traffic_pointer(p.chassis))
+      car = p.chassis;
+  SLRR_REQUIRE(car);
+  auto *n = gameref_get(car);
+  float start_yaw = n->ypr[0], max_step = 0, max_turn = 0, total_turn = 0,
+        max_steer = 0;
+  std::vector<std::pair<void *, PartMatrix>> initial;
+  for (auto key : n->children)
+    if (auto *child = gameref_get(key);
+        child && child->kind == GameRefKind::RenderRef) {
+      PartMatrix local;
+      std::copy(child->local_matrix, child->local_matrix + 16, local.begin());
+      initial.push_back({key, local});
+    }
+  for (int tick = 0; tick < 3600; ++tick) {
+    RoadPoint before{n->pos[0], n->pos[1], n->pos[2]};
+    float yaw = n->ypr[0];
+    gameref_set_matrix(f.player, before[0] + 15, before[1], before[2] + 15, 0,
+                       0, 0);
+    race_traffic_tick(f.vm, 1.f / 60);
+    SLRR_REQUIRE(gameref_get(car) && !n->streamed_hidden);
+    float step = road_distance(before, {n->pos[0], n->pos[1], n->pos[2]});
+    float turn = std::fabs(std::remainder(n->ypr[0] - yaw, 6.2831853f));
+    max_step = std::max(max_step, step);
+    max_turn = std::max(max_turn, turn);
+    total_turn =
+        std::max(total_turn,
+                 std::fabs(std::remainder(n->ypr[0] - start_yaw, 6.2831853f)));
+    SLRR_REQUIRE(step < .3f && turn < .3f);
+    for (const auto &[key, base] : initial)
+      if (auto *w = gameref_get(key)) {
+        auto *m = w->local_matrix;
+        float angle = std::atan2(base[0] * m[2] - base[2] * m[0],
+                                 base[0] * m[0] + base[2] * m[2]);
+        max_steer = std::max(max_steer, std::fabs(angle));
+      }
+  }
+  int animated = 0;
+  for (const auto &[key, base] : initial) {
+    auto *wheel = gameref_get(key);
+    SLRR_REQUIRE(wheel);
+    float difference = 0;
+    for (int i = 0; i < 12; ++i)
+      difference += std::fabs(wheel->local_matrix[i] - base[i]);
+    if (difference > .1f) {
+      ++animated;
+      SLRR_REQUIRE(std::fabs(wheel->local_matrix[12] - base[12]) < .001f &&
+                   std::fabs(wheel->local_matrix[13] - base[13]) < .001f &&
+                   std::fabs(wheel->local_matrix[14] - base[14]) < .001f);
+    }
+  }
+  std::printf(
+      "TRAFFIC turn=%.3f max-step=%.3f max-yaw-step=%.3f animated-wheels=%d\n",
+      total_turn, max_step, max_turn, animated);
+  std::printf("TRAFFIC wheel steering max=%.3f\n", max_steer);
+  SLRR_REQUIRE(total_turn > 1 && animated == 4 && max_steer > .05f);
+  f.call("delTraffic", "()V");
+  part_destroy(f.player);
+}
+void native_day_racer_staging() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  scene_instances_enable_static_floor(false);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph && !graph->traffic_edges().empty());
+  auto focus = graph->traffic_edges().front().points.front();
+  f.player = f.car();
+  gameref_set_matrix(f.player, focus[0], focus[1], focus[2], 0, 0, 0);
+  f.controller.class_name = "java.io.Controller";
+  gameref_upsert(&f.controller);
+  part_command(&f.controller,
+               "controllable " + std::to_string(gameref_make_live(f.player)));
+  auto pack = f.packs.open_lib("cars/fake_racers/Teg.rpk");
+  uint32_t type_id = 0;
+  for (const auto &entry : f.packs.pack_by_id(pack)->entries) {
+    auto id = RpkIndex::make_full_id(pack, entry.type_id);
+    auto cfg = load_part_config(f.packs, id);
+    if (cfg.valid && cfg.native_kind == "car") {
+      type_id = id;
+      break;
+    }
+  }
+  SLRR_REQUIRE(type_id);
+  Object type;
+  type.fields["id"] = Value::make_int(type_id);
+  auto *dummy = f.vm.new_object("java.util.resource.GameRef");
+  f.registry.invoke("java.util.resource.GameRef", "create_native",
+                    "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;"
+                    "Ljava.lang.String;Ljava.lang.String;)V",
+                    dummy,
+                    {Value::make_obj(&f.ground), Value::make_obj(&type),
+                     Value::make_obj(f.vm.new_string("0,-10000,0,0,0,0")),
+                     Value::make_obj(f.vm.new_string("dummycar"))});
+  auto *chassis = part_chassis(dummy);
+  SLRR_REQUIRE(chassis && gameref_get(dummy) == gameref_get(chassis) &&
+               gameref_get(dummy)->pos[1] < -9999);
+  auto id = f.call("addTrafficCar",
+                   "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;)I",
+                   {Value::make_obj(dummy), Value::make_obj(nullptr)})
+                .v.i;
+  SLRR_REQUIRE(id > 0);
+  auto *n = gameref_get(dummy);
+  for (int tick = 0; tick < 600 && n->streamed_hidden; ++tick)
+    race_traffic_tick(f.vm, 1.f / 60);
+  std::printf("DAY initial hidden=%d x=%.3f y=%.3f z=%.3f id=%d\n",
+              n->streamed_hidden, n->pos[0], n->pos[1], n->pos[2], id);
+  SLRR_REQUIRE(n && !n->streamed_hidden && n->pos[1] > -100);
+  SceneFloorHit floor;
+  SLRR_REQUIRE(scene_instances_sample_floor(n->pos[0], n->pos[2], n->pos[1] + 4,
+                                            chassis, floor));
+  std::vector<RoadPoint> supports;
+  SLRR_REQUIRE(scene_instances_supports(chassis, supports));
+  float bottom = INFINITY;
+  for (auto p : supports)
+    bottom = std::min(bottom, p[1]);
+  SLRR_REQUIRE(std::fabs(bottom - floor.height) < .15f);
+  RoadPoint initial{n->pos[0], n->pos[1], n->pos[2]};
+  for (int tick = 0; tick < 600; ++tick)
+    race_traffic_tick(f.vm, 1.f / 60);
+  SLRR_REQUIRE(!n->streamed_hidden && n->pos[1] > -100 &&
+               road_distance(initial, {n->pos[0], n->pos[1], n->pos[2]}) > 1);
+  std::printf(
+      "DAY RACER native staging -10000 -> road %.3f body %.3f bottom %.3f\n",
+      floor.height, n->pos[1], bottom);
+  f.call("remTrafficCar", "(I)V", {Value::make_int(id)});
+  SLRR_REQUIRE(gameref_get(dummy));
+  part_destroy(chassis);
+  part_destroy(f.player);
+}
 int main() {
-  const standalone::Test tests[] = {lifecycle_and_stream,
-                                    red_light_stop_and_release,
-                                    shared_signal_render_cache};
+  const standalone::Test tests[] = {
+      native_day_racer_staging, actual_city_turns_and_wheels,
+      lifecycle_and_stream, red_light_stop_and_release,
+      shared_signal_render_cache};
   return standalone::run("traffic_runtime", tests);
 }

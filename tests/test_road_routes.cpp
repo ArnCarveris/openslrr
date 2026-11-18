@@ -175,9 +175,40 @@ void shared_signal_phases() {
   std::puts(
       "PASS one shared crossing phase: green, yellow, opposing red and repeat");
 }
+void traffic_lane_topology() {
+  RaceFixture f;
+  f.packs.open_all();
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph && !graph->traffic_edges().empty());
+  size_t lanes = 0, turns = 0, bends = 0;
+  for (const auto &e : graph->traffic_edges()) {
+    if (e.crossing)
+      ++turns;
+    else
+      ++lanes;
+    for (size_t next : e.next) {
+      SLRR_REQUIRE(next < graph->traffic_edges().size());
+      const auto &out = graph->traffic_edges()[next];
+      SLRR_REQUIRE(e.crossing != out.crossing);
+      SLRR_REQUIRE(road_distance(e.points.back(), out.points.front()) < .031f);
+    }
+    if (e.crossing) {
+      auto first = road_normalize({e.points[1][0] - e.points[0][0], 0,
+                                   e.points[1][2] - e.points[0][2]});
+      auto last = road_normalize(
+          {e.points.back()[0] - e.points[e.points.size() - 2][0], 0,
+           e.points.back()[2] - e.points[e.points.size() - 2][2]});
+      if (first[0] * last[0] + first[2] * last[2] < .8f)
+        ++bends;
+    }
+  }
+  std::printf("TRAFFIC actual lanes=%zu crossing curves=%zu bends=%zu\n", lanes,
+              turns, bends);
+  SLRR_REQUIRE(lanes > 100 && turns > 100 && bends > 50);
+}
 int main() {
-  const standalone::Test tests[] = {directions, cross_radius, real_city,
-                                    route_native_contract,
-                                    shared_signal_phases};
+  const standalone::Test tests[] = {
+      traffic_lane_topology, directions,          cross_radius, real_city,
+      route_native_contract, shared_signal_phases};
   return standalone::run("road_routes", tests);
 }

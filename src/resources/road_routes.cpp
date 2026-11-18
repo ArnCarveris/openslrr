@@ -54,6 +54,75 @@ RoadPoint road_at(const RoadRoute &r, float distance) {
 }
 RoadRoutes::RoadRoutes(const RoadNetwork &net,
                        const std::vector<RoadPoint> &fixtures) {
+  // SLRR_rev traffic bea8ce0 road-traffic.ts: actual traffic reverses the
+  // blue RoadOther records and follows only explicit grey crossing curves.
+  auto curve = [](const std::vector<RoadSegment> &segments) {
+    Edge e;
+    for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+      int steps =
+          int(std::clamp(std::ceil(double(it->length) / 1.5), 12., 256.));
+      for (int i = 0; i <= steps; ++i) {
+        auto point = trc_sample(*it, 1 - float(i) / steps);
+        float step =
+            e.points.empty() ? 0 : road_distance(e.points.back(), point);
+        if (!e.points.empty() && i == 0 && step > .03f)
+          return Edge{};
+        if (!e.points.empty() && step < 1e-7f)
+          continue;
+        e.length += step;
+        e.points.push_back(point);
+        e.distances.push_back(e.length);
+      }
+    }
+    return e;
+  };
+  std::unordered_map<uint32_t, size_t> lane_index;
+  for (const auto &road : net.others) {
+    auto e = curve(road.segments);
+    if (e.points.size() < 2)
+      continue;
+    e.id = road.id;
+    e.branch = road.refs[0];
+    e.roads = {road.refs[0], road.id};
+    for (const auto &node : net.nodes)
+      for (const auto &link : node.links)
+        if (link.target == road.id) {
+          if (link.flag)
+            e.to = node.id;
+          else
+            e.from = node.id;
+        }
+    lane_index[road.id] = traffic_edges_.size();
+    traffic_edges_.push_back(std::move(e));
+  }
+  for (const auto &node : net.nodes)
+    for (const auto &incoming : node.links) {
+      auto a = lane_index.find(incoming.target);
+      if (a == lane_index.end())
+        continue;
+      for (const auto &lane : node.lanes) {
+        if (road_distance(traffic_edges_[a->second].points.back(),
+                          lane.segment.end) > .03f)
+          continue;
+        for (const auto &outgoing : node.links) {
+          auto b = lane_index.find(outgoing.target);
+          if (b == lane_index.end() || a == b ||
+              road_distance(lane.segment.start,
+                            traffic_edges_[b->second].points.front()) > .03f)
+            continue;
+          auto turn = curve({lane.segment});
+          if (turn.points.size() < 2)
+            continue;
+          turn.crossing = true;
+          turn.from = turn.to = node.id;
+          turn.branch = traffic_edges_[b->second].branch;
+          turn.roads = traffic_edges_[a->second].roads;
+          turn.next = {b->second};
+          traffic_edges_[a->second].next.push_back(traffic_edges_.size());
+          traffic_edges_.push_back(std::move(turn));
+        }
+      }
+    }
   for (const auto &n : net.nodes)
     nodes_.push_back({n.id, n.position});
   auto node = [&](uint32_t id) -> const RoadPoint * {
@@ -425,5 +494,48 @@ std::optional<RoadRoute> RoadRoutes::between(const RoadPoint &s,
     out.direction = road_normalize(sub(e.points[i], e.points[i - 1]));
   }
   return out;
+}
+} // namespace slrr
+
+namespace slrr {
+std::optional<RoadProjection>
+RoadRoutes::traffic_project(const RoadPoint &point,
+                            const RoadPoint *heading) const {
+  std::optional<RoadProjection> result;
+  float best = std::numeric_limits<float>::infinity();
+  for (size_t edge = 0; edge < traffic_edges_.size(); ++edge) {
+    const auto &e = traffic_edges_[edge];
+    if (e.crossing || e.next.empty())
+      continue;
+    for (size_t i = 1; i < e.points.size(); ++i) {
+      auto delta = sub(e.points[i], e.points[i - 1]);
+      auto planar = delta;
+      planar[1] = 0;
+      float length = dot(planar, planar);
+      if (length < 1e-8f)
+        continue;
+      float t = std::clamp(dot(sub(point, e.points[i - 1]), planar) / length,
+                           0.f, 1.f);
+      auto p = lerp(e.points[i - 1], e.points[i], t),
+           direction = road_normalize(delta);
+      float distance = road_distance(point, p), score = distance;
+      if (heading)
+        score += 2 * (1 - dot(direction, *heading));
+      if (score < best) {
+        best = score;
+        result = RoadProjection{p, direction, distance,
+                                e.distances[i - 1] +
+                                    t * (e.distances[i] - e.distances[i - 1]),
+                                edge};
+      }
+    }
+  }
+  return result;
+}
+int RoadRoutes::traffic_signal(size_t edge, double seconds) const {
+  if (edge >= traffic_edges_.size() || traffic_edges_[edge].crossing)
+    return -1;
+  const auto &e = traffic_edges_[edge];
+  return signal(e.to, e.branch, seconds);
 }
 } // namespace slrr

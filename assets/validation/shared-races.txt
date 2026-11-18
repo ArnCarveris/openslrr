@@ -51,3 +51,23 @@ transitions and return to garage remain for in-game validation. Do not close
 Known host-model gaps: traffic behaviour/AI_params tuning, dedicated lane/turn
 curves, full pursuit/contact reactions, spline metadata, opponent driver seating,
 original signal producer/timing/STOP-YIELD and flare halos.
+
+2026-11-18 next playtest follow-up (same PR #180)
+- User confirmed ROC follows the track in game; reported slow AI.
+- Upstream pins refreshed: traffic bea8ce0 / v221 ab4b494 unchanged.
+- Port actual reverse RoadOther lanes and explicitly connected grey curves:
+  installed City graph 1572 lanes, 3854 crossing curves, 2397 bending curves.
+- Traffic integration follows real City turns for 60 seconds at 60 Hz;
+  checks every frame for position/heading jumps, four rotating wheel meshes,
+  fixed wheel mounting centres and nonzero wheel steering. Latest run: maximum
+  step 0.121m, maximum heading step 0.085rad, wheel steering peak 0.601rad.
+- Native day-racer regression executes create_native with real fake_racers/Teg
+  at (0,-10000,0), registers addTrafficCar(dummy,null), verifies alias/chassis,
+  floor contact, visibility, movement and preservation on registration removal.
+- ROC same original grid, real terrain, per-car spline and ordered gates:
+  Baiern finish 104.4s; Enula 96.0s (previous 125.9/122.2s).
+  Maximum sampled lateral error remains 1.774m; mechanical braking still passes.
+- Release build; road_routes, race_brain, traffic_runtime, race_vehicle,
+  physics_recovery, gameref_alias and trigger_markers checks pass.
+- Full City UI challenge/return flow and latest rendered behavior await user
+  validation. Traffic lane changes, contact/pursuit and AI_params remain partial.

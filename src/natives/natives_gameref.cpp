@@ -594,7 +594,8 @@ void register_gameref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections)
       "java.util.resource.GameRef", "create_native",
       "(Ljava.util.resource.GameRef;Ljava.util.resource.GameRef;"
       "Ljava.lang.String;Ljava.lang.String;)V",
-      [gameref_bind_create](Object* self, const std::vector<Value>& args) {
+      [&jvm, &rpk, gameref_bind_create](Object *self,
+                                        const std::vector<Value> &args) {
         Object* parent =
             (args.size() >= 1 && args[0].tag == ValueTag::Obj) ? args[0].v.o
                                                                : nullptr;
@@ -610,6 +611,19 @@ void register_gameref_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections)
                                                                : nullptr;
         gameref_bind_scene_camera(self, params ? params->str : std::string{});
         gameref_bind_trigger(self, params ? params->str : std::string{});
+        // Native-only car creation still owns a complete CFG assembly. It must
+        // not remain an unbacked GameRef parked at the script's staging pose.
+        if (auto *state = gameref_get(self); state && state->type_id) {
+          const auto native =
+              rpk.payload_prop(uint32_t(state->type_id), "native");
+          if (native.rfind("car ", 0) == 0) {
+            auto *car = part_create(jvm, rpk, parent, uint32_t(state->type_id),
+                                    alias ? alias->str : "native car",
+                                    params ? params->str : std::string{}, true);
+            if (car)
+              gameref_bind_alias(self, car);
+          }
+        }
         return Value::make_void();
       });
   jvm.natives().register_method(

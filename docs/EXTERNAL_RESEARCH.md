@@ -422,6 +422,25 @@ use that actual grid, per-car data and map collisions, rather than extrapolating
 from a flat surface and the generic race.spl. Steady simulation and signal mesh
 publication remain on the host thread under the new worker-pool contract.
 
+### Traffic lane and native-only assembly follow-up
+
+The traffic/v221 pins above were refreshed again after the next playtest and
+were unchanged. SLRR_rev:src/engine/road-traffic.ts is now used for reverse
+RoadOther traversal, .03 m explicit grey-curve joins, arc-length cursor transitions
+and branch-before-lane turn choice. The old street-centre-plus-offset shortcut
+was insufficient: it produced discontinuous headings and crossing jumps.
+SLRR_rev:src/render/java-vehicles.ts also distinguishes native-only fake racers
+from mechanical Java cars and builds their CFG assemblies. OpenSLRR implements
+that ownership at GameRef.create_native through its existing Part factory, rather
+than adding a second renderer-owned vehicle system. Local Valocity.java confirms
+the native-only -10000 m staging position and subsequent traffic registration.
+
+The port adds wheel spin from travelled distance/CFG radius and curvature-driven
+steering in the Part visual owner. Upstream lane changes, dedicated physical
+traffic recovery and all contact/pursuit policies are not claimed as implemented.
+The ROC straight-speed increase is OpenSLRR tuning requested after the maintainer
+confirmed spline following in game; it is not attributed to recovered AI_params.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6

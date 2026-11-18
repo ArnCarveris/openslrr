@@ -24,6 +24,10 @@ public:
     std::vector<float> distances;
     float length = 0;
     std::vector<uint32_t> roads;
+    std::vector<size_t>
+        next; // Explicit RoadOther -> grey crossing -> RoadOther joins.
+    bool crossing = false;
+    uint32_t branch = 0;
   };
   struct Signal {
     RoadPoint position{};
@@ -41,6 +45,10 @@ public:
   std::optional<RoadPoint> nearest_cross(const RoadPoint &,
                                          float radius = 0) const;
   const std::vector<Edge> &edges() const { return edges_; }
+  const std::vector<Edge> &traffic_edges() const { return traffic_edges_; }
+  std::optional<RoadProjection>
+  traffic_project(const RoadPoint &, const RoadPoint *heading = nullptr) const;
+  int traffic_signal(size_t edge, double seconds) const;
 
 private:
   struct Anchor {
@@ -48,7 +56,7 @@ private:
     std::optional<RoadProjection> projection;
     float distance = 0;
   };
-  std::vector<Edge> edges_;
+  std::vector<Edge> edges_, traffic_edges_;
   std::vector<Signal> signals_;
   std::unordered_map<uint32_t, std::vector<uint32_t>> cycles_;
   std::vector<std::pair<uint32_t, RoadPoint>> nodes_;

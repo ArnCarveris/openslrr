@@ -318,13 +318,32 @@ road/crossing restrictions per ground. Model declarations may be id-only Java
 resource references, rather than live instances. Positioned reinsertion is a
 finite request, separate from permanent model weights. Density selects up to 50
 active cars (20 at the default .2), with room for scripted rivals. Generic CFG
-cars use external lane motion, an urban 15–35 km/h cruise target, bounded
+cars and native-only racer doubles use external lane motion, an urban 15–35 km/h cruise target, bounded
 acceleration/braking and same-road following gaps. External poses sample the
 actual floor and apply the complete assembly's cached ride height. Scripted
-rivals keep their existing engine, gears, wheels and mechanical solver. Hidden
+mechanical rivals keep their existing engine, gears, wheels and mechanical solver. Hidden
 rivals receive coarse five-second estimates and are excluded from drawing,
 physics and triggers. Mainloop traffic catch-up uses the same four-tick budget
 as car physics, avoiding accelerated traffic after a slow frame.
+
+The traffic graph is separate from the street-centre route graph. Following
+SLRR_rev traffic bea8ce0 road-traffic.ts, RoadOther segments run in reverse stored
+order. Explicit node grey curves connect matching incoming/outgoing endpoints
+within .03 m; joins are never invented by nearest street centres. The installed
+City data supplies 1,572 lane curves and 3,854 crossing curves. A cursor carries
+arc-length progress through lane -> crossing -> outgoing lane. Selection chooses
+a destination branch before one of its lanes. Vehicle heading uses the local
+curve tangent, including at an endpoint. Native wheel visuals roll by travelled
+metres divided by their CFG radius and the steering wheels yaw with curvature;
+the wheel mounting centres and body pose stay independent.
+
+GameRef.create_native on a native car now builds its CFG-backed native assembly
+and aliases the Java handle to it, without running a chassis-specific constructor.
+This covers Valocity's fake_racers doubles created at (0,-10000,0), followed by
+addTrafficCar(dummycar,null). The traffic registration owns placement/movement
+and visibility; removing it preserves the Java-owned car. Explicit insertion
+positions are projected onto actual lanes and published on the road before
+becoming visible. There are no Valocity-specific VM exceptions.
 
 Notifications emit balanced car_add <live-id> <registration-id> / car_rem
 <live-id> strings to original Java after placement. Java owns opponent lists,
@@ -336,8 +355,8 @@ maps. The shared crossing/approach binding follows SLRR_rev traffic branch
 bea8ce06 and its traffic-control.ts: nearest crossing, then nearest flagged
 incoming endpoint, grouped by its owning street. Heads and traffic consume the
 same 10 s green / 3 s yellow branch cycle. Red/yellow prevent new entry; green
-passage latches clearance until the next road. These timings and the 12 m native
-traffic stop offset are host policy, not recovered original timing/stop lines.
+passage latches clearance until the next road. These timings and the 2 m offset before the incoming lane end are host policy,
+not recovered original timing/stop lines.
 Signal lens emission is grouped into one cached mesh per ground shell (at most
 three colour groups), rebuilt on phase/registration changes. No separate draw
 per signal head is added. The native flare billboard/halo, STOP/YIELD policy and
@@ -361,10 +380,17 @@ a target behind the car and braking preview before curves. Resource cue flags
 640 never rotate/bob a vehicle mesh or an installed Part render; they continue
 to animate standalone trigger indicators.
 
+Spline races no longer inherit the generic 108 km/h curvature-floor ceiling on
+straight sections: their ceiling is 55 m/s times AI level, with curvature-limited
+corner speed and braking preview out to 192 m. This is host tuning; AI_params
+and per-key spline speed metadata are not yet interpreted. The unchanged ordered
+ROC gate test now finishes in 96/104 seconds with the same 1.8 m maximum sampled
+deviation, rather than the previous 122/126 seconds.
+
 Limitations: behaviour flags are stored without tuning; trailing model
 parameters, spline width/speed metadata, AI_params and opponent IDs do not tune
-the controller. Follow offsets are world-space. Complete pursuit, dedicated
-traffic lane/turn curves, pair-contact reactions and opponent driver seating
+the controller. Follow offsets are world-space. Complete pursuit, traffic lane changes,
+pair-contact reactions and opponent driver seating
 remain incomplete. AI tuning, lane offsets, population and streaming radii are
 host models, not original-engine parity. Native bindings are not race completion.
 
@@ -377,7 +403,7 @@ trigger_markers test retains marker animation and excludes vehicle animation.
 The race_vehicle integration executes original Bot methods on real City and ROC
 collision terrain with stock Baiern/Enula assemblies. From the scripted ROC grid,
 the per-car spline passes all three Round checkpoints in order and reaches its
-finish gate in 122–126 simulated seconds; maximum sampled deviation is 1.8 m.
+finish gate in 96–104 simulated seconds; maximum sampled deviation is 1.8 m.
 This is an automated physics integration, not a running career UI recording.
 Day challenge/finish dialogs, the full night meeting and result/garage transitions
 still need in-game validation. Evidence: assets/validation/shared-races.txt.

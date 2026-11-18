@@ -156,22 +156,25 @@ void traffic_route(Brain &b, const RoadPoint &position) {
   RoadPoint heading{};
   if (scene_instances_script_matrix(b.car, frame.data()))
     heading = {-frame[8], -frame[9], -frame[10]};
-  auto p = graph ? graph->project(position, &heading) : std::nullopt;
-  if (!p)
+  auto projection =
+      graph ? graph->traffic_project(position, &heading) : std::nullopt;
+  if (!projection)
     return;
-  const auto &e = graph->edges()[p->edge];
   b.route = {};
   b.route.points.push_back(position);
-  for (size_t i = 0; i < e.points.size(); ++i)
-    if (e.distances[i] > p->along + .5f)
-      b.route.points.push_back(e.points[i]);
-  if (b.route.points.size() < 3) {
-    for (const auto &next : graph->edges())
-      if (next.from == e.to && next.to != e.from) {
-        b.route.points.insert(b.route.points.end(), next.points.begin(),
-                              next.points.end());
-        break;
-      }
+  size_t edge = projection->edge;
+  float at = projection->along;
+  // Keep multiple connected curves ahead so the driver never aims at a street
+  // centre or changes heading discontinuously at a crossing boundary.
+  for (int hop = 0; hop < 6; ++hop) {
+    const auto &e = graph->traffic_edges()[edge];
+    for (size_t i = 0; i < e.points.size(); ++i)
+      if (e.distances[i] > at + .05f)
+        b.route.points.push_back(e.points[i]);
+    if (e.next.empty())
+      break;
+    edge = e.next.front();
+    at = -1;
   }
   for (size_t i = 1; i < b.route.points.size(); ++i)
     b.route.length += road_distance(b.route.points[i - 1], b.route.points[i]);
@@ -393,15 +396,18 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   if (behind)
     request = std::copysign(1.f, angle);
   b->steering += std::clamp(request - b->steering, -dt * 3, dt * 3);
+  const bool spline_race = b->mode == "AI_spline";
+  const float curvature_floor = (b->night || spline_race) ? 1.e-9f : .005f;
   float desired = std::min(
-      {b->night ? INFINITY : 32.f * std::clamp(b->level, .5f, 1.5f),
-       std::sqrt(4.5f / std::max(b->night?1.e-9f:.005f, std::fabs(curvature))),
+      {b->night ? INFINITY
+                : (spline_race ? 55.f : 32.f) * std::clamp(b->level, .5f, 1.5f),
+       std::sqrt(4.5f / std::max(curvature_floor, std::fabs(curvature))),
        b->night ? INFINITY
                 : std::sqrt(8 * std::max(road_distance(position, finish),
                                          b->route.length - b->progress))});
   // Brake before a bend, rather than waiting for it to enter the short
   // steering lookahead. Distances and acceleration are host tuning in SI units.
-  for (float ahead : {8.f, 16.f, 32.f, 48.f, 80.f}) {
+  for (float ahead : {8.f, 16.f, 32.f, 48.f, 80.f, 128.f, 192.f}) {
     auto a = road_at(b->route, b->progress + ahead - 4),
          c = road_at(b->route, b->progress + ahead),
          d = road_at(b->route, b->progress + ahead + 4);
@@ -411,7 +417,7 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
           chord = std::hypot(d[0] - a[0], d[2] - a[2]);
     if (l1 > .1f && l2 > .1f && chord > .1f) {
       float k = 2 * std::fabs(ux * vz - uz * vx) / (l1 * l2 * chord);
-      float corner = 4.5f / std::max(b->night?1.e-9f:.005f, k);
+      float corner = 4.5f / std::max(curvature_floor, k);
       desired =
           std::min(desired, std::sqrt(corner + 8 * std::max(0.f, ahead - 8)));
     }

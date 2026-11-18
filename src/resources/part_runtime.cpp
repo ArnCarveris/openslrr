@@ -69,6 +69,13 @@ struct SfxItem {
 };
 struct Record {
   bool external_motion = false;
+  struct ExternalWheel {
+    Object *node;
+    PartMatrix base, mesh;
+    float radius, steer_factor;
+    double spin = 0;
+  };
+  std::vector<ExternalWheel> external_wheels;
   std::unique_ptr<physics::DeformationCage> deformation;
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
@@ -431,6 +438,7 @@ Object *car(Object *self) {
   return nullptr;
 }
 void render_part(Jvm &jvm, Object *self, Record &rec) {
+  rec.external_wheels.clear();
   auto paint_of = [&](const std::vector<uint32_t> &colors) {
     uint32_t paint = 0xffffff;
     if (!rec.colour_set || colors.empty())
@@ -514,7 +522,20 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
       PartMatrix local = part_matrix_multiply(
           part_pose_matrix(rec.config->wheels[static_cast<size_t>(r.wheel)]),
           part_pose_matrix(r.pose));
+      const auto count = rec.renders.size();
       add(r.resource, local, &r.links, &r.colors);
+      if (rec.renders.size() > count) {
+        const auto i = static_cast<size_t>(r.wheel);
+        const float radius = i < rec.config->wheel_springs.size()
+                                 ? rec.config->wheel_springs[i].radius
+                                 : 0;
+        const float factor = i < rec.config->wheel_steering.size()
+                                 ? rec.config->wheel_steering[i]
+                                 : 0;
+        rec.external_wheels.push_back(
+            {rec.renders.back(), part_pose_matrix(rec.config->wheels[i]),
+             part_pose_matrix(r.pose), radius > 0 ? radius : .33f, factor});
+      }
     }
   }
 }
@@ -1155,7 +1176,7 @@ bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
 
 Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
                     uint32_t resource, const std::string &alias,
-                    const std::string &params) {
+                    const std::string &params, bool native_only) {
   index = &resources;
   auto cfg = configuration(resource);
   if (!cfg->valid) {
@@ -1164,7 +1185,8 @@ Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
                    cfg->source.c_str(), error.c_str());
     return nullptr;
   }
-  std::string script = resources.payload_prop(resource, "script");
+  std::string script =
+      native_only ? std::string{} : resources.payload_prop(resource, "script");
   std::replace(script.begin(), script.end(), '\\', '/');
   std::string class_name = "java.game.parts.Part";
   if (!script.empty()) {
@@ -4505,7 +4527,33 @@ bool part_vehicle_hud(VehicleHudState &state) {
   return true;
 }
 
-void part_set_external_motion(Object*car,bool external){auto*rec=record(as_part(car));if(rec){rec->external_motion=external;rec->physics_ready=false;}}
+void part_animate_external_wheels(Object *car, float metres, float steer) {
+  auto *rec = record(as_part(car));
+  if (!rec || !rec->external_motion || !std::isfinite(metres) ||
+      !std::isfinite(steer))
+    return;
+  for (auto &wheel : rec->external_wheels) {
+    wheel.spin =
+        std::remainder(wheel.spin - metres / wheel.radius, 6.283185307179586);
+    PartPose rotation;
+    rotation.rotation = {std::clamp(steer, -.6f, .6f) * wheel.steer_factor,
+                         float(wheel.spin), 0};
+    auto local = part_matrix_multiply(
+        wheel.base,
+        part_matrix_multiply(part_pose_matrix(rotation), wheel.mesh));
+    if (auto *n = gameref_get(wheel.node)) {
+      std::copy(local.begin(), local.end(), n->local_matrix);
+      n->matrix_override = true;
+    }
+  }
+}
+void part_set_external_motion(Object *car, bool external) {
+  auto *rec = record(as_part(car));
+  if (rec) {
+    rec->external_motion = external;
+    rec->physics_ready = false;
+  }
+}
 bool part_physics_state(Object *key, PartPhysicsState &state) {
   auto *rec = record(as_part(key));
   if (!rec)
