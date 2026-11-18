@@ -303,12 +303,36 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   float curvature =
       2 * std::sin(angle) / std::max(2.f, road_distance(error, {}));
   float request = std::clamp(std::atan(2.7f * curvature) / .6f, -1.f, 1.f);
+  // sin(pi) is zero: pure pursuit alone accelerates straight away from a
+  // target behind the car. Recover at walking speed with a real steering lock.
+  const bool behind = std::fabs(angle) > 1.5707963f;
+  if (behind)
+    request = std::copysign(1.f, angle);
   b->steering += std::clamp(request - b->steering, -dt * 3, dt * 3);
   float desired =
       std::min({32.f * std::clamp(b->level, .5f, 1.5f),
                 std::sqrt(4.5f / std::max(.005f, std::fabs(curvature))),
                 std::sqrt(8 * std::max(road_distance(position, finish),
                                        b->route.length - b->progress))});
+  // Brake before a bend, rather than waiting for it to enter the short
+  // steering lookahead. Distances and acceleration are host tuning in SI units.
+  for (float ahead : {8.f, 16.f, 32.f, 48.f, 80.f}) {
+    auto a = road_at(b->route, b->progress + ahead - 4),
+         c = road_at(b->route, b->progress + ahead),
+         d = road_at(b->route, b->progress + ahead + 4);
+    float ux = c[0] - a[0], uz = c[2] - a[2], vx = d[0] - c[0],
+          vz = d[2] - c[2];
+    float l1 = std::hypot(ux, uz), l2 = std::hypot(vx, vz),
+          chord = std::hypot(d[0] - a[0], d[2] - a[2]);
+    if (l1 > .1f && l2 > .1f && chord > .1f) {
+      float k = 2 * std::fabs(ux * vz - uz * vx) / (l1 * l2 * chord);
+      float corner = 4.5f / std::max(.005f, k);
+      desired =
+          std::min(desired, std::sqrt(corner + 8 * std::max(0.f, ahead - 8)));
+    }
+  }
+  if (behind)
+    desired = std::min(desired, 3.f);
   if (b->mode == "AI_GoToTraffic")
     desired = std::min(desired, 12.f);
   out.brake = std::clamp((speed - desired) * .35f, 0.f, 1.f);

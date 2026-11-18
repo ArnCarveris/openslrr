@@ -37,6 +37,7 @@ struct Registration {
   float distant_next = 0;
   size_t edge = 0;
   float along = 0, speed = 10;
+  std::optional<float> ride_height;
 };
 struct Seed {
   Model model;
@@ -102,6 +103,16 @@ std::optional<RoadPoint> point(Object *o) {
 void *canonical(void *key) {
   auto *n = gameref_get(key);
   return n ? n->key : nullptr;
+}
+uint32_t model_type(Object *object) {
+  if (!object)
+    return 0;
+  if (auto *n = gameref_get(object); n && n->type_id)
+    return uint32_t(n->type_id);
+  auto it = object->fields.find("id");
+  return it != object->fields.end() && it->second.tag == ValueTag::Int
+             ? uint32_t(it->second.v.i)
+             : 0;
 }
 Population *population(void *key) {
   auto *n = gameref_get(key);
@@ -188,8 +199,34 @@ void publish(Registration &r, const RoadRoutes &graph, float at) {
   // A traffic lane sits to the right of the shared street centreline.
   p[0] -= direction[2] * 1.8f;
   p[2] += direction[0] * 1.8f;
+  SceneFloorHit floor;
+  if (scene_instances_sample_floor(p[0], p[2], p[1] + 4, r.car, floor))
+    p[1] = floor.height;
   gameref_set_matrix(r.car, p[0], p[1], p[2],
                      std::atan2(-direction[0], -direction[2]), 0, 0);
+  if (r.kinematic) {
+    if (!r.ride_height) {
+      part_park_chassis(r.car);
+      std::vector<std::array<float, 3>> supports;
+      auto *body = gameref_get(r.car);
+      const bool hidden = body && body->streamed_hidden;
+      if (body)
+        body->streamed_hidden = false;
+      const bool supported = scene_instances_supports(r.car, supports);
+      if (body)
+        body->streamed_hidden = hidden;
+      if (supported) {
+        float bottom = std::numeric_limits<float>::infinity();
+        for (const auto &point : supports)
+          bottom = std::min(bottom, point[1]);
+        if (auto *n = gameref_get(r.car); n && std::isfinite(bottom))
+          r.ride_height = n->pos[1] - bottom;
+      }
+    }
+    if (r.ride_height)
+      gameref_set_matrix(r.car, p[0], p[1] + *r.ride_height, p[2],
+                         std::atan2(-direction[0], -direction[2]), 0, 0);
+  }
   if (auto *n = gameref_get(r.car))
     for (int i = 0; i < 3; ++i)
       n->vel[i] = direction[i] * r.speed;
@@ -401,15 +438,15 @@ void register_traffic_natives(Jvm &vm, RpkIndex &rpk, SectionMachine &machine) {
       });
   auto model = [](Object *self, const std::vector<Value> &a) {
     auto *p = population(self);
-    auto *n = gameref_get(object(a, 0));
-    if (!p || !n)
+    auto type = model_type(object(a, 0));
+    if (!p || !type)
       return Value::make_int(0);
     constexpr size_t offset = 1;
     float weight = number(a, offset);
     if (!std::isfinite(weight) || weight <= 0)
       return Value::make_int(0);
-    Model m{uint32_t(n->type_id), weight, number(a, offset + 1),
-            number(a, offset + 2), number(a, offset + 3)};
+    Model m{type, weight, number(a, offset + 1), number(a, offset + 2),
+            number(a, offset + 3)};
     if (!m.type)
       return Value::make_int(0);
     for (size_t i = 0; i < p->models.size(); ++i)
@@ -431,15 +468,13 @@ void register_traffic_natives(Jvm &vm, RpkIndex &rpk, SectionMachine &machine) {
       "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I",
       [](Object *self, const std::vector<Value> &a) {
         auto *p = population(self);
-        auto *n = gameref_get(object(a, 0));
+        auto type = model_type(object(a, 0));
         auto position = point(object(a, 1));
         float count = number(a, 2);
-        if (!p || !n || !position || !std::isfinite(count) || count <= 0 ||
-            !n->type_id)
+        if (!p || !type || !position || !std::isfinite(count) || count <= 0)
           return Value::make_int(0);
         Seed seed;
-        seed.model = {uint32_t(n->type_id), 1, number(a, 3), number(a, 4),
-                      number(a, 5)};
+        seed.model = {type, 1, number(a, 3), number(a, 4), number(a, 5)};
         seed.position = *position;
         seed.remaining = int(std::min(count, 50.f));
         if (!seed.remaining)

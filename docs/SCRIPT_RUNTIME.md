@@ -352,3 +352,20 @@ checks balanced notifications, positioned reinsertion, pause and cleanup.
 These are deterministic integrations, not a completed day/night/ROC gameplay
 session. Full finish/results, challenge UI and repeat map entry await in-game
 validation. Evidence: assets/validation/shared-races.txt.
+
+
+Follow-up from the first in-game test: traffic model declarations can be plain
+resource references with only an id field. Requiring an instantiated GameRef
+silently rejected those declarations; the regression fixture now covers this
+representation for both addTrafficN and addTrafficP. External traffic positions
+sample the road surface and apply a cached ride height from the complete rendered
+assembly, including its four wheel meshes. This avoids placing the model origin
+inside the pavement. The test checks all five meshes and their lowest world Y.
+
+The race controller now brakes for curvature ahead and uses a slow steering-lock
+recovery when the target is behind the car; pure-pursuit sin(pi) alone otherwise
+permits straight acceleration in the wrong direction. Host integration now
+covers both Baiern and Enula, actual wheel steering/yaw over 120 seconds of ROC
+spline driving on a flat surface, autonomous stopping at a route end, and braking
+from approximately 106 km/h to rest. A sharp-bend input test checks braking before
+the bend. This still does not claim a completed ROC lap on the actual terrain.

@@ -1,4 +1,6 @@
 #include "race_fixture.hpp"
+#include <cmath>
+#include <limits>
 #include <sstream>
 using namespace slrr;
 Object *vec(Jvm &vm, const RoadPoint &p) {
@@ -88,7 +90,7 @@ void lifecycle_and_stream() {
     taxi = f.packs.pack_by_path("cars/traffic/Taxi.rpk");
   SLRR_REQUIRE(taxi);
   Object type;
-  gameref_upsert(&type)->type_id = RpkIndex::make_full_id(taxi->pack_id, 6);
+  type.fields["id"] = Value::make_int(RpkIndex::make_full_id(taxi->pack_id, 6));
   auto positioned = f.call(
       "addTrafficP", "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I",
       {Value::make_obj(&type), Value::make_obj(where), Value::make_int(1),
@@ -105,6 +107,15 @@ void lifecycle_and_stream() {
   auto *seed = gameref_find_live(inserted_id);
   SLRR_REQUIRE(seed && road_distance(start, {seed->pos[0], seed->pos[1],
                                              seed->pos[2]}) < 10);
+  std::vector<std::array<float, 3>> supports;
+  SLRR_REQUIRE(scene_instances_supports(seed->key, supports) &&
+               supports.size() >= 5);
+  float bottom = std::numeric_limits<float>::infinity();
+  for (auto &point : supports)
+    bottom = std::min(bottom, point[1]);
+  std::printf("TRAFFIC bottom=%.3f road=%.3f origin=%.3f\n", bottom, start[1],
+              seed->pos[1]);
+  SLRR_REQUIRE(std::fabs(bottom - start[1]) < .25f);
   race_traffic_tick(f.vm, .01f);
   SLRR_REQUIRE(events.size() == 5);
   f.call("delTraffic", "()V");

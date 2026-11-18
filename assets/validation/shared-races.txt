@@ -32,3 +32,21 @@ night spectator placement, repeat track transitions or full ROC lap was verified
 No original-engine parity claim for traffic signals/contact reactions, pursuit,
 behaviour flags, driver seating, spline metadata, AI tuning or streaming constants.
 The three issues and tracker remain open until their own in-game acceptance passes.
+
+Follow-up: first gameplay feedback (traffic absent, buried cars, ROC steering/brake)
+- Regression with a resource reference carrying only fields["id"] FAILED before
+  the correction; the original fixture had artificially upserted a live GameRef.
+- addTrafficN/addTrafficP now resolve either representation; traffic_runtime PASS.
+- Native Taxi's body and all four wheels are present; lowest mesh Y=0.479 m,
+  road reference Y=0.479 m, origin Y=1.432 m. Previously the origin itself was
+  placed at road height. Ride height is cached; the real floor overrides TRC Y.
+- race_brain: 3/3, including braking before a sharp spline turn and braking plus
+  nonzero steering when the route target lies behind the car.
+- race_vehicle: 2/2 (Baiern and Enula; original Bot methods).
+  Baiern arrival: 0.002 km/h, 1.114 m from destination.
+  Enula arrival: 0.000 km/h, 1.115 m from destination.
+  Both exercise 120 simulated seconds on the ROC spline on a flat surface,
+  starting away from the first tangent; actual wheel steering and yaw change.
+  AI_stop: Baiern 106.121 -> 0.001 km/h; Enula 106.842 -> 0.000 km/h in 5 s.
+- These integrations complement the first in-game report; the follow-up still
+  needs an in-game check of traffic appearance and the actual ROC road surface.
