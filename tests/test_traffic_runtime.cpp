@@ -721,9 +721,37 @@ void unavailable_spawn_does_not_allocate() {
   f.call("delTraffic", "()V");
   part_destroy(f.player);
 }
+void slow_frames_preserve_signal_period() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph && !graph->signals().empty());
+  // Signal publication belongs to the ground's registered traffic population.
+  Object model;
+  model.fields["id"] = Value::make_int(f.car_type);
+  f.call("addTrafficN", "(Ljava.util.resource.GameRef;IFFF)I",
+         {Value::make_obj(&model), Value::make_int(1), Value::make_float(2),
+          Value::make_float(5), Value::make_float(2)});
+  // Two FPS: physical catch-up stays at four ticks, while each frame accounts
+  // for half a second in the shared lamp/driver clock.
+  const auto fixture = graph->signals().front();
+  for (int frame = 0; frame < 208; ++frame) {
+    race_traffic_tick(f.vm, 4.f / 60, .5);
+    SLRR_REQUIRE(race_signal_at(fixture.position) ==
+                 graph->signal(fixture.crossing, fixture.branch,
+                               (frame + 1) * .5));
+  }
+  const auto revision = race_signal_revision();
+  const auto color = race_signal_at(fixture.position);
+  race_traffic_tick(f.vm, 0, 0);
+  SLRR_REQUIRE(race_signal_revision() == revision &&
+               race_signal_at(fixture.position) == color);
+}
 int main() {
   const standalone::Test tests[] = {
-      unavailable_spawn_does_not_allocate,
+      slow_frames_preserve_signal_period, unavailable_spawn_does_not_allocate,
       missing_lamp_stop_releases, inline_wheel_contact_and_population,
       native_day_racer_staging,   actual_city_turns_and_wheels,
       lifecycle_and_stream,       red_light_stop_and_release,

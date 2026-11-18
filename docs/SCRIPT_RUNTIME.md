@@ -355,7 +355,9 @@ it does not raise the body by a generic support-mesh bounding box. Static native
 wheels therefore settle down onto the road as upstream's native cars do. Vehicles
 without a supported four-wheel chassis retain the external-motion fallback.
 Hidden cars remain excluded from drawing, physics and triggers. Hidden rivals
-receive coarse five-second estimates. Mainloop traffic catch-up uses the same
+receive coarse five-second estimates. The shared signal/STOP clock advances by elapsed time with VM pause/time-warp
+applied, independently of the bounded physical catch-up. Thus low FPS does not
+stretch each signal slot; pausing still freezes it. Mainloop traffic catch-up uses the same
 four-tick budget as car physics.
 
 The traffic graph is separate from the street-centre route graph. Following

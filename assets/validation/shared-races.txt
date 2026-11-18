@@ -168,3 +168,14 @@ new: 3.378 ms, 0 disposable objects, all 8 traffic_runtime tests pass.
 Times are scenario measurements, not asserted thresholds or claimed in-game FPS.
 Release host build and knowledge-reference checks pass. Manual capture's exact
 391 ms scene has not yet been reproduced; maintainer validation remains pending.
+
+Signal-clock follow-up (2026-11-18)
+Mainloop previously fed the lamp/STOP clock the physical catch-up capped at
+4/60 second. At 0.7 FPS a 13-second phase could take almost five real minutes;
+multiple approaches compound the apparent permanent red. Signals now consume
+elapsed wall time scaled by VM time-warp, while motion keeps its existing cap.
+The clock uses double precision. Pause/time-warp zero still freezes phases.
+A real City fixture checks lamp state against the route graph at every half-second
+across 104 seconds while motion advances only 4/60 per frame, then checks pause.
+Manual intersection validation remains pending.
+Release build passes; all 9 traffic_runtime cases and knowledge references pass.

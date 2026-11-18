@@ -787,8 +787,9 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     character_set_sim_time(jvm.sim_time());
     {
       perf::Scope scope(perf::Zone::Traffic);
-      race_traffic_tick(jvm,
-                        static_cast<float>(std::min(sim_seconds, 4.0 / 60.0)));
+      race_traffic_tick(
+          jvm, static_cast<float>(std::min(sim_seconds, 4.0 / 60.0)),
+          std::isfinite(dt) && dt > 0 ? dt * jvm.time_warp() : 0.0);
     }
     {
       perf::Scope scope(perf::Zone::Physics);

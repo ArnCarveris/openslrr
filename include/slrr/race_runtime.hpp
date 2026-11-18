@@ -23,7 +23,9 @@ void race_brain_forget(void *);
 void race_brains_reset();
 void race_set_traffic_mode(const RpkIndex &, Object *);
 void register_traffic_natives(Jvm &, RpkIndex &, SectionMachine &);
-void race_traffic_tick(Jvm &, float seconds);
+// Motion is bounded independently of the pause/warp-aware signal clock.
+// Omit clock_seconds for callers already supplying simulation steps.
+void race_traffic_tick(Jvm &, float seconds, double clock_seconds = -1);
 int race_signal_at(const RoadPoint &position);
 uint64_t race_signal_revision();
 void race_traffic_forget(void *);

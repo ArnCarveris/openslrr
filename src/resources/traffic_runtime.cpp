@@ -34,7 +34,7 @@ struct Registration {
   bool owned = false, visible = false, notify = false, notified = false,
        unplaced = true, kinematic = false;
   int mode = 0;
-  float distant_next = 0, stop_since = -1;
+  double distant_next = 0, stop_since = -1;
   uint32_t cleared_crossing = 0;
   size_t edge = 0;
   float along = 0, speed = 0, cruise = 0;
@@ -49,7 +49,7 @@ struct Population {
   std::vector<Model> models;
   std::vector<Seed> seeds;
   std::unordered_set<uint32_t> blocked;
-  std::unordered_map<uint32_t, float> crossings;
+  std::unordered_map<uint32_t, double> crossings;
 };
 struct Event {
   Object *target;
@@ -65,7 +65,7 @@ SectionMachine *sections = nullptr;
 RpkIndex *resources = nullptr;
 int32_t next_id = 1;
 uint32_t random_state = 0x8f12345;
-float clock_seconds = 0;
+double clock_seconds = 0;
 uint64_t signal_revision = 1;
 float random() {
   random_state ^= random_state << 13;
@@ -388,7 +388,7 @@ void race_halt_cross(const RpkIndex &rpk, void *ground,
   }
   if (!node)
     return;
-  float expiry = clock_seconds + std::min(duration, 86400.f);
+  double expiry = clock_seconds + std::min(duration, 86400.f);
   p->crossings[node] = std::max(p->crossings[node], expiry);
 }
 void race_clear_halts(void *ground) {
@@ -609,14 +609,20 @@ int race_signal_at(const RoadPoint &position) {
   }
   return result;
 }
-void race_traffic_tick(Jvm &vm, float seconds) {
+void race_traffic_tick(Jvm &vm, float seconds, double elapsed_seconds) {
   if (!std::isfinite(seconds) || seconds < 0 || !resources)
     return;
   auto phase = [](double seconds) {
     return uint64_t(seconds / 13) * 2 + (std::fmod(seconds, 13) >= 10);
   };
   auto old_phase = phase(clock_seconds);
-  clock_seconds += seconds;
+  // Slow frames must not stretch a 13-second signal slot into minutes. The
+  // caller passes elapsed time with pause/time-warp applied, independently
+  // of the bounded motion step. Tests/fixed-step callers can omit it.
+  if (elapsed_seconds < 0)
+    elapsed_seconds = seconds;
+  if (std::isfinite(elapsed_seconds) && elapsed_seconds > 0)
+    clock_seconds += elapsed_seconds;
   if (old_phase != phase(clock_seconds))
     ++signal_revision;
   auto *world = scene_instances_world();
