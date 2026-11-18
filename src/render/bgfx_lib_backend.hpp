@@ -12,6 +12,7 @@
 #include "slrr/osd_registry.hpp"
 #include "debug_overlay.hpp"
 #include "osd_text_batch.hpp"
+#include "scene_mesh_data.hpp"
 
 #include <bgfx/bgfx.h>
 
@@ -115,10 +116,12 @@ class LibBgfxBackend final : public IRenderBackend {
 
 
  private:
+  friend struct SceneMeshCacheRegression;
   DebugOverlay debug_overlay_;
   bool debug_was_visible_ = false;
   struct ScenePart {
-    ScxGeometry geo;
+    SceneMeshData geo;
+    bool merge_groups = false;
     std::shared_ptr<const ScxGeometry> source;
     bgfx::VertexBufferHandle vbh = BGFX_INVALID_HANDLE;
     bgfx::VertexBufferHandle skin_vbh = BGFX_INVALID_HANDLE;
@@ -139,6 +142,8 @@ class LibBgfxBackend final : public IRenderBackend {
   std::unordered_map<const ScxGeometry*,ScenePart> instance_meshes_;
   std::unordered_map<void*, const ScxGeometry*> deformed_meshes_;
 
+  void cache_scene_mesh(const std::shared_ptr<const ScxGeometry>& source,
+                        void* owner, bool map_prop);
   void sync_instances(const float* view, const float* projection);
   static SceneFrustum view_frustum(const float* view, const float* projection);
   void apply_video_mode(const VideoMode& mode);
@@ -174,11 +179,6 @@ class LibBgfxBackend final : public IRenderBackend {
 
   void upload_part(ScenePart& part);
   void upload_skin(ScenePart& part);
-  // Renderer copy only: sections with identical materials become one group
-  // over a reordered index buffer. Meshes with blended sections are kept.
-  static void merge_material_groups(ScxGeometry& geo);
-
-
   static bool is_logo_texture_slot(const ScxGeometry& geo, uint16_t tex_i);
 
 

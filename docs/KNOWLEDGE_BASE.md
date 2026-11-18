@@ -303,10 +303,11 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   the per-instance colour into ColorMixTex (paint-masked) facades,
   and `scene_instances_collect_batches` merges one mesh's visible placements
   from all cells into one batch. The rest are drawn one by one.
-- The renderer's copy of a ground mesh or map prop merges sections with
-  identical materials into one group
-  (`src/render/bgfx_lib_backend.cpp:merge_material_groups`); the scene's
-  own geometry, used for collision and picking, keeps its sections.
+- The GPU cache retains a shared source plus draw metadata, not a second set
+  of CPU vertex/index/skin arrays. Ground/map-prop sections with identical
+  materials use transient reordered upload indices
+  (`src/render/scene_mesh_data.hpp:prepare_scene_mesh`); collision and picking
+  keep the authoritative source's original sections and indices.
 - During `flush`, collections of the active world share one snapshot
   (`src/resources/scene_instances.cpp:scene_instances_frame_cache`).
 - `ground_prop_config` retains the full native CFG. Box, sphere and SCX bodies
@@ -2117,3 +2118,26 @@ cycles return to 27 and that backend close/reopen preserves the baseline. The
 existing GPU OSD test still produces 20 draws for 1000 glyphs; map view tests pass.
 The test uses unique shader metadata hashes to prevent bgfx deduplication from
 hiding leaked references. See assets/validation/render-pass-cleanup.txt.
+
+
+## GPU mesh source ownership (#83)
+
+`ScenePart` stores `SceneMeshData` (mesh info, groups, texture paths, scale and
+vertex/index counts), a shared source and GPU handles. Uploads and skin uploads
+read all vertex attributes directly from that source. Owned standalone meshes
+move into one shared source; resident scene meshes reuse their existing source.
+Material merging copies only its reordered index scratch, released after bgfx
+has copied the upload bytes. Blended group ordering and source collision/picking
+data are preserved. No renderer-owned vertex/index/skin payload remains resident.
+
+Revision changes rebuild GPU buffers and metadata from the current source;
+changed texture identities reload bindings. Replaced deformed sources retain
+compatible texture bindings, as before. Skin buffers are recreated on demand.
+
+The `scene_mesh_cache` D3D11 test covers shared-source ownership, material order,
+blend exclusions, 16 position/normal/UV/skin/index revisions without GPU handle
+growth, deformed-source texture transfer and full cleanup. Read-only City POLY,
+Baiern chassis and area_205 assets account for 16,076,716 bytes of vertex/index/
+skin arrays the old renderer would duplicate; this is a sample payload count,
+not whole-process memory usage or an FPS gain. See
+assets/validation/mesh-cache-ownership.txt.

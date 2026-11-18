@@ -855,15 +855,15 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
 {
     if (!geo.info.ok) return;
     ScenePart part;
-    part.geo = std::move(geo);
-    expand_scene_bbox(part.geo.info.bbox_min, part.geo.info.bbox_max);
+    part.source = std::make_shared<ScxGeometry>(std::move(geo));
+    expand_scene_bbox(part.source->info.bbox_min, part.source->info.bbox_max);
     // Banner/logo atlases (Long_logos*.dds, group "reklam") read mirrored in
     // stock UV — flip U only on those verts (horizontal 180°).
     // Banner UVs stay as stored. Flipping them mirrored the front faces.
     upload_part(part);
     load_part_textures(part);
     std::printf("[bgfx] +SCX verts=%zu idx=%zu tex=%zu parts=%zu\n",
-                part.geo.positions.size() / 3, part.geo.indices.size(),
+                part.geo.vertex_count, part.geo.index_count,
                 part.tex.size(), parts_.size() + 1);
     parts_.push_back(std::move(part));
     mesh_ok_ = true;
@@ -872,76 +872,11 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     int sum_verts = 0;
     for (const ScenePart& p : parts_) {
       sum_groups += p.geo.info.groups;
-      sum_verts += static_cast<int>(p.geo.positions.size() / 3);
+      sum_verts += static_cast<int>(p.geo.vertex_count);
       sum_tris += p.geo.info.triangles;
     }
     set_scx_mesh(3, sum_groups, sum_verts, sum_tris, mesh_min_, mesh_max_);
   }
-
-namespace {
-bool same_map(const ScxTextureMap& a, const ScxTextureMap& b) {
-  return a.channel == b.channel && a.tiling == b.tiling && a.scale_u == b.scale_u &&
-         a.scale_v == b.scale_v && a.offset_u == b.offset_u && a.offset_v == b.offset_v;
-}
-
-// Everything a draw reads from a group, except its index range and name.
-bool same_material(const ScxGroup& a, const ScxGroup& b) {
-  return a.texture_index == b.texture_index && a.mix_index == b.mix_index &&
-         a.reflection_index == b.reflection_index && a.lightmap_index == b.lightmap_index &&
-         a.illumination_index == b.illumination_index &&
-         a.emission_index == b.emission_index && same_map(a.emission_map, b.emission_map) &&
-         std::equal(std::begin(a.emission_color), std::end(a.emission_color), std::begin(b.emission_color)) &&
-         a.mix_vertex_color == b.mix_vertex_color && a.material_type == b.material_type &&
-         a.reflection_strength == b.reflection_strength && same_map(a.base_map, b.base_map) &&
-         same_map(a.mix_map, b.mix_map) && same_map(a.reflection_map, b.reflection_map) &&
-         same_map(a.lightmap_map, b.lightmap_map) &&
-         same_map(a.illumination_map, b.illumination_map) &&
-         a.material_flags == b.material_flags && a.alpha_reference == b.alpha_reference &&
-         std::equal(std::begin(a.diffuse), std::end(a.diffuse), std::begin(b.diffuse)) &&
-         std::equal(std::begin(a.specular), std::end(a.specular), std::begin(b.specular)) &&
-         a.shininess == b.shininess;
-}
-}  // namespace
-
-void LibBgfxBackend::merge_material_groups(ScxGeometry& geo) {
-  if (geo.groups.size() < 2) return;
-  const bool v3 = geo.info.version == 3, v4 = geo.info.version == 4;
-  for (const auto& group : geo.groups) {
-    // Blended sections are drawn in their stored order. Leave such a mesh as is.
-    if ((v4 && (group.material_flags & 0x40000000u)) ||
-        (v3 && (group.material_flags & 0x101u) == 0x101u))
-      return;
-    if (static_cast<size_t>(group.index_start) + group.index_count > geo.indices.size()) return;
-  }
-  // Materials in order of first use; each keeps its sections in stored order.
-  std::vector<size_t> material_of(geo.groups.size());
-  std::vector<size_t> first;
-  for (size_t i = 0; i < geo.groups.size(); ++i) {
-    size_t m = 0;
-    while (m < first.size() && !same_material(geo.groups[first[m]], geo.groups[i])) ++m;
-    if (m == first.size()) first.push_back(i);
-    material_of[i] = m;
-  }
-  if (first.size() == geo.groups.size()) return;
-  std::vector<uint32_t> indices;
-  indices.reserve(geo.indices.size());
-  std::vector<ScxGroup> groups;
-  groups.reserve(first.size());
-  for (size_t m = 0; m < first.size(); ++m) {
-    ScxGroup merged = geo.groups[first[m]];
-    merged.index_start = static_cast<uint32_t>(indices.size());
-    for (size_t i = 0; i < geo.groups.size(); ++i) {
-      if (material_of[i] != m) continue;
-      const auto begin = geo.indices.begin() + geo.groups[i].index_start;
-      indices.insert(indices.end(), begin, begin + geo.groups[i].index_count);
-    }
-    merged.index_count = static_cast<uint32_t>(indices.size()) - merged.index_start;
-    groups.push_back(std::move(merged));
-  }
-  geo.indices = std::move(indices);
-  geo.groups = std::move(groups);
-  geo.info.groups = static_cast<int32_t>(geo.groups.size());
-}
 
 SceneFrustum LibBgfxBackend::view_frustum(const float* view, const float* projection) {
     float clip[16];
@@ -961,6 +896,60 @@ SceneFrustum LibBgfxBackend::view_frustum(const float* view, const float* projec
         for (auto& component : plane) component /= normal;
     }
     return frustum;
+}
+
+void LibBgfxBackend::cache_scene_mesh(
+    const std::shared_ptr<const ScxGeometry> &source, void *owner,
+    bool map_prop) {
+  const auto *key = source.get();
+  const auto *node = owner ? gameref_get(owner) : nullptr;
+  const bool deformed = node && node->deformed_geometry.get() == key;
+  if (auto found = instance_meshes_.find(key);
+      found != instance_meshes_.end()) {
+    ScenePart &part = found->second;
+    if (part.revision != source->revision) {
+      const bool textures_changed = part.geo.textures != source->textures ||
+                                    part.geo.info.path != source->info.path;
+      if (textures_changed)
+        destroy_part(part);
+      if (bgfx::isValid(part.vbh))
+        bgfx::destroy(part.vbh);
+      if (bgfx::isValid(part.skin_vbh))
+        bgfx::destroy(part.skin_vbh);
+      if (bgfx::isValid(part.ibh))
+        bgfx::destroy(part.ibh);
+      part.vbh = BGFX_INVALID_HANDLE;
+      part.skin_vbh = BGFX_INVALID_HANDLE;
+      part.ibh = BGFX_INVALID_HANDLE;
+      part.revision = source->revision;
+      upload_part(part);
+      if (textures_changed)
+        load_part_textures(part, map_prop);
+    }
+    return;
+  }
+  ScenePart part;
+  part.source = source;
+  // Static map meshes repeat a few materials across hundreds of sections.
+  // Keep one draw per material instead of one per section.
+  part.merge_groups = !deformed && (map_prop || source->ground_polygons);
+  upload_part(part);
+  if (deformed) {
+    const auto previous = deformed_meshes_.find(owner);
+    if (previous != deformed_meshes_.end()) {
+      auto old = instance_meshes_.find(previous->second);
+      if (old != instance_meshes_.end() &&
+          old->second.geo.textures == part.geo.textures &&
+          old->second.geo.info.path == part.geo.info.path) {
+        part.tex = std::move(old->second.tex);
+        part.shared_texture_paths = std::move(old->second.shared_texture_paths);
+      }
+    }
+  }
+  if (part.tex.empty())
+    load_part_textures(part, map_prop);
+  part.revision = source->revision;
+  instance_meshes_.emplace(key, std::move(part));
 }
 
   void LibBgfxBackend::sync_instances(const float* view, const float* projection)
@@ -1007,43 +996,7 @@ SceneFrustum LibBgfxBackend::view_frustum(const float* view, const float* projec
       const auto* node = owner ? gameref_get(owner) : nullptr;
       const bool deformed = node && node->deformed_geometry.get() == key;
       if (deformed) current_deformed[owner] = key;
-      if (auto found = instance_meshes_.find(key); found != instance_meshes_.end()) {
-        ScenePart& part = found->second;
-        if (part.revision != source->revision) {
-          if (bgfx::isValid(part.vbh)) bgfx::destroy(part.vbh);
-          if (bgfx::isValid(part.skin_vbh)) bgfx::destroy(part.skin_vbh);
-          if (bgfx::isValid(part.ibh)) bgfx::destroy(part.ibh);
-          part.vbh = BGFX_INVALID_HANDLE;
-          part.skin_vbh = BGFX_INVALID_HANDLE;
-          part.ibh = BGFX_INVALID_HANDLE;
-          part.geo.positions = source->positions;
-          part.geo.normals = source->normals;
-          part.revision = source->revision;
-          upload_part(part);
-        }
-        return;
-      }
-      ScenePart part;
-      part.source = source;
-      part.geo = *source;
-      // Static map meshes repeat a few materials across hundreds of sections.
-      // Keep one draw per material instead of one per section.
-      if (!deformed && (map_prop || source->ground_polygons)) merge_material_groups(part.geo);
-      upload_part(part);
-      if (deformed) {
-        const auto previous = deformed_meshes_.find(owner);
-        if (previous != deformed_meshes_.end()) {
-          auto old = instance_meshes_.find(previous->second);
-          if (old != instance_meshes_.end() && old->second.geo.textures == part.geo.textures &&
-              old->second.geo.info.path == part.geo.info.path) {
-            part.tex = std::move(old->second.tex);
-            part.shared_texture_paths = std::move(old->second.shared_texture_paths);
-          }
-        }
-      }
-      if (part.tex.empty()) load_part_textures(part, map_prop);
-      part.revision = source->revision;
-      instance_meshes_.emplace(key, std::move(part));
+      cache_scene_mesh(source, owner, map_prop);
     };
     // A map or a car brings many new meshes in one frame. Decode all of their
     // texture files together on the job pool; cache() then creates them.
@@ -1465,11 +1418,15 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
   }
   void LibBgfxBackend::upload_part(ScenePart& part)
 {
-    const size_t n = part.geo.positions.size() / 3;
-    if (n == 0 || part.geo.indices.empty()) return;
+    if (!part.source) return;
+    const auto& source = *part.source;
+    auto upload = prepare_scene_mesh(source, part.merge_groups);
+    part.geo = std::move(upload.metadata);
+    const size_t n = source.positions.size() / 3;
+    if (n == 0 || source.indices.empty()) return;
     bool reverse_tread = false;
-    if (part.geo.textures.size() == 1) {
-      std::string path = part.geo.textures.front();
+    if (source.textures.size() == 1) {
+      std::string path = source.textures.front();
       std::replace(path.begin(), path.end(), '\\', '/');
       // The stock sport texture's chevrons point backwards with its SCX UVs.
       // U runs around the tyre. Negating it preserves the repeat and the seam.
@@ -1477,33 +1434,33 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     }
     std::vector<MeshVertex> verts(n);
     for (size_t i = 0; i < n; ++i) {
-      const float unit = part.geo.position_scale;
-      verts[i].x = part.geo.positions[i * 3 + 0] * unit;
-      verts[i].y = part.geo.positions[i * 3 + 1] * unit;
+      const float unit = source.position_scale;
+      verts[i].x = source.positions[i * 3 + 0] * unit;
+      verts[i].y = source.positions[i * 3 + 1] * unit;
       // Garage length runs along X toward the door. Z is left/right in that
       // view; the stock door reference has the bumper on the other side.
-      verts[i].z = -part.geo.positions[i * 3 + 2] * unit;
-      if (part.geo.normals.size() >= (i + 1) * 3) {
-        verts[i].nx = part.geo.normals[i * 3 + 0];
-        verts[i].ny = part.geo.normals[i * 3 + 1];
-        verts[i].nz = -part.geo.normals[i * 3 + 2];
+      verts[i].z = -source.positions[i * 3 + 2] * unit;
+      if (source.normals.size() >= (i + 1) * 3) {
+        verts[i].nx = source.normals[i * 3 + 0];
+        verts[i].ny = source.normals[i * 3 + 1];
+        verts[i].nz = -source.normals[i * 3 + 2];
       } else {
         verts[i].nx = 0;
         verts[i].ny = 1;
         verts[i].nz = 0;
       }
-      if (part.geo.uvs.size() >= (i + 1) * 2) {
-        const float u = part.geo.uvs[i * 2];
+      if (source.uvs.size() >= (i + 1) * 2) {
+        const float u = source.uvs[i * 2];
         verts[i].u = reverse_tread ? -u : u;
-        verts[i].v = part.geo.uvs[i * 2 + 1];
+        verts[i].v = source.uvs[i * 2 + 1];
       } else {
         verts[i].u = 0;
         verts[i].v = 0;
       }
-      if(part.geo.uv2.size()>i*2+1) {verts[i].u2=part.geo.uv2[i*2];verts[i].v2=part.geo.uv2[i*2+1];}
-      if(part.geo.uv3.size()>i*2+1) {verts[i].u3=part.geo.uv3[i*2];verts[i].v3=part.geo.uv3[i*2+1];}
-      if (i < part.geo.vertex_colors.size()) {
-        const uint32_t argb = part.geo.vertex_colors[i];
+      if(source.uv2.size()>i*2+1) {verts[i].u2=source.uv2[i*2];verts[i].v2=source.uv2[i*2+1];}
+      if(source.uv3.size()>i*2+1) {verts[i].u3=source.uv3[i*2];verts[i].v3=source.uv3[i*2+1];}
+      if (i < source.vertex_colors.size()) {
+        const uint32_t argb = source.vertex_colors[i];
         verts[i].rgba = (argb & 0xff00ff00u) | ((argb & 0xffu) << 16) |
                         ((argb >> 16) & 0xffu);
       }
@@ -1511,37 +1468,39 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     const bgfx::Memory* vmem = bgfx::copy(
         verts.data(), static_cast<uint32_t>(verts.size() * sizeof(MeshVertex)));
     part.vbh = bgfx::createVertexBuffer(vmem, layout_);
+    const auto& indices = upload.indices(source);
     const bgfx::Memory* imem = bgfx::copy(
-        part.geo.indices.data(),
-        static_cast<uint32_t>(part.geo.indices.size() * sizeof(uint32_t)));
+        indices.data(), static_cast<uint32_t>(indices.size() * sizeof(uint32_t)));
     part.ibh = bgfx::createIndexBuffer(imem, BGFX_BUFFER_INDEX32);
   }
   void LibBgfxBackend::upload_skin(ScenePart& part)
 {
-    const size_t n = part.geo.positions.size() / 3;
+    if (!part.source) return;
+    const auto& source = *part.source;
+    const size_t n = source.positions.size() / 3;
     if (n == 0 || !bgfx::isValid(part.ibh)) return;
     std::vector<MeshVertex> verts(n);
     for (size_t i = 0; i < n; ++i) {
-      const float unit = part.geo.position_scale;
-      verts[i].x = part.geo.positions[i * 3 + 0] * unit;
-      verts[i].y = part.geo.positions[i * 3 + 1] * unit;
-      verts[i].z = -part.geo.positions[i * 3 + 2] * unit;
-      if (part.geo.normals.size() >= (i + 1) * 3) {
-        verts[i].nx = part.geo.normals[i * 3 + 0];
-        verts[i].ny = part.geo.normals[i * 3 + 1];
-        verts[i].nz = -part.geo.normals[i * 3 + 2];
+      const float unit = source.position_scale;
+      verts[i].x = source.positions[i * 3 + 0] * unit;
+      verts[i].y = source.positions[i * 3 + 1] * unit;
+      verts[i].z = -source.positions[i * 3 + 2] * unit;
+      if (source.normals.size() >= (i + 1) * 3) {
+        verts[i].nx = source.normals[i * 3 + 0];
+        verts[i].ny = source.normals[i * 3 + 1];
+        verts[i].nz = -source.normals[i * 3 + 2];
       } else {
         verts[i].ny = 1;
       }
-      if (part.geo.uvs.size() >= (i + 1) * 2) {
-        verts[i].u = part.geo.uvs[i * 2];
-        verts[i].v = part.geo.uvs[i * 2 + 1];
+      if (source.uvs.size() >= (i + 1) * 2) {
+        verts[i].u = source.uvs[i * 2];
+        verts[i].v = source.uvs[i * 2 + 1];
       }
       uint32_t packed = 0;
       for (int influence = 0; influence < 4; ++influence) {
         const size_t slot = i * 4 + static_cast<size_t>(influence);
-        float weight = slot < part.geo.skin_weights.size() ? part.geo.skin_weights[slot] : 0.f;
-        uint16_t bone = slot < part.geo.skin_bones.size() ? part.geo.skin_bones[slot] : 0;
+        float weight = slot < source.skin_weights.size() ? source.skin_weights[slot] : 0.f;
+        uint16_t bone = slot < source.skin_bones.size() ? source.skin_bones[slot] : 0;
         if (bone >= 48) {
           bone = 0;
           weight = 0.f;
@@ -1650,7 +1609,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         if (!part.tex.empty()) tex = part.tex[0];
         const bool cut =
             part.geo.info.version != 3;  // no groups: v4 yes, v3 opaque
-        submit_range(0, static_cast<uint32_t>(part.geo.indices.size()), tex,
+        submit_range(0, static_cast<uint32_t>(part.geo.index_count), tex,
                      cut, nullptr);
       }
     }
@@ -1738,7 +1697,7 @@ std::string map_texture_key(std::string path) {
 
   void LibBgfxBackend::load_part_textures(ScenePart& part, bool share_map_textures)
 {
-    const std::vector<std::string> paths = part_texture_paths(part.geo);
+    const std::vector<std::string> paths = part_texture_paths(*part.source);
     part.tex.assign(paths.size(), BGFX_INVALID_HANDLE);
     if (share_map_textures) part.shared_texture_paths.resize(paths.size());
     int loaded = 0;
