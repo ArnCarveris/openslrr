@@ -2080,3 +2080,19 @@ macro; video_safety, ui_lifetime, splash_boot and osd_text_gpu. The D3D11 text
 capture retains the #82 pixel hash and 20 text draws for 1,000 glyphs. Native
 coverage remains current; knowledge references pass. These are supported-host
 regressions, not execution of the removed x86/WGL branches.
+
+
+### Shared race support (#179; #60, #61, #62)
+
+Road ownership and cache: `src/resources/race_runtime.cpp:race_ground_roads`;
+directed TRC solver: `src/resources/road_routes.cpp:RoadRoutes`;
+traffic identities/streaming/halts: `src/resources/traffic_runtime.cpp:race_traffic_tick`;
+brain commands: `src/resources/race_brain.cpp:race_brain_command` and
+`race_drive_input`; mechanical input integration:
+`src/resources/part_runtime.cpp:configure_drive`; route ribbon:
+`src/natives/natives_renderref.cpp:plotRoute`.
+Sources and host limits: EXTERNAL_RESEARCH v221 section and SCRIPT_RUNTIME shared
+race section. Tests: road_routes, race_brain, traffic_runtime and race_vehicle.
+A real assembled Baiern moves under original Bot.startRace commands in an
+isolated fixture; this is not proof of finished career day/night/ROC sessions.
+The tracker and original issues remain open pending each gameplay check.

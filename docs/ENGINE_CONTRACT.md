@@ -228,7 +228,8 @@ Loading work that only reads files goes to the shared worker pool in
 `src/platform/job_system.cpp`: one worker per logical processor besides
 the host thread. `jobs_parallel_for` spreads the indices over the workers
 and the calling thread and returns when all are done; a nested call runs
-serially. Its users are pack indexing at startup, mesh loading for a map's
+serially. Its users are pack indexing at startup, the immutable traffic-lane spatial
+index (per-edge fragments merged on the host after the join), mesh loading for a map's
 props and for the render objects new in a frame, a map's object types (CFG
 and collision meshes), the placement collision bakes, their merge and prop
 batching, static collision that appeared or moved
@@ -846,3 +847,40 @@ When a behavior is only supposed, write it as a hypothesis.
 When a value or an algorithm is ported, note its source and the revision.
 When a contract changes, update this guide and the matching specialized
 documentation in the same delivery.
+
+
+### Shared race primitives (#179)
+
+Selected GroundRef resources own their road graph, cached route, traffic model
+weights and traffic restrictions (`race_runtime.cpp`, `traffic_runtime.cpp`).
+AI command interpretation belongs to `race_brain.cpp`; its controls feed the
+existing Part mechanical solver. Java still owns the race state machine and
+outcome. Visible four-wheel native traffic, native racer doubles and scripted rivals
+use the shared rigid-body/suspension solver. Native CFG wheel renders must use
+the same hub compression, steering and spin as physical contacts; inline wheels
+do not require scripted rim slots. Unsupported chassis retain an external-motion
+fallback. Java model weights, including weight-one registered rivals, determine
+the traffic/adversary share under the configured host population cap. Streaming visibility must exclude an entire
+car subtree from rendering, physics and triggers without destroying its Java
+identity. Incarnations prevent stale traffic/brain references after removal.
+See SCRIPT_RUNTIME and EXTERNAL_RESEARCH for the pinned v221 sources, host
+approximations and validation limits. Registry coverage is not finish/results
+validation for any of the three race flows.
+
+
+Race follow-up: trlight fixtures share one approach-cycle state between traffic
+and cached emissive lens geometry. Clock/registration changes invalidate that
+geometry; the host thread publishes it, without a worker touching live VM or
+scene state. Legacy cue animation must exclude vehicle/Part renders even when
+resource flags match a standalone marker. Closed per-car spline routes project
+the initial position and choose direction from its heading. See SCRIPT_RUNTIME
+for the updated real-terrain tests and remaining gameplay/host-model limits.
+
+
+Performance diagnosis: the debug Renderer tab enables frame profiling and shows
+separate traffic/physics/script/GC stages. Vehicle, pedestrian and collision
+preparation scopes are subtimes of Physics; render subpasses are inside Flush.
+Snapshots are published at the end of a completed measurement window on the host
+thread. Read the current career with an isolated save root for reproducible
+--bench-career runs; --bench-realtime preserves stall/catch-up behavior. A short
+spawn-car/fixed-step smoke cannot establish career or manual-play FPS parity.
