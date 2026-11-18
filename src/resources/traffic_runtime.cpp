@@ -332,6 +332,20 @@ void race_traffic_reset() {
   next_id = 1;
   clock_seconds = 0;
 }
+void *race_traffic_ground(Object *car) {
+  const auto *node = gameref_get(car);
+  if (!node)
+    return nullptr;
+  // SLRR_rev TrafficNative.Registration retains the original map/ground.
+  // Native maps can be GameType resources rather than enum GroundRef nodes.
+  for (const auto &[id, r] : registrations)
+    if (r.car == node->key && r.car_incarnation == node->incarnation) {
+      const auto *ground = gameref_get(r.ground);
+      return ground && ground->incarnation == r.ground_incarnation
+                 ? ground->key : nullptr;
+    }
+  return nullptr;
+}
 int32_t race_traffic_pointer(Object *car) {
   auto *n = gameref_get(car);
   if (!n)

@@ -321,6 +321,19 @@ remain unchanged. The unavailable-spawn regression checks heap stability without
 GC and fails on cc0f0db; `traffic_runtime -BaselineRef` substitutes both the road
 and streaming implementations for comparison.
 
+Native vehicle ownership is recorded by the Part factory (native-only or
+unscripted car), independently of whether its wheel meshes are inline or mounted
+stock parts. Like SLRR_rev's TrafficVehicle template path, these cars use native
+wheel springs and tyre drive forces; they must not require Java transmission
+ratios. Scripted mechanical vehicles retain their Java drivetrain path.
+
+Traffic registrations retain the canonical map and its incarnation, as in
+SLRR_rev `TrafficNative.Registration` (v221 88130b3). Driver route and signal
+lookups use that binding for registered cars rather than assuming their parent
+has the host `GroundRef` enum. Real native maps may be generic GameTypes. Losing
+this binding leaves the driver without a route and the chassis parked; tests
+must exercise that real representation for both traffic and individual racers.
+
 `traffic_runtime.cpp` keeps model weights, stable individual IDs and temporary
 road/crossing restrictions per ground. Model declarations may be id-only Java
 resource references, rather than live instances. Positioned reinsertion is a

@@ -179,3 +179,27 @@ A real City fixture checks lamp state against the route graph at every half-seco
 across 104 seconds while motion advances only 4/60 per frame, then checks pause.
 Manual intersection validation remains pending.
 Release build passes; all 9 traffic_runtime cases and knowledge references pass.
+
+Complete-career immobilization follow-up (2026-11-18)
+Reference refreshed to SLRR_rev v221 88130b3e1ee51b11f8de7bec84875f259e05147c:
+TrafficNative retains registration map/ground; native stock templates do not
+require Java drivetrain fields. These two integration contracts were lost.
+(1) Host car_ground only recognized the GroundRef enum. Actual map nodes were
+GameTypes: brain probes reported null map, zero route points, parked chassis.
+Traffic drivers now resolve the incarnation-checked map from their registration.
+Updating the two existing real City movement tests to use a GameType map made
+both fail before the fix (traffic turns and native day-racer movement).
+(2) Native drive was incorrectly inferred from inline wheel meshes. Full native
+stock assemblies have mounted wheels but no Java ratio field; drive probes
+reported inline=0, ratio=null, active=true, resulting in no engine force.
+The factory now retains native ownership; native wheel/drive policy uses that
+identity. New real Baiern stock-assembly regression requires movement >5m,
+without Java ratios or inline wheel renders, on a generic GameType map.
+Release build: pass. traffic_runtime: 10 pass, physics_recovery: 8 pass,
+race_vehicle: 2 pass. Temporary probes removed from shipped code.
+Isolated complete Elias-1 career replay, real-time Valocity: before all four
+registered cars remained at 0m/s. With both fixes car IDs 2/3/5 move at 7.6-7.9m/s
+by clock t=7s; ID4 waits then is moving at 7.846m/s at t=21s. Positions change
+continuously by tens of metres. Logs: build/traffic-probe2.log (before),
+build/traffic-native-drive.log (after). This does not claim full upstream Bot
+parity or validate every manual intersection/day-race interaction.

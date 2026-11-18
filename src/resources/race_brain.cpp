@@ -42,6 +42,8 @@ bool read_point(std::istream &in, RoadPoint &p) {
                      [](float x) { return std::isfinite(x); });
 }
 void *car_ground(Object *car) {
+  if (auto *ground = race_traffic_ground(car))
+    return ground;
   auto *n = gameref_get(car);
   for (int i = 0; n && i < 32; ++i) {
     if (n->kind == GameRefKind::GroundRef)

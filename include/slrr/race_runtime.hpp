@@ -31,6 +31,8 @@ uint64_t race_signal_revision();
 void race_traffic_forget(void *);
 void race_traffic_reset();
 int32_t race_traffic_pointer(Object *);
+// Canonical, incarnation-checked map retained by the traffic registration.
+void *race_traffic_ground(Object *);
 bool race_traffic_halted(void *ground, const RoadPoint &position,
                          Object *car = nullptr);
 void race_halt_path(const RpkIndex &, void *, const RoadPoint &,

@@ -70,6 +70,9 @@ struct SfxItem {
 };
 struct Record {
   bool external_motion = false;
+  // SLRR_rev TrafficNative/TrafficVehicle distinguishes native stock templates
+  // from full Java mechanical vehicles, independently of wheel mesh layout.
+  bool native_vehicle = false;
   struct InlineWheel {
     Object *node;
     PartMatrix base, mesh;
@@ -1218,6 +1221,7 @@ Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
   rec.state.object = part;
   rec.state.resource = resource;
   rec.config = cfg;
+  rec.native_vehicle = script.empty() && cfg->native_kind == "car";
   // PE copies the cfg `texture` line onto the part at create. Catalog
   // shows that id on the color chip: cars:0x0025 is default_white.
   rec.state.texture = cfg->texture;
@@ -1868,7 +1872,7 @@ void dynamics_wheels(Record &rec) {
     // Without its rim the corner keeps a wheel the size of the hardware still
     // on it, so the car rests on the brake instead of passing through the
     // floor, or on an outer dually wheel.
-    const bool inline_wheel =
+    const bool inline_wheel = rec.native_vehicle ||
         std::any_of(rec.inline_wheels.begin(), rec.inline_wheels.end(),
                     [&](const auto &w) { return w.corner == i; });
     const double reach = mount ? 0 : corner_hardware_reach(rec, i);
@@ -2298,7 +2302,9 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   } else update_steering(rec, controls);
   for (size_t i = 0; i < drive.wheels.size(); ++i)
     drive.wheels[i].steer = wheel_steering_angle(rec, i);
-  if (!rec.inline_wheels.empty()) {
+  // A native stock template may carry mounted CFG wheels rather than inline
+  // wheel meshes. It has no Java ratios/engine and still uses TrafficVehicle.
+  if (rec.native_vehicle) {
     drive.native_traffic = true;
     drive.throttle = autonomous ? (ai.reverse ? -ai.throttle : ai.throttle)
                      : controls ? host_input().drive_throttle

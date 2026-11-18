@@ -295,6 +295,9 @@ void actual_city_turns_and_wheels() {
   f.packs.open_all();
   f.ground.class_name = "java.util.resource.GroundRef";
   spawn_ground_shell(f.vm, f.packs, &f.ground);
+  // Real native map resources may be represented by generic GameTypes.
+  // TrafficNative owns the map binding; the enum alone is not its identity.
+  gameref_get(&f.ground)->kind = GameRefKind::GameType;
   scene_instances_enable_static_floor(false);
   auto graph = race_ground_roads(f.packs, &f.ground);
   SLRR_REQUIRE(graph);
@@ -408,6 +411,9 @@ void native_day_racer_staging() {
   f.packs.open_all();
   f.ground.class_name = "java.util.resource.GroundRef";
   spawn_ground_shell(f.vm, f.packs, &f.ground);
+  // Real native map resources may be represented by generic GameTypes.
+  // TrafficNative owns the map binding; the enum alone is not its identity.
+  gameref_get(&f.ground)->kind = GameRefKind::GameType;
   scene_instances_enable_static_floor(false);
   auto graph = race_ground_roads(f.packs, &f.ground);
   SLRR_REQUIRE(graph && !graph->traffic_edges().empty());
@@ -749,9 +755,59 @@ void slow_frames_preserve_signal_period() {
   SLRR_REQUIRE(race_signal_revision() == revision &&
                race_signal_at(fixture.position) == color);
 }
+void native_stock_car_uses_native_drive() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  gameref_get(&f.ground)->kind = GameRefKind::GameType;
+  scene_instances_enable_static_floor(false);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph);
+  const RoadRoutes::Edge *lane = nullptr;
+  for (const auto &edge : graph->traffic_edges())
+    if (!edge.crossing && edge.length > 100 && !edge.next.empty()) {
+      lane = &edge;
+      break;
+    }
+  SLRR_REQUIRE(lane);
+  RoadRoute line;
+  line.points = lane->points;
+  const auto start = road_at(line, 10);
+  const auto type = RpkIndex::make_full_id(
+      f.packs.open_lib("cars/racers/Baiern.rpk"), 6);
+  const auto cfg = load_part_config(f.packs, type);
+  SLRR_REQUIRE(cfg.valid && !cfg.stock.empty() && cfg.wheels.size() == 4);
+  SLRR_REQUIRE(std::none_of(cfg.renders.begin(), cfg.renders.end(),
+                             [](const auto &r) { return r.wheel >= 0; }));
+  auto *car = part_create(f.vm, f.packs, &f.ground, type,
+                          "native assembled racer", {}, true);
+  SLRR_REQUIRE(car && part_installed_tree(car).size() > 4);
+  SLRR_REQUIRE(!car->fields.contains("ratio"));
+  f.player = f.car();
+  gameref_set_matrix(f.player, start[0] + 15, start[1], start[2] + 15, 0, 0, 0);
+  f.controller.class_name = "java.io.Controller";
+  gameref_upsert(&f.controller);
+  part_command(&f.controller,
+               "controllable " + std::to_string(gameref_make_live(f.player)));
+  SLRR_REQUIRE(f.call("addTrafficCar",
+      "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;)I",
+      {Value::make_obj(car), Value::make_obj(vec(f.vm, start))}).v.i > 0);
+  traffic_step(f.vm, .02f);
+  auto *node = gameref_get(car);
+  const RoadPoint before{node->pos[0], node->pos[1], node->pos[2]};
+  traffic_step(f.vm, 5);
+  PartPhysicsState state;
+  SLRR_REQUIRE(part_physics_state(car, state) && state.active);
+  SLRR_REQUIRE(road_distance(before,
+      {node->pos[0], node->pos[1], node->pos[2]}) > 5);
+  f.call("delTraffic", "()V");
+  part_destroy(car);
+  part_destroy(f.player);
+}
 int main() {
   const standalone::Test tests[] = {
-      slow_frames_preserve_signal_period, unavailable_spawn_does_not_allocate,
+      native_stock_car_uses_native_drive, slow_frames_preserve_signal_period, unavailable_spawn_does_not_allocate,
       missing_lamp_stop_releases, inline_wheel_contact_and_population,
       native_day_racer_staging,   actual_city_turns_and_wheels,
       lifecycle_and_stream,       red_light_stop_and_release,

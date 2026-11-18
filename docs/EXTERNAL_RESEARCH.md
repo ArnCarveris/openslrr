@@ -486,6 +486,21 @@ index fragments; no worker touches Java, GameRef or the solver. The published
 immutable index supports concurrent queries, checked against serial results.
 Evidence and limitations: assets/validation/shared-races.txt.
 
+### Registered map identity follow-up
+
+Refreshed SLRR_rev v221 at 88130b3e1ee51b11f8de7bec84875f259e05147c.
+Read src/runtime/traffic-native.ts, src/engine/traffic-stream.ts,
+src/engine/traffic-control.ts and src/engine/bot.ts. `Registration` retains
+`ground` and `map`; the bridge closes over the registered map for routes,
+halts, spawning and individual racers. OpenSLRR's parent-enum-only lookup
+lost that identity for native GameType map instances. Driver lookups now use
+the incarnation-checked registration binding. `TrafficNative.bridge.selection` also explicitly distinguishes original unscripted
+dummycars, whose stock template must be built instead of reading absent Java Part
+fields. `viewer.ts` instantiates a TrafficVehicle from that template's bounds,
+mass and wheels. OpenSLRR now preserves native ownership from its Part factory,
+rather than inferring the drive model from inline wheel meshes. This is a port
+integration fix, not a claim that every upstream Bot behavior has been translated already.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6
