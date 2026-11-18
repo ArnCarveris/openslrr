@@ -617,6 +617,16 @@ A checked "dynamic reflections" option does not prove that the car material
 reads that cubemap. Follow the binding into the shader. Check fallbacks to
 the old envmaps and the `vehicle_material` flags.
 
+### Mesh CPU/GPU ownership
+
+Scene geometry remains the authoritative CPU source for collision, picking,
+animation and re-upload. The GPU cache shares that source and retains only draw
+metadata, texture bindings and GPU handles. Never deep-copy vertex/index/skin
+payloads just to keep a resident draw entry. Reordered material indices are
+upload scratch and may be freed once bgfx has copied them. Animated revisions
+must read the current source, rebuild metadata/index counts and recreate skin
+buffers as needed; deformed replacements preserve compatible texture bindings.
+
 ### Shadows
 
 Map shadows and car shadows have passes and resources that must be inspected
