@@ -635,6 +635,13 @@ nothing. The passes check the handle and switch themselves off. A varying added
 to `vs_mesh` must therefore be added to every fragment shader paired with it.
 Startup reports each failed program as `[bgfx] program <name> failed to link`.
 
+The active world renders to the swap chain. No offscreen scene-copy or HiZ depth
+pyramid is wired into the frame path; the unused implementations are removed.
+The optional scene size filter only rejects small projected bounds and does not
+read occlusion depth. Keep it disabled for inset, shadow and reflection views.
+Program creation owns and releases its input shader references on every outcome;
+rejected shader pairs must not leak handles during opening or reopening.
+
 Do not collect casters using only the visible camera frustum.
 The list must respect the useful light volume. When the time of day changes,
 sun-dependent matrices and caches must be invalidated.

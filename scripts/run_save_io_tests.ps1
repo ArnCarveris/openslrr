@@ -2,7 +2,7 @@ param(
   [string]$BuildDir = "build",
   [string]$BaselineRef = "",
   [switch]$CorpusOnly,
-  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props", "sun_cycle", "tree_numbers", "ui_lifetime", "resource_cache", "tufa_validation", "rpk_validation", "audio_recovery", "vm_lookup", "script_safety", "video_safety", "options_retry", "live_lookup", "driver_mask", "driver_selector", "pad_fallback", "class_lifetime", "static_increment", "inventory_transition", "map_views", "map_alpha", "physics_recovery", "findfile_paths", "splash_boot", "menu_debounce", "tooltip_render", "car_select_view", "trigger_markers", "trigger_volume", "gameref_alias", "osd_text_batch", "osd_text_gpu", "road_routes", "race_brain", "traffic_runtime", "race_vehicle", "frame_profiler")]
+  [ValidateSet("save_io", "save_persistence", "scx_skin", "physics_position", "garage_shell", "map_props", "asset_bounds", "ped_crossing", "time_format", "night_props", "sun_cycle", "tree_numbers", "ui_lifetime", "resource_cache", "tufa_validation", "rpk_validation", "audio_recovery", "vm_lookup", "script_safety", "video_safety", "options_retry", "live_lookup", "driver_mask", "driver_selector", "pad_fallback", "class_lifetime", "static_increment", "inventory_transition", "map_views", "map_alpha", "physics_recovery", "findfile_paths", "splash_boot", "menu_debounce", "tooltip_render", "car_select_view", "trigger_markers", "trigger_volume", "gameref_alias", "osd_text_batch", "osd_text_gpu", "road_routes", "race_brain", "traffic_runtime", "race_vehicle", "frame_profiler", "render_programs_gpu")]
   [string]$Suite = "save_io"
 )
 $ErrorActionPreference = "Stop"
@@ -37,7 +37,7 @@ try {
     Where-Object { $_.Name -ne 'main.obj' }).FullName
   if (-not $objects) { throw "Build slrr_host Release first" }
   $suiteIncludes = @()
-  if ($Suite -eq 'osd_text_gpu') {
+  if ($Suite -in @('osd_text_gpu','render_programs_gpu')) {
     $includePaths = $project.SelectSingleNode("//*[local-name()='ItemDefinitionGroup' and contains(@Condition,'Release|x64')]/*[local-name()='ClCompile']/*[local-name()='AdditionalIncludeDirectories']").InnerText
     $suiteIncludes = @('/Isrc/render', '/Zc:__cplusplus', '/Zc:preprocessor', '/DBX_CONFIG_DEBUG=0', '/DBGFX_CONFIG_DEBUG_ANNOTATION=0', '/DBGFX_CONFIG_MULTITHREADED=1', '/DBGFX_CONFIG_VIDEO=1', '/DNDEBUG') + @($includePaths.Split(';') | Where-Object { $_ -and -not $_.StartsWith('%(') } | ForEach-Object { "/I$_" })
   }

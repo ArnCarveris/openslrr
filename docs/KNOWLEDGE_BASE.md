@@ -177,9 +177,6 @@ Code that exists but is not used:
 
 - `src/formats/trc.cpp` (road network) and `src/formats/rest.cpp` parse
   their formats but have no caller.
-- `src/render/bgfx_shadows.cpp:draw_vehicle_shadows` (the legacy projected
-  car shadow) is never called. Its two shader programs are still created at
-  init but only used by that function.
 - `src/physics/sl2_pacejka.cpp` only serves `--probe-pacejka`. The active tyre
   model is `src/physics/tire_model.cpp:tire_forces`.
 
@@ -659,7 +656,7 @@ run time.
 | Boot adopts the section already entered by Java Init without replaying lifecycle (#76). Windowed startup retains a timer-only reset so startup work cannot consume the splash display interval. | `src/boot/boot.cpp:boot_game`, `src/boot/mainloop.cpp:mainloop_adopt_section` |
 | Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
 | Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
-| The `present` and `hiz` programs never link: `fs_present` and `fs_hiz` read only `v_texcoord0` but are paired with `vs_mesh`, so the offscreen scene target and the HiZ pyramid are skipped. Startup logs `[bgfx] program … failed to link` | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open` |
+| The unused offscreen scene target, HiZ pyramid/readback and legacy projected car shadows are removed (#105). World rendering uses the swap chain; the retained projected-size filter does not perform occlusion. Shader creation releases caller handles on success and failure. | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open`, `src/render/bgfx_program.hpp:create_owned_program` |
 
 Fixed on `main`: `System.arraycopy` overflow, PTX bounds, dyno session
 lifetime and sampling, and the `Vehicle.getHorn` / `hasCrime` registrations.
@@ -1510,8 +1507,9 @@ or overflowing dimensions. A real Direct3D 11 window test sends WM_CLOSE,
 checks the HWND is still valid through mainloop_frame's quit return, then
 checks it is destroyed by close and that close can be repeated. Test log:
 `assets/validation/video-safety/after.txt`. Existing present/hiz shader-link
-warnings (#105) were observed in this test; the backend still opened and the
-test passed. Actual DirectShow decoder fallback, intro playback and FMV texture
+warnings (#105) were observed in that historical test; the backend still opened
+and the test passed. The inactive passes and those programs are now removed;
+this does not enable HiZ occlusion. Actual DirectShow decoder fallback, intro playback and FMV texture
 allocation/release during playback remain manual validation; the synthetic
 copy tests do not claim to cover a full decoder graph.
 
@@ -2096,3 +2094,26 @@ race section. Tests: road_routes, race_brain, traffic_runtime and race_vehicle.
 A real assembled Baiern moves under original Bot.startRace commands in an
 isolated fixture; this is not proof of finished career day/night/ROC sessions.
 The tracker and original issues remain open pending each gameplay check.
+
+
+## Inactive renderer passes cleanup (#105)
+
+The offscreen scene target, fullscreen present quad, HiZ pyramid/readback and
+legacy projected-car-shadow path had no production caller. They and their six
+exclusive shader sources/build inputs are removed. Active cached map/garage
+shadows, vehicle depth, reflection captures, OSD and previews retain their paths.
+`scene_instances_set_size_filter` is an optional projected-size filter, not an
+occlusion query; the backend preserves its 40m near exemption and two-pixel
+cutoff, and disables it for insets, reflection and shadow collection.
+
+`create_owned_program` links without implicit shader transfer and releases both
+caller references regardless of the result. bgfx retains its own references for
+a successful program. This covers missing stages, interface mismatch and program
+creation failure without depending on bgfx's early-return ownership behavior.
+
+`render_programs_gpu` reproduces the old D3D11 rejected-link leak (shader count
+27 -> 29), explicitly cleans it, then checks 32 successful/rejected/missing-stage
+cycles return to 27 and that backend close/reopen preserves the baseline. The
+existing GPU OSD test still produces 20 draws for 1000 glyphs; map view tests pass.
+The test uses unique shader metadata hashes to prevent bgfx deduplication from
+hiding leaked references. See assets/validation/render-pass-cleanup.txt.
