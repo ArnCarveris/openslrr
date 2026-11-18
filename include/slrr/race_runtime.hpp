@@ -24,10 +24,13 @@ void race_brains_reset();
 void race_set_traffic_mode(const RpkIndex &, Object *);
 void register_traffic_natives(Jvm &, RpkIndex &, SectionMachine &);
 void race_traffic_tick(Jvm &, float seconds);
+int race_signal_at(const RoadPoint &position);
+uint64_t race_signal_revision();
 void race_traffic_forget(void *);
 void race_traffic_reset();
 int32_t race_traffic_pointer(Object *);
-bool race_traffic_halted(void *ground, const RoadPoint &position);
+bool race_traffic_halted(void *ground, const RoadPoint &position,
+                         Object *car = nullptr);
 void race_halt_path(const RpkIndex &, void *, const RoadPoint &,
                     const RoadPoint &);
 void race_halt_cross(const RpkIndex &, void *, const RoadPoint &, float);

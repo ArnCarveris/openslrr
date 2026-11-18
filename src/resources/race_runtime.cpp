@@ -3,6 +3,7 @@
 #include "slrr/jvm.hpp"
 #include "slrr/object.hpp"
 #include "slrr/rpk_index.hpp"
+#include "slrr/scene_instances.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <limits>
 #include <regex>
 #include <unordered_map>
+#include <unordered_set>
 namespace slrr {
 namespace {
 struct Ground {
@@ -63,8 +65,26 @@ Ground *ground_state(const RpkIndex &rpk, void *key) {
     return &g;
   RoadNetwork network;
   std::string error;
-  if (trc_read(data.data(), data.size(), &network, &error))
-    g.roads = std::make_shared<RoadRoutes>(network);
+  if (trc_read(data.data(), data.size(), &network, &error)) {
+    std::vector<RoadPoint> signals;
+    std::vector<uint32_t> maps{uint32_t(n->type_id)};
+    std::unordered_set<uint32_t> visited;
+    for (size_t i = 0; i < maps.size(); ++i) {
+      if (!visited.insert(maps[i]).second)
+        continue;
+      auto map = scene_instances_ground_map(rpk, maps[i]);
+      maps.insert(maps.end(), map.exterior_maps.begin(),
+                  map.exterior_maps.end());
+      for (const auto &placement : map.placements) {
+        auto bytes = rpk.read_payload(placement.type);
+        if (bytes.size() > 16 &&
+            std::equal(bytes.begin(), bytes.begin() + 4, "ICFG") &&
+            std::equal(bytes.begin() + 8, bytes.begin() + 16, "trlight\0"))
+          signals.push_back(placement.position);
+      }
+    }
+    g.roads = std::make_shared<RoadRoutes>(network, signals);
+  }
   return &g;
 }
 float number(const Value &v) {

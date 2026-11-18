@@ -786,7 +786,8 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     perf::Scope scope(perf::Zone::Physics);
     sim_seconds = jvm.advance_sim_time(dt);
     character_set_sim_time(jvm.sim_time());
-    race_traffic_tick(jvm,static_cast<float>(sim_seconds));
+    // Match the car solver's four-tick catch-up budget after a slow frame.
+    race_traffic_tick(jvm,static_cast<float>(std::min(sim_seconds,4.0/60.0)));
     part_physics_advance(sim_seconds);
   }
   scene_ambience_tick(sim_seconds);

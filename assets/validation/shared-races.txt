@@ -1,52 +1,53 @@
 Shared race primitives / tracker #179 (#60 #61 #62)
-Date: 2026-11-18. Base: e04e082. Windows x64 Release.
-Source: SLRR_rev v221 cbb99147a126b098fa776dab158b5d4493cdab2c.
+Updated 2026-11-18 after the first in-game feedback.
+OpenSLRR main 3f1110e merged into codex/traffic-race-natives (a95635a).
+References: SLRR_rev v221 cbb99147 initially; refreshed v221 ab4b4943 and
+traffic bea8ce06. Exact revisions and source paths: docs/EXTERNAL_RESEARCH.md.
 
-Build: cmake --build build --config Release --target slrr_host --parallel 8
-PASS.
+Windows x64 Release build: PASS.
+Reproduce: scripts/run_save_io_tests.ps1 -Suite <name>.
 
-scripts/run_save_io_tests.ps1 -Suite road_routes: 4/4
-- directed lane links; one-way/two-way partial routes
-- desired crossing radius
-- real city.trc: 928 directed edges, first route 139.8 m
-- alignment array identity; cached metre queries; navigator ribbon; miss clears cache
--Suite race_brain: 2/2
-- ROC closed spline starts instead of instantly finishing at the shared start/end
-- countdown/stop/suspend, unknown commands, destruction, path restrictions
--Suite traffic_runtime: 1/1
-- Controller retains player; traffic IDs/deduplication; notification enable/disable
-- finite positioned insertion stays near requested road, does not spawn while paused
-- actual Taxi CFG/body/wheels rendered and moved; balanced add/rem; Java rival survives
--Suite race_vehicle: 1/1
-- copies bytecode into an isolated temporary game root; original game assets read only
-- original MWM Bot.startRace and Bot.followSplineTrack execute their command builders
-- actual Baiern assembly: 77 parts; existing mechanical engine/gears/wheels solver
-- controlled flat surface, 600 host ticks / 1200 solver ticks / 10 s
-- displacement 135.841 m, final speed 21.979 km/h, RPM 1717.7, gear 1
-- ROC spline command produces active driving input at its real first point
--Suite physics_recovery: 8/8
--Suite gameref_alias: 3/3
+road_routes: directed one/two-way routes, nearest crossing distance semantics,
+native alignment arrays/metre cache queries, route ribbons/cache invalidation,
+and shared green/yellow/red branch phases. Installed City + exterior data binds
+1,146 actual trlight heads. Phase tests assert mutually exclusive branches.
 
-Not a gameplay recording. No full career race completion/results, horn challenge,
-night spectator placement, repeat track transitions or full ROC lap was verified.
-No original-engine parity claim for traffic signals/contact reactions, pursuit,
-behaviour flags, driver seating, spline metadata, AI tuning or streaming constants.
-The three issues and tracker remain open until their own in-game acceptance passes.
+traffic_runtime: id-only resource declarations (regression failed before fix),
+IDs/deduplication, balanced notifications, finite positioned insertion/pause,
+complete Taxi body + four wheel meshes, movement and teardown. Default density
+now admits 20 active cars, bounded at 50; urban cruise target 15–35 km/h with
+acceleration/braking and following gaps. A real controlled City approach stops
+on red, remains stationary while paused, then resumes on green. Signal lenses
+are cached per shell in up to three emission groups, retained when paused and
+rebuilt on phase changes, rather than one draw per head.
 
-Follow-up: first gameplay feedback (traffic absent, buried cars, ROC steering/brake)
-- Regression with a resource reference carrying only fields["id"] FAILED before
-  the correction; the original fixture had artificially upserted a live GameRef.
-- addTrafficN/addTrafficP now resolve either representation; traffic_runtime PASS.
-- Native Taxi's body and all four wheels are present; lowest mesh Y=0.479 m,
-  road reference Y=0.479 m, origin Y=1.432 m. Previously the origin itself was
-  placed at road height. Ride height is cached; the real floor overrides TRC Y.
-- race_brain: 3/3, including braking before a sharp spline turn and braking plus
-  nonzero steering when the route target lies behind the car.
-- race_vehicle: 2/2 (Baiern and Enula; original Bot methods).
-  Baiern arrival: 0.002 km/h, 1.114 m from destination.
-  Enula arrival: 0.000 km/h, 1.115 m from destination.
-  Both exercise 120 simulated seconds on the ROC spline on a flat surface,
-  starting away from the first tangent; actual wheel steering and yaw change.
-  AI_stop: Baiern 106.121 -> 0.001 km/h; Enula 106.842 -> 0.000 km/h in 5 s.
-- These integrations complement the first in-game report; the follow-up still
-  needs an in-game check of traffic appearance and the actual ROC road surface.
+trigger_markers: standalone indicators still rotate/bob/fade and remain
+pass-through; the same cue flags never animate a vehicle mesh. This reproduces
+and fixes the observed floating/rotating car body independently of its wheels.
+
+race_brain: countdown/suspend/command ownership, closed loop start, route traffic
+restrictions, braking preview before a sharp bend, behind-target recovery, and
+NightRace coasting across the finish plane after an early Java stop command.
+
+race_vehicle: original MWM Bot.startRace/followSplineTrack; actual City and ROC
+collision terrain; original assets read only, VM files isolated in a temp root.
+Baiern/Enula physically drive and stop on a City route, above the sampled road.
+ROC uses cars/racers/ROC_cars/ROC_MC.spl, scripted grid near (5.4,0,-6), yaw -.55,
+and the bot's lateral start offset. The route is projected onto the complete
+loop and oriented by heading. Every expected Round gate is reached in order:
+  Baiern: gates at 66.3 / 74.6 / 90.4 s; finish gate 125.9 s.
+  Enula:  gates at 63.9 / 71.8 / 87.2 s; finish gate 122.2 s.
+Maximum sampled lateral deviation: 1.774 m (independent denser spline sampling).
+The test then sends AI_stop and checks braking; approximately 107 km/h to rest.
+Earlier generic race.spl/flat-surface checks did not establish career ROC paths.
+
+Other required checks: physics_recovery, gameref_alias, native-coverage Python
+regressions, render_native_coverage.py --check and check_knowledge_refs.py.
+
+This is host/physics/scene integration, not a career UI video. The original
+finish/results handlers, daytime horn challenge, night meeting, repeat track
+transitions and return to garage remain for in-game validation. Do not close
+#60/#61/#62/#179 on the strength of registration counts or these tests alone.
+Known host-model gaps: traffic behaviour/AI_params tuning, dedicated lane/turn
+curves, full pursuit/contact reactions, spline metadata, opponent driver seating,
+original signal producer/timing/STOP-YIELD and flare halos.

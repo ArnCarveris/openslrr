@@ -52,7 +52,8 @@ RoadPoint road_at(const RoadRoute &r, float distance) {
   }
   return r.points.back();
 }
-RoadRoutes::RoadRoutes(const RoadNetwork &net) {
+RoadRoutes::RoadRoutes(const RoadNetwork &net,
+                       const std::vector<RoadPoint> &fixtures) {
   for (const auto &n : net.nodes)
     nodes_.push_back({n.id, n.position});
   auto node = [&](uint32_t id) -> const RoadPoint * {
@@ -140,6 +141,40 @@ RoadRoutes::RoadRoutes(const RoadNetwork &net) {
       if (a && b)
         add(r.id, a, b, r.segments, {r.id});
     }
+  // SLRR_rev traffic bea8ce06 traffic-control.ts: bind real trlight heads
+  // to the nearest crossing and incoming lane endpoint, then cycle branches.
+  for (const auto &fixture : fixtures) {
+    const RoadNode *cross = nullptr;
+    float nearest = INFINITY;
+    for (const auto &n : net.nodes) {
+      float d = road_distance(fixture, n.position);
+      if (d < nearest) {
+        nearest = d;
+        cross = &n;
+      }
+    }
+    if (!cross)
+      continue;
+    const RoadOther *incoming = nullptr;
+    nearest = INFINITY;
+    for (const auto &link : cross->links)
+      if (link.flag)
+        for (const auto &road : net.others)
+          if (road.id == link.target && !road.segments.empty()) {
+            float d = road_distance(fixture, road.segments.front().start);
+            if (d < nearest) {
+              nearest = d;
+              incoming = &road;
+            }
+          }
+    if (incoming) {
+      auto branch = incoming->refs[0] ? incoming->refs[0] : incoming->id;
+      signals_.push_back({fixture, cross->id, branch});
+      auto &branches = cycles_[cross->id];
+      if (std::find(branches.begin(), branches.end(), branch) == branches.end())
+        branches.push_back(branch);
+    }
+  }
   // v221's 64 m segment grid keeps traffic's repeated projections local.
   for (size_t ei = 0; ei < edges_.size(); ++ei)
     for (size_t i = 1; i < edges_[ei].points.size(); ++i) {
@@ -159,6 +194,23 @@ RoadRoutes::RoadRoutes(const RoadNetwork &net) {
               {ei, i});
     }
 }
+int RoadRoutes::signal(uint32_t crossing, uint32_t branch,
+                       double seconds) const {
+  auto it = cycles_.find(crossing);
+  if (it == cycles_.end() || it->second.empty())
+    return -1;
+  constexpr double green = 10, phase = 13;
+  double clock = std::max(0., seconds);
+  auto slot = uint64_t(clock / phase);
+  auto active = it->second[slot % it->second.size()];
+  return active != branch ? 0 : std::fmod(clock, phase) < green ? 2 : 1;
+}
+int RoadRoutes::edge_signal(size_t index, double seconds) const {
+  if (index >= edges_.size())
+    return -1;
+  const auto &e = edges_[index];
+  return signal(e.to, e.id, seconds);
+}
 std::optional<RoadPoint> RoadRoutes::nearest_cross(const RoadPoint &p,
                                                    float radius) const {
   if (!finite(p) || !std::isfinite(radius))
@@ -174,10 +226,12 @@ std::optional<RoadPoint> RoadRoutes::nearest_cross(const RoadPoint &p,
   }
   return result;
 }
-std::optional<RoadProjection> RoadRoutes::project(const RoadPoint &p) const {
+std::optional<RoadProjection>
+RoadRoutes::project(const RoadPoint &p, const RoadPoint *heading) const {
   if (!finite(p))
     return {};
   std::optional<RoadProjection> best;
+  float best_score = INFINITY;
   auto visit = [&](size_t e, size_t i) {
     const auto &edge = edges_[e];
     const auto delta = sub(edge.points[i], edge.points[i - 1]);
@@ -185,11 +239,15 @@ std::optional<RoadProjection> RoadRoutes::project(const RoadPoint &p) const {
         dot(sub(p, edge.points[i - 1]), delta) / dot(delta, delta), 0.f, 1.f);
     auto near = lerp(edge.points[i - 1], edge.points[i], t);
     float d = road_distance(p, near);
-    if (!best || d < best->distance)
+    float score =
+        d + (heading ? .25f * (1 - dot(road_normalize(delta), *heading)) : 0);
+    if (!best || score < best_score) {
+      best_score = score;
       best = RoadProjection{near, road_normalize(delta), d,
                             edge.distances[i - 1] +
                                 t * (edge.distances[i] - edge.distances[i - 1]),
                             e};
+    }
   };
   if (complete_grid_ && std::fabs(double(p[0])) < 1.e10 &&
       std::fabs(double(p[2])) < 1.e10) {
@@ -209,7 +267,7 @@ std::optional<RoadProjection> RoadRoutes::project(const RoadPoint &p) const {
       double boundary =
           std::min({p[0] - (cx - ring) * 64., (cx + ring + 1) * 64. - p[0],
                     p[2] - (cz - ring) * 64., (cz + ring + 1) * 64. - p[2]});
-      if (best && best->distance < boundary)
+      if (best && best_score < boundary)
         return best;
     }
   }

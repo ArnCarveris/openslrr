@@ -90,9 +90,45 @@ void preview_bend_brakes() {
   std::puts("PASS anticipation brakes before a sharp spline bend and turns at "
             "the bend");
 }
+void night_finish_runout() {
+  RaceFixture f;
+  auto *car = f.car();
+  Object brain;
+  gameref_upsert(&brain);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  const auto &e = graph->edges().front();
+  auto start = e.points.front(), finish = e.points.back();
+  gameref_set_matrix(car, start[0], start[1], start[2], 0, 0, 0);
+  race_brain_command(f.packs, &brain,
+                     "controllable " + std::to_string(gameref_make_live(car)));
+  race_brain_command(f.packs, &brain,
+                     "AI_race " + std::to_string(finish[0]) + "," +
+                         std::to_string(finish[1]) + "," +
+                         std::to_string(finish[2]) + " 0");
+  race_brain_command(f.packs, &brain, "AI_NightRace");
+  RoadRoute route = *race_last_route(&f.ground);
+  auto approach = road_at(route, route.length - 5);
+  gameref_set_matrix(car, approach[0], approach[1], approach[2], 0, 0, 0);
+  race_brain_command(f.packs, &brain, "AI_stop");
+  RaceDriveInput input;
+  SLRR_REQUIRE(race_drive_input(car, approach, 0, 20, .02f, input) &&
+               input.brake == 0 && input.throttle == 0);
+  auto previous = route.points[route.points.size() - 2];
+  auto direction =
+      road_normalize({finish[0] - previous[0], 0, finish[2] - previous[2]});
+  RoadPoint past = finish;
+  for (int k = 0; k < 3; ++k)
+    past[k] += 12 * direction[k];
+  SLRR_REQUIRE(race_drive_input(car, past, 0, 20, .02f, input) &&
+               input.brake == 1);
+  gameref_remove(&brain);
+  part_destroy(car);
+  std::puts("PASS night finish stop event coasts across the finish plane "
+            "before braking");
+}
 int main() {
   const standalone::Test tests[] = {spline_wait_and_arbitration,
                                     city_route_drives_and_halts,
-                                    preview_bend_brakes};
+                                    preview_bend_brakes,night_finish_runout};
   return standalone::run("race_brain", tests);
 }

@@ -35,8 +35,9 @@ struct Registration {
        unplaced = true, kinematic = false;
   int mode = 0;
   float distant_next = 0;
+  uint32_t cleared_crossing = 0;
   size_t edge = 0;
-  float along = 0, speed = 10;
+  float along = 0, speed = 0, cruise = 0;
   std::optional<float> ride_height;
 };
 struct Seed {
@@ -66,6 +67,7 @@ RpkIndex *resources = nullptr;
 int32_t next_id = 1;
 uint32_t random_state = 0x8f12345;
 float clock_seconds = 0;
+uint64_t signal_revision = 1;
 float random() {
   random_state ^= random_state << 13;
   random_state ^= random_state >> 17;
@@ -122,6 +124,7 @@ Population *population(void *key) {
   if (p.incarnation != n->incarnation) {
     p = {};
     p.incarnation = n->incarnation;
+    ++signal_revision;
   }
   return &p;
 }
@@ -284,7 +287,7 @@ int32_t add_car(const RpkIndex &rpk, void *ground, Object *car, Object *where,
   r.car_incarnation = c->incarnation;
   r.owned = owned;
   r.notify = owned;
-  r.speed = 8 + random() * 6;
+  r.cruise = (15 + random() * 20) / 3.6f;
   auto cfg = load_part_config(rpk, uint32_t(c->type_id));
   r.kinematic = owned || cfg.native_kind != "car";
   if (r.kinematic)
@@ -313,6 +316,7 @@ void race_traffic_forget(void *key) {
     remove(id);
 }
 void race_traffic_reset() {
+  ++signal_revision;
   registrations.clear();
   populations.clear();
   events.clear();
@@ -384,12 +388,17 @@ void race_clear_halts(void *ground) {
     p->crossings.clear();
   }
 }
-bool race_traffic_halted(void *ground, const RoadPoint &position) {
+bool race_traffic_halted(void *ground, const RoadPoint &position, Object *car) {
   auto *p = population(ground);
   if (!p || !resources)
     return false;
   auto graph = race_ground_roads(*resources, ground);
-  auto projection = graph ? graph->project(position) : std::nullopt;
+  PartMatrix frame;
+  RoadPoint heading{};
+  if (car && scene_instances_script_matrix(car, frame.data()))
+    heading = {-frame[8], -frame[9], -frame[10]};
+  auto projection =
+      graph ? graph->project(position, car ? &heading : nullptr) : std::nullopt;
   if (!projection)
     return false;
   const auto &e = graph->edges()[projection->edge];
@@ -397,8 +406,28 @@ bool race_traffic_halted(void *ground, const RoadPoint &position) {
     if (p->blocked.contains(road))
       return true;
   auto cross = p->crossings.find(e.to);
-  return cross != p->crossings.end() && cross->second > clock_seconds &&
-         e.length - projection->along < 22;
+  if (cross != p->crossings.end() && cross->second > clock_seconds &&
+      e.length - projection->along < 22)
+    return true;
+  auto color = graph->edge_signal(projection->edge, clock_seconds);
+  Registration *registered = nullptr;
+  if (car)
+    for (auto &entry : registrations)
+      if (entry.second.car == car) {
+        registered = &entry.second;
+        break;
+      }
+  if (registered) {
+    if (registered->edge != projection->edge)
+      registered->cleared_crossing = 0;
+    registered->edge = projection->edge;
+    registered->along = projection->along;
+    if (color == 2 && e.length - projection->along < 14)
+      registered->cleared_crossing = e.to;
+    if (registered->cleared_crossing == e.to)
+      return false;
+  }
+  return (color == 0 || color == 1) && e.length - projection->along < 22;
 }
 void register_traffic_natives(Jvm &vm, RpkIndex &rpk, SectionMachine &machine) {
   race_traffic_reset();
@@ -528,16 +557,45 @@ void register_traffic_natives(Jvm &vm, RpkIndex &rpk, SectionMachine &machine) {
                                  return Value::make_void();
                                });
 }
+uint64_t race_signal_revision() { return signal_revision; }
+int race_signal_at(const RoadPoint &position) {
+  if (!resources)
+    return -1;
+  int result = -1;
+  float best = 64.f;
+  for (const auto &entry : populations) {
+    if (!belongs(entry.first, scene_instances_world()))
+      continue;
+    auto graph = race_ground_roads(*resources, entry.first);
+    if (!graph)
+      continue;
+    for (const auto &fixture : graph->signals()) {
+      float d = road_distance(position, fixture.position);
+      if (d < best) {
+        best = d;
+        result = graph->signal(fixture.crossing, fixture.branch, clock_seconds);
+      }
+    }
+  }
+  return result;
+}
 void race_traffic_tick(Jvm &vm, float seconds) {
   if (!std::isfinite(seconds) || seconds < 0 || !resources)
     return;
+  auto phase = [](double seconds) {
+    return uint64_t(seconds / 13) * 2 + (std::fmod(seconds, 13) >= 10);
+  };
+  auto old_phase = phase(clock_seconds);
   clock_seconds += seconds;
+  if (old_phase != phase(clock_seconds))
+    ++signal_revision;
   auto *world = scene_instances_world();
   auto *focus_car = part_controlled_chassis();
   const auto focus = focus_car ? position(focus_car) : RoadPoint{};
   const float density = host_game_options().traffic_density;
-  const int cap =
-      std::isfinite(density) ? int(std::clamp(density, 0.f, 1.f) * 50) : 0;
+  const int cap = std::isfinite(density)
+                      ? std::min(50, int(std::clamp(density, 0.f, 1.f) * 100))
+                      : 0;
   std::vector<void *> ground_keys;
   for (const auto &e : populations)
     ground_keys.push_back(e.first);
@@ -646,8 +704,31 @@ void race_traffic_tick(Jvm &vm, float seconds) {
       if (!r.visible || !r.kinematic)
         continue;
       const auto &e = graph->edges()[r.edge];
-      if (!race_traffic_halted(key, position(r.car)))
-        r.along += r.speed * seconds;
+      float desired = r.cruise;
+      if (race_traffic_halted(key, position(r.car)))
+        desired = 0;
+      auto signal = graph->edge_signal(r.edge, clock_seconds);
+      if (signal == 2 && e.length - r.along <= 12 + r.speed * seconds)
+        r.cleared_crossing = e.to;
+      if (r.cleared_crossing == e.to)
+        signal = 2;
+      const float stop = std::max(0.f, e.length - r.along - 12.f);
+      if (signal == 0 || signal == 1)
+        desired = std::min(desired, std::sqrt(8 * stop));
+      for (const auto &entry : registrations) {
+        const auto &peer = entry.second;
+        if (peer.id != r.id && peer.visible && peer.ground == key &&
+            peer.edge == r.edge && peer.along > r.along)
+          desired = std::min(
+              desired, std::sqrt(8 * std::max(0.f, peer.along - r.along - 8)));
+      }
+      r.speed += std::clamp(desired - r.speed, -4.f * seconds, .8f * seconds);
+      float advance = r.speed * seconds;
+      if (signal == 0 || signal == 1)
+        advance = std::min(advance, stop);
+      r.along += advance;
+      if (advance == 0)
+        r.speed = 0;
       if (r.along > e.length) {
         std::vector<size_t> choices;
         for (size_t i = 0; i < graph->edges().size(); ++i) {
@@ -659,6 +740,7 @@ void race_traffic_tick(Jvm &vm, float seconds) {
           r.along = e.length;
         else {
           r.along -= e.length;
+          r.cleared_crossing = 0;
           r.edge = choices[std::min<size_t>(size_t(random() * choices.size()),
                                             choices.size() - 1)];
         }

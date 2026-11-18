@@ -24,6 +24,8 @@ struct Brain {
   float progress = 0, steering = 0, level = 1, replan = 0;
   int32_t target = 0;
   RoadPoint offset{};
+  bool night = false, runout = false;
+  RoadPoint finish{}, finish_direction{};
 };
 std::unordered_map<void *, Brain> brains;
 Object *live_car(int32_t id) {
@@ -54,7 +56,7 @@ RoadPoint car_position(Object *car) {
   return {m[12], m[13], m[14]};
 }
 RoadRoute spline(const RpkIndex &rpk, const std::string &file,
-                 const RoadPoint &start) {
+                 const RoadPoint &start, Object *car) {
   std::string path = file;
   std::replace(path.begin(), path.end(), '\\', '/');
   std::filesystem::path relative(path);
@@ -81,36 +83,80 @@ RoadRoute spline(const RpkIndex &rpk, const std::string &file,
   }
   if (keys.size() < 2)
     return {};
-  size_t first = 0;
-  float nearest = std::numeric_limits<float>::infinity();
-  for (size_t i = 0; i < keys.size(); ++i) {
-    float distance = road_distance(start, keys[i].first);
-    if (distance < nearest) {
-      nearest = distance;
-      first = i;
+  // A closed spline has no privileged first key. Project onto its complete
+  // curve, choose the travel direction matching the car, and rotate the loop.
+  std::vector<RoadPoint> points;
+  for (size_t i = 0; i + 1 < keys.size(); ++i) {
+    RoadSegment segment;
+    segment.start = keys[i].first;
+    segment.end = keys[i + 1].first;
+    segment.length = road_distance(segment.start, segment.end);
+    for (int axis = 0; axis < 3; ++axis) {
+      segment.start_tangent[axis] = keys[i].second[axis] * segment.length;
+      segment.end_tangent[axis] = keys[i + 1].second[axis] * segment.length;
     }
+    int count = int(std::clamp(std::ceil(segment.length / 2), 16.f, 256.f));
+    for (int j = 0; j < count; ++j)
+      points.push_back(trc_sample(segment, float(j) / count));
   }
+  points.push_back(keys.back().first);
+  bool closed = road_distance(points.front(), points.back()) < 1;
+  auto nearest = [&]() {
+    size_t index = 1;
+    float best = INFINITY, t_best = 0;
+    for (size_t i = 1; i < points.size(); ++i) {
+      auto a = points[i - 1], b = points[i];
+      float dx = b[0] - a[0], dz = b[2] - a[2], square = dx * dx + dz * dz;
+      if (square < 1e-8)
+        continue;
+      float t = std::clamp(
+          ((start[0] - a[0]) * dx + (start[2] - a[2]) * dz) / square, 0.f, 1.f);
+      float distance =
+          std::hypot(start[0] - a[0] - t * dx, start[2] - a[2] - t * dz);
+      if (distance < best) {
+        best = distance;
+        index = i;
+        t_best = t;
+      }
+    }
+    return std::pair{index, t_best};
+  };
+  auto [index, t] = nearest();
+  RoadPoint heading{};
+  PartMatrix frame;
+  if (scene_instances_script_matrix(car, frame.data()))
+    heading = {-frame[8], -frame[9], -frame[10]};
+  auto delta = RoadPoint{points[index][0] - points[index - 1][0],
+                         points[index][1] - points[index - 1][1],
+                         points[index][2] - points[index - 1][2]};
+  if (heading[0] * delta[0] + heading[2] * delta[2] < 0) {
+    std::reverse(points.begin(), points.end());
+    auto reversed = nearest();
+    index = reversed.first;
+    t = reversed.second;
+  }
+  RoadPoint projected;
+  for (int axis = 0; axis < 3; ++axis)
+    projected[axis] = points[index - 1][axis] +
+                      t * (points[index][axis] - points[index - 1][axis]);
   r.points.push_back(start);
-  for (size_t i = first; i + 1 < keys.size(); ++i) {
-    RoadSegment s;
-    s.start = keys[i].first;
-    s.end = keys[i + 1].first;
-    s.length = road_distance(s.start, s.end);
-    for (int k = 0; k < 3; ++k) {
-      s.start_tangent[k] = keys[i].second[k] * s.length;
-      s.end_tangent[k] = keys[i + 1].second[k] * s.length;
-    }
-    for (int j = 0; j < 16; ++j)
-      r.points.push_back(trc_sample(s, float(j) / 16));
+  r.points.push_back(projected);
+  r.points.insert(r.points.end(), points.begin() + index, points.end());
+  if (closed) {
+    r.points.insert(r.points.end(), points.begin() + 1, points.begin() + index);
+    r.points.push_back(projected);
   }
-  r.points.push_back(keys.back().first);
   for (size_t i = 1; i < r.points.size(); ++i)
     r.length += road_distance(r.points[i - 1], r.points[i]);
   return r;
 }
 void traffic_route(Brain &b, const RoadPoint &position) {
   auto graph = race_ground_roads(*b.resources, car_ground(b.car));
-  auto p = graph ? graph->project(position) : std::nullopt;
+  PartMatrix frame;
+  RoadPoint heading{};
+  if (scene_instances_script_matrix(b.car, frame.data()))
+    heading = {-frame[8], -frame[9], -frame[10]};
+  auto p = graph ? graph->project(position, &heading) : std::nullopt;
   if (!p)
     return;
   const auto &e = graph->edges()[p->edge];
@@ -176,8 +222,26 @@ bool race_brain_command(const RpkIndex &rpk, void *key,
       b.level = std::clamp(level, .1f, 2.f);
     return true;
   }
-  if (verb == "AI_NightRace")
-    return true; // Mode hint; AI_race supplies the actual finish.
+  if (verb == "AI_NightRace") {
+    b.night = true;
+    return true;
+  }
+  // v221 ab4b494 race-driver.ts: the radius-based finish event may precede
+  // the finish plane. A night racer coasts across it before holding brakes.
+  b.runout = false;
+  if (verb == "AI_stop" && b.night && b.car && b.route.points.size() > 1) {
+    auto position = car_position(b.car);
+    auto finish = b.route.points.back();
+    if (std::hypot(position[0] - finish[0], position[2] - finish[2]) < 40) {
+      b.runout = true;
+      b.finish = finish;
+      auto previous = b.route.points[b.route.points.size() - 2];
+      b.finish_direction =
+          road_normalize({finish[0] - previous[0], 0, finish[2] - previous[2]});
+    }
+  }
+  if (verb == "AI_race" || verb == "AI_spline")
+    b.night = false;
   b.mode = verb;
   b.route = {};
   b.progress = 0;
@@ -196,7 +260,7 @@ bool race_brain_command(const RpkIndex &rpk, void *key,
     float width = 0;
     std::string path;
     if (input >> width >> path && std::isfinite(width) && width > 0)
-      b.route = spline(rpk, path, car_position(b.car));
+      b.route = spline(rpk, path, car_position(b.car), b.car);
   } else if (verb == "AI_follow") {
     if (read_point(input, b.offset))
       input >> b.target;
@@ -231,8 +295,18 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   if (!b)
     return false;
   out = {};
+  if (b->runout) {
+    float along = (position[0] - b->finish[0]) * b->finish_direction[0] +
+                  (position[2] - b->finish[2]) * b->finish_direction[2];
+    if (speed > 1 && along < 10) {
+      out.brake = 0;
+      out.start = true;
+      return true;
+    }
+    b->runout = false;
+  }
   if (b->mode == "AI_GoToTraffic" &&
-      race_traffic_halted(car_ground(car), position))
+      race_traffic_halted(car_ground(car), position, car))
     return true;
   if (b->mode == "AI_follow") {
     b->replan -= dt;
@@ -286,14 +360,24 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   }
   b->progress = std::max(b->progress, projected);
   auto finish = points.back();
-  if (b->progress >= std::max(0.f, b->route.length - 12.f) &&
+  if (!b->night && b->progress >= std::max(0.f, b->route.length - 12.f) &&
       std::hypot(position[0] - finish[0], position[2] - finish[2]) < 3) {
     b->route = {};
     return true;
   }
-  const auto target =
+  auto target =
       road_at(b->route,
               b->progress + std::clamp(std::fabs(speed) * .8f + 4, 4.f, 18.f));
+  if (b->night && b->progress > b->route.length - 30) {
+    auto previous = points[points.size() - 2];
+    auto direction =
+        road_normalize({finish[0] - previous[0], 0, finish[2] - previous[2]});
+    float along = (position[0] - finish[0]) * direction[0] +
+                  (position[2] - finish[2]) * direction[2];
+    if (along >= 0)
+      for (int axis = 0; axis < 3; ++axis)
+        target[axis] = finish[axis] + 100 * direction[axis];
+  }
   RoadPoint error;
   for (int k = 0; k < 3; ++k)
     error[k] = target[k] - position[k];
@@ -309,11 +393,12 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   if (behind)
     request = std::copysign(1.f, angle);
   b->steering += std::clamp(request - b->steering, -dt * 3, dt * 3);
-  float desired =
-      std::min({32.f * std::clamp(b->level, .5f, 1.5f),
-                std::sqrt(4.5f / std::max(.005f, std::fabs(curvature))),
-                std::sqrt(8 * std::max(road_distance(position, finish),
-                                       b->route.length - b->progress))});
+  float desired = std::min(
+      {b->night ? INFINITY : 32.f * std::clamp(b->level, .5f, 1.5f),
+       std::sqrt(4.5f / std::max(b->night?1.e-9f:.005f, std::fabs(curvature))),
+       b->night ? INFINITY
+                : std::sqrt(8 * std::max(road_distance(position, finish),
+                                         b->route.length - b->progress))});
   // Brake before a bend, rather than waiting for it to enter the short
   // steering lookahead. Distances and acceleration are host tuning in SI units.
   for (float ahead : {8.f, 16.f, 32.f, 48.f, 80.f}) {
@@ -326,7 +411,7 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
           chord = std::hypot(d[0] - a[0], d[2] - a[2]);
     if (l1 > .1f && l2 > .1f && chord > .1f) {
       float k = 2 * std::fabs(ux * vz - uz * vx) / (l1 * l2 * chord);
-      float corner = 4.5f / std::max(.005f, k);
+      float corner = 4.5f / std::max(b->night?1.e-9f:.005f, k);
       desired =
           std::min(desired, std::sqrt(corner + 8 * std::max(0.f, ahead - 8)));
     }
@@ -334,7 +419,7 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
   if (behind)
     desired = std::min(desired, 3.f);
   if (b->mode == "AI_GoToTraffic")
-    desired = std::min(desired, 12.f);
+    desired = std::min(desired, 8.f);
   out.brake = std::clamp((speed - desired) * .35f, 0.f, 1.f);
   out.throttle =
       out.brake > .05f ? 0 : std::clamp((desired - speed) * .5f, 0.f, 1.f);

@@ -25,9 +25,19 @@ public:
     float length = 0;
     std::vector<uint32_t> roads;
   };
-  explicit RoadRoutes(const RoadNetwork &network);
+  struct Signal {
+    RoadPoint position{};
+    uint32_t crossing = 0, branch = 0;
+  };
+  explicit RoadRoutes(const RoadNetwork &network,
+                      const std::vector<RoadPoint> &signals = {});
+  const std::vector<Signal> &signals() const { return signals_; }
+  int signal(uint32_t crossing, uint32_t branch, double seconds) const;
+  int edge_signal(size_t edge, double seconds) const;
+
   std::optional<RoadRoute> query(const RoadPoint &, const RoadPoint &) const;
-  std::optional<RoadProjection> project(const RoadPoint &) const;
+  std::optional<RoadProjection>
+  project(const RoadPoint &, const RoadPoint *heading = nullptr) const;
   std::optional<RoadPoint> nearest_cross(const RoadPoint &,
                                          float radius = 0) const;
   const std::vector<Edge> &edges() const { return edges_; }
@@ -39,6 +49,8 @@ private:
     float distance = 0;
   };
   std::vector<Edge> edges_;
+  std::vector<Signal> signals_;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> cycles_;
   std::vector<std::pair<uint32_t, RoadPoint>> nodes_;
   std::unordered_map<uint32_t, float> radii_;
   std::unordered_map<uint64_t, std::vector<std::pair<size_t, size_t>>> cells_;

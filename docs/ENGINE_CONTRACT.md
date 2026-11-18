@@ -861,3 +861,12 @@ identity. Incarnations prevent stale traffic/brain references after removal.
 See SCRIPT_RUNTIME and EXTERNAL_RESEARCH for the pinned v221 sources, host
 approximations and validation limits. Registry coverage is not finish/results
 validation for any of the three race flows.
+
+
+Race follow-up: trlight fixtures share one approach-cycle state between traffic
+and cached emissive lens geometry. Clock/registration changes invalidate that
+geometry; the host thread publishes it, without a worker touching live VM or
+scene state. Legacy cue animation must exclude vehicle/Part renders even when
+resource flags match a standalone marker. Closed per-car spline routes project
+the initial position and choose direction from its heading. See SCRIPT_RUNTIME
+for the updated real-terrain tests and remaining gameplay/host-model limits.

@@ -72,6 +72,7 @@ void cross_radius() {
 void real_city() {
   Fixture f;
   f.packs.set_root(fs::absolute("game").string());
+  f.packs.open_all();
   auto pack = f.packs.open_lib("maps/city.rpk");
   SLRR_REQUIRE(pack);
   Object ground;
@@ -80,6 +81,8 @@ void real_city() {
   auto graph = race_ground_roads(f.packs, &ground);
   SLRR_REQUIRE(graph && !graph->edges().empty());
   const auto &e = graph->edges().front();
+  std::printf("City bound signal heads: %zu\n", graph->signals().size());
+  SLRR_REQUIRE(graph->signals().size() > 400);
   auto route = graph->query(e.points.front(), e.points.back());
   SLRR_REQUIRE(route && route->length > 0 && std::isfinite(route->length));
   std::printf("City graph: %zu directed edges, first route %.1f metres\n",
@@ -141,8 +144,40 @@ void route_native_contract() {
   std::puts("PASS route native arrays, metre-based cache queries, navigator "
             "ribbon and failed-query invalidation");
 }
+void shared_signal_phases() {
+  auto n = street(false);
+  n.others[0].segments = {straight({90, 0, 0}, {0, 0, 0})};
+  RoadNode side;
+  side.id = 6;
+  side.position = {100, 0, 100};
+  side.links = {{8, 0}};
+  n.nodes.push_back(side);
+  n.nodes[1].links.push_back({8, 1});
+  RoadPath p;
+  p.id = 7;
+  p.refs[1] = 6;
+  p.refs[2] = 2;
+  p.segments = {straight(side.position, n.nodes[1].position)};
+  n.paths.push_back(p);
+  RoadOther r;
+  r.id = 8;
+  r.refs[0] = 7;
+  r.segments = {straight({100, 0, 10}, side.position)};
+  n.others.push_back(r);
+  RoadRoutes roads(n, {{90, 0, 0}, {100, 0, 10}});
+  SLRR_REQUIRE(roads.signals().size() == 2);
+  SLRR_REQUIRE(roads.signal(2, 3, 0) == 2 && roads.signal(2, 7, 0) == 0);
+  SLRR_REQUIRE(roads.signal(2, 3, 10) == 1 && roads.signal(2, 7, 10) == 0);
+  SLRR_REQUIRE(roads.signal(2, 3, 13) == 0 && roads.signal(2, 7, 13) == 2);
+  SLRR_REQUIRE(roads.signal(2, 7, 23) == 1);
+  SLRR_REQUIRE(roads.signal(2, 3, 26) == 2);
+  SLRR_REQUIRE(roads.edge_signal(0, 13) == 0);
+  std::puts(
+      "PASS one shared crossing phase: green, yellow, opposing red and repeat");
+}
 int main() {
   const standalone::Test tests[] = {directions, cross_radius, real_city,
-                                    route_native_contract};
+                                    route_native_contract,
+                                    shared_signal_phases};
   return standalone::run("road_routes", tests);
 }

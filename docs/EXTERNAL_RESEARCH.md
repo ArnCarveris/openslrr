@@ -396,6 +396,32 @@ metadata semantics. Runtime limits and evidence are in SCRIPT_RUNTIME's shared
 race section and assets/validation/shared-races.txt. #179 and its three original
 issues remain open for their separate in-game acceptance checks.
 
+### Traffic and v221 updates during the first race playtest
+
+The maintainer pointed out the newer branches. Read-only references were refreshed
+at traffic `bea8ce06eabef78ad0c25dde00e17a48765199b5` and v221
+`ab4b4943c948d34960b458add314609694646927`. In particular:
+
+- `SLRR_rev:src/engine/traffic-control.ts` and
+  `SLRR_rev:docs/traffic-signals-research.md`: flagged-link fixture binding and one
+  crossing state shared by drivers and lenses. The port uses the documented
+  host 10/3 second cycle; it does not claim original producer/timing parity.
+- `SLRR_rev:src/render/traffic-signals.ts`: the installed head's lens centres
+  (local X=1, Y=.32/-.005/-.335, Z=.16). OpenSLRR uses grouped emissive lens
+  geometry in its existing renderer, without copying Three.js or its sprite
+  architecture. Original flare/PTX halo work remains separate.
+- `SLRR_rev:src/engine/race-driver.ts` on the new v221: behind-target recovery and
+  NightRace's finish-plane runout. The latter prevents a radius-based stop event
+  from braking the opponent before it crosses the line.
+
+The local Java sources ROCTrack.java and Roc.java show the per-opponent
+ROC_cars spline selection, the -.55 rad grid heading and the ordered Round gates.
+OpenSLRR's complete-loop projection/orientation is its own host extension;
+upstream v221 still does not implement AI_spline. The updated integration tests
+use that actual grid, per-car data and map collisions, rather than extrapolating
+from a flat surface and the generic race.spl. Steady simulation and signal mesh
+publication remain on the host thread under the new worker-pool contract.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6
