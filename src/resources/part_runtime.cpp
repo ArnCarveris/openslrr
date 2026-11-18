@@ -69,13 +69,14 @@ struct SfxItem {
 };
 struct Record {
   bool external_motion = false;
-  struct ExternalWheel {
+  struct InlineWheel {
     Object *node;
     PartMatrix base, mesh;
     float radius, steer_factor;
+    size_t corner;
     double spin = 0;
   };
-  std::vector<ExternalWheel> external_wheels;
+  std::vector<InlineWheel> inline_wheels;
   std::unique_ptr<physics::DeformationCage> deformation;
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
@@ -438,7 +439,7 @@ Object *car(Object *self) {
   return nullptr;
 }
 void render_part(Jvm &jvm, Object *self, Record &rec) {
-  rec.external_wheels.clear();
+  rec.inline_wheels.clear();
   auto paint_of = [&](const std::vector<uint32_t> &colors) {
     uint32_t paint = 0xffffff;
     if (!rec.colour_set || colors.empty())
@@ -532,9 +533,9 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
         const float factor = i < rec.config->wheel_steering.size()
                                  ? rec.config->wheel_steering[i]
                                  : 0;
-        rec.external_wheels.push_back(
+        rec.inline_wheels.push_back(
             {rec.renders.back(), part_pose_matrix(rec.config->wheels[i]),
-             part_pose_matrix(r.pose), radius > 0 ? radius : .33f, factor});
+             part_pose_matrix(r.pose), radius > 0 ? radius : .33f, factor, i});
       }
     }
   }
@@ -1866,8 +1867,11 @@ void dynamics_wheels(Record &rec) {
     // Without its rim the corner keeps a wheel the size of the hardware still
     // on it, so the car rests on the brake instead of passing through the
     // floor, or on an outer dually wheel.
+    const bool inline_wheel =
+        std::any_of(rec.inline_wheels.begin(), rec.inline_wheels.end(),
+                    [&](const auto &w) { return w.corner == i; });
     const double reach = mount ? 0 : corner_hardware_reach(rec, i);
-    if (!mount && !(reach > 0))
+    if (!mount && !inline_wheel && !(reach > 0))
       continue;
     const auto fallback = i < rec.config->wheel_springs.size()
                               ? rec.config->wheel_springs[i]
@@ -1892,7 +1896,7 @@ void dynamics_wheels(Record &rec) {
         (physics::wheel_steering(ypr[0]) *
          physics::Quaternion{std::sin(ypr[1] * .5), 0, 0, std::cos(ypr[1] * .5)} *
          physics::Quaternion{0, 0, std::sin(ypr[2] * .5), std::cos(ypr[2] * .5)}).normalized();
-    cfg.radius = !mount ? reach : live.radius > 0 ? live.radius : fallback.radius;
+    cfg.radius = inline_wheel ? fallback.radius : !mount ? reach : live.radius > 0 ? live.radius : fallback.radius;
     cfg.rest = live.rest;
     cfg.anchor = fallback.base + fallback.travel;
     cfg.minimum = std::max(0.f, live.min_len);
@@ -1901,13 +1905,26 @@ void dynamics_wheels(Record &rec) {
     cfg.bump_damping = live.damp_bound;
     cfg.rebound_damping = live.damp_rebound;
     cfg.unsprung = fallback.mass;
+    if (inline_wheel) {
+      // Match TrafficVehicle's .25m nominal spring, .1m static sag, .65
+      // damping.
+      cfg.rest = .25;
+      cfg.anchor = .25;
+      cfg.minimum = .05;
+      cfg.maximum = .45;
+      double mass = rec.config->mass > 0 ? rec.config->mass : 1400;
+      cfg.spring = mass * 9.81 / 4 / .1;
+      cfg.bump_damping = cfg.rebound_damping =
+          2 * std::sqrt(cfg.spring * mass / 4) * .65;
+      cfg.unsprung = 0;
+    }
     cfg.arm_length = 0;
     cfg.has_hub = false;
     cfg.hub = {};
     if (live.has_arm && live.opp < 0 && live.arm[0] > 0) {
       cfg.arm_length = live.arm[0];
-      cfg.arm_pivot = cfg.center + physics::Vec3{live.arm[1], live.arm[2],
-                                                 live.arm[3]};
+      cfg.arm_pivot =
+          cfg.center + physics::Vec3{live.arm[1], live.arm[2], live.arm[3]};
       cfg.arm_axis = {live.arm[4], live.arm[5], live.arm[6]};
       if (live.has_hub) {
         cfg.has_hub = true;
@@ -1916,9 +1933,9 @@ void dynamics_wheels(Record &rec) {
       }
     }
     cfg.enabled = cfg.radius > 0;
-    cfg.rigid_contact = cfg.enabled &&
-                        !(cfg.rest > 0 && cfg.maximum > cfg.minimum &&
-                          cfg.spring > 0);
+    cfg.rigid_contact =
+        cfg.enabled &&
+        !(cfg.rest > 0 && cfg.maximum > cfg.minimum && cfg.spring > 0);
     if (cfg.rigid_contact) {
       // A mounted wheel without a working spring rests at its bump stop.
       const double stop = live.min_len > 0 ? live.min_len : fallback.base;
@@ -1987,6 +2004,15 @@ void pose_wheels(Object *chassis, Record &rec) {
     const physics::Quaternion rolling{std::sin(spin * .5), 0, 0, std::cos(spin * .5)};
     rec.rolling_frame[i] = part_matrix_multiply(
         physics::corner_matrix(frames.hub_origin, hub_steered * rolling), inverse);
+  }
+  for (auto &wheel : rec.inline_wheels) {
+    auto local =
+        part_matrix_multiply(rec.rolling_frame[wheel.corner],
+                             part_matrix_multiply(wheel.base, wheel.mesh));
+    if (auto *n = gameref_get(wheel.node)) {
+      std::copy(local.begin(), local.end(), n->local_matrix);
+      n->matrix_override = true;
+    }
   }
   for (const auto &slot : rec.config->slots)
     if (corner_gear(slot.type))
@@ -2246,6 +2272,7 @@ void update_steering(Record &rec, bool controls) {
 void configure_drive(Object *chassis, Record &rec, bool controlled) {
   auto &drive = rec.dynamics.drive;
   drive.torque = {};
+  drive.native_traffic = false;
   RaceDriveInput ai;
   const auto forward = rec.dynamics.body.orientation.rotate({0,0,-1});
   const auto position = rec.dynamics.body.position;
@@ -2270,12 +2297,23 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   } else update_steering(rec, controls);
   for (size_t i = 0; i < drive.wheels.size(); ++i)
     drive.wheels[i].steer = wheel_steering_angle(rec, i);
+  if (!rec.inline_wheels.empty()) {
+    drive.native_traffic = true;
+    drive.throttle = autonomous ? ai.throttle
+                     : controls ? host_input().drive_throttle
+                                : 0;
+    drive.brake = autonomous ? ai.brake
+                  : controls ? host_input().drive_brake
+                             : 1;
+    return;
+  }
   auto *ratios = part_field(chassis, "ratio");
   if (!ratios || ratios->slots.size() < 8 || field_int(chassis, "gears") < 1)
     return;
   Object *dyno = nullptr;
   for (const auto &[slot, child] : rec.children) {
-    if ((dyno = part_field(child, "dynodata"))) break;
+    if ((dyno = part_field(child, "dynodata")))
+      break;
   }
   if (!dyno || comp(chassis, "maxRPM") <= 0) return;
   const auto &in = host_input();
@@ -3469,7 +3507,7 @@ void advance_chassis_tick() {
     const auto orientation_before = rec.dynamics.body.orientation;
     const auto velocity_before = rec.dynamics.body.velocity;
     const auto steps = rec.dynamics.advance(kPhysicsTick, terrain);
-    if (rec.physics_released && rec.dynamics.drive.torque) {
+    if (rec.physics_released && (rec.dynamics.drive.torque || rec.dynamics.drive.native_traffic)) {
       const auto wall = collide_chassis(rec, before);
       const auto& ground = rec.dynamics.ground_impact;
       damage_chassis(chassis, rec, wall.speed >= ground.speed ? wall : ground,
@@ -3490,7 +3528,10 @@ void advance_chassis_tick() {
       const auto delta = rec.dynamics.body.position - before;
       rec.mileage += static_cast<float>(std::hypot(delta.x, delta.z) * .1);
     }
-    rec.engine_running = rec.dynamics.drive.torque && rec.dynamics.engine_running;
+    rec.engine_running =
+        rec.dynamics.drive.native_traffic
+            ? rec.physics_released
+            : rec.dynamics.drive.torque && rec.dynamics.engine_running;
     if (!finite_frame(rec.dynamics.body.frame()))
       throw std::runtime_error("non-finite chassis output");
     if (steps) {
@@ -4532,7 +4573,7 @@ void part_animate_external_wheels(Object *car, float metres, float steer) {
   if (!rec || !rec->external_motion || !std::isfinite(metres) ||
       !std::isfinite(steer))
     return;
-  for (auto &wheel : rec->external_wheels) {
+  for (auto &wheel : rec->inline_wheels) {
     wheel.spin =
         std::remainder(wheel.spin - metres / wheel.radius, 6.283185307179586);
     PartPose rotation;

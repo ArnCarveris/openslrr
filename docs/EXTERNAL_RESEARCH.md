@@ -441,6 +441,24 @@ traffic recovery and all contact/pursuit policies are not claimed as implemented
 The ROC straight-speed increase is OpenSLRR tuning requested after the maintainer
 confirmed spline following in game; it is not attributed to recovered AI_params.
 
+### Visible native traffic physics and population follow-up
+
+The next screenshots showed the limits of external animation and body-bottom
+placement. Read SLRR_rev:src/engine/traffic-vehicle.ts and
+SLRR_rev:src/engine/traffic-stream.ts at the same traffic pin. Visible native cars
+now use its one-body/four-ray-spring model and load-limited tyre-force law inside
+OpenSLRR's existing VehicleDynamics, with physical hub transforms driving inline
+wheel meshes. The .25m/.1m/.65 spring policy and 5/8 m/s2/.9 tyre policy come from
+that reference. Low-speed brake impulse limiting and slope holding are host
+stability additions. Upstream also has physical/distant LOD and recovery/control
+features that are not claimed as fully ported here.
+
+SLRR_rev:src/runtime/traffic-native.ts assigns each addTrafficCar model weight 1,
+in the same catalog as addTrafficN model weights. OpenSLRR now derives the visible
+rival share from those weights instead of taking half the population. The rounding
+and density-to-cap scale are host policies; neither the previous 50% reservation
+nor any fixed ratio is attributed to the original game.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6

@@ -71,3 +71,26 @@ original signal producer/timing/STOP-YIELD and flare halos.
   physics_recovery, gameref_alias and trigger_markers checks pass.
 - Full City UI challenge/return flow and latest rendered behavior await user
   validation. Traffic lane changes, contact/pursuit and AI_params remain partial.
+
+2026-11-18 physical suspension and density follow-up
+- Visible four-wheel native traffic and fake racers now advance VehicleDynamics;
+  native tyre-force/spring policy ported from traffic bea8ce0 traffic-vehicle.ts.
+- Original inline CFG wheels are accepted without scripted rim slots. All four
+  render hubs now match the solver's compressed hub transforms/steering/spin.
+- Real Wagon and fake_racers/Teg settle on actual City collision terrain:
+  tyre-radius contact gaps <0.0001m; actual rendered tyre bottoms approximately
+  -0.0127m (Wagon) and -0.0034m (Teg) relative to the sampled road.
+  Each corner has positive supporting force; no body-bottom ride-height lift.
+- Native day-racer staging test requires active physical ticks and real movement.
+- Physical City turning test: four animated wheels, steering, >1000 solver ticks;
+  maximum per-frame step .132m and heading step .009rad at 60Hz.
+- Physical red-light hold: .0006m drift / .0003m/s after settling; pause and
+  green release pass. Brake sign overshoot is bounded at rest.
+- Weight fixture: 100 registered rivals (weight 1 each), ordinary weight 1000:
+  Config.trafficDensity .2 -> 20 cars: 18 ordinary / 2 rivals;
+  .1 -> 10 cars: 9 ordinary / 1 rival; 0 -> no visible cars.
+  Actual catalog weights determine production proportions. Density scale and
+  rounding remain explicit host policy, not recovered native count semantics.
+- All seven integration suites pass, including unchanged physical ROC gate tests.
+- Latest visible City behavior still awaits user validation; pursuit, lane changes
+  and full challenge/result transitions remain outside automated acceptance.

@@ -854,8 +854,12 @@ Selected GroundRef resources own their road graph, cached route, traffic model
 weights and traffic restrictions (`race_runtime.cpp`, `traffic_runtime.cpp`).
 AI command interpretation belongs to `race_brain.cpp`; its controls feed the
 existing Part mechanical solver. Java still owns the race state machine and
-outcome. Unscripted traffic uses external lane motion, while physical scripted
-rivals use the shared car solver. Streaming visibility must exclude an entire
+outcome. Visible four-wheel native traffic, native racer doubles and scripted rivals
+use the shared rigid-body/suspension solver. Native CFG wheel renders must use
+the same hub compression, steering and spin as physical contacts; inline wheels
+do not require scripted rim slots. Unsupported chassis retain an external-motion
+fallback. Java model weights, including weight-one registered rivals, determine
+the traffic/adversary share under the configured host population cap. Streaming visibility must exclude an entire
 car subtree from rendering, physics and triggers without destroying its Java
 identity. Incarnations prevent stale traffic/brain references after removal.
 See SCRIPT_RUNTIME and EXTERNAL_RESEARCH for the pinned v221 sources, host

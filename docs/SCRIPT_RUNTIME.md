@@ -317,33 +317,53 @@ navigator-owned coloured ribbon, without sampling its texture argument.
 road/crossing restrictions per ground. Model declarations may be id-only Java
 resource references, rather than live instances. Positioned reinsertion is a
 finite request, separate from permanent model weights. Density selects up to 50
-active cars (20 at the default .2), with room for scripted rivals. Generic CFG
-cars and native-only racer doubles use external lane motion, an urban 15–35 km/h cruise target, bounded
-acceleration/braking and same-road following gaps. External poses sample the
-actual floor and apply the complete assembly's cached ride height. Scripted
-mechanical rivals keep their existing engine, gears, wheels and mechanical solver. Hidden
-rivals receive coarse five-second estimates and are excluded from drawing,
-physics and triggers. Mainloop traffic catch-up uses the same four-tick budget
-as car physics, avoiding accelerated traffic after a slow frame.
+active cars (20 at the default .2). Registered Java cars each have catalog weight
+one; their visible share is rounded from that weight against the summed model
+weights. They no longer reserve half the population. For 100 registered rivals
+and an ordinary model weight of 1,000, the test produces 2 rivals/18 ordinary at
+.2, 1/9 at .1 and none at zero. Those are fixture counts, not fixed production
+quotas: actual Java model weights and registered rivals determine the split.
+The density-to-cap scale remains a host policy, not recovered native timing.
+
+Four-wheel native cars and native-only racer doubles now use the existing rigid
+body, floor collision and suspension solver while visible. The inline CFG wheels
+are valid physical corners even without scripted rim slots. Adapted from
+SLRR_rev traffic bea8ce0 traffic-vehicle.ts, the native driver supplies load-limited
+longitudinal/lateral tyre forces (5 m/s2 throttle, 8 m/s2 braking, friction .9),
+with four .25 m springs, .1 m static sag and damping ratio .65. Scripted cars
+retain their engine/dyno drivetrain; no fictional Java engine is created for
+native-only cars. The host additionally limits braking to avoid sign oscillation
+near zero and compensates the forward gravity component while holding brakes.
+
+Inline render meshes use the same hub, compression, steering and wheel rotation
+as physical contacts. Previously, inline wheels were disabled by the mounted-rim
+check and the visuals stayed at their authored pose while placement used the body
+mesh bottom. Traffic placement now uses loaded tyre contacts through park_chassis;
+it does not raise the body by a generic support-mesh bounding box. Static native
+wheels therefore settle down onto the road as upstream's native cars do. Vehicles
+without a supported four-wheel chassis retain the external-motion fallback.
+Hidden cars remain excluded from drawing, physics and triggers. Hidden rivals
+receive coarse five-second estimates. Mainloop traffic catch-up uses the same
+four-tick budget as car physics.
 
 The traffic graph is separate from the street-centre route graph. Following
 SLRR_rev traffic bea8ce0 road-traffic.ts, RoadOther segments run in reverse stored
 order. Explicit node grey curves connect matching incoming/outgoing endpoints
 within .03 m; joins are never invented by nearest street centres. The installed
-City data supplies 1,572 lane curves and 3,854 crossing curves. A cursor carries
-arc-length progress through lane -> crossing -> outgoing lane. Selection chooses
-a destination branch before one of its lanes. Vehicle heading uses the local
-curve tangent, including at an endpoint. Native wheel visuals roll by travelled
-metres divided by their CFG radius and the steering wheels yaw with curvature;
-the wheel mounting centres and body pose stay independent.
+City data supplies 1,572 lane curves and 3,854 crossing curves. Physical drivers
+receive multiple connected curves ahead and steer, accelerate and brake through
+the same Part solver as opponents. The external fallback carries arc-length
+progress through lane -> crossing -> outgoing lane. Selection chooses a destination
+branch before one of its lanes. Native traffic uses an urban cruise target;
+rural speed groups and the complete upstream traffic controller are not ported.
 
-GameRef.create_native on a native car now builds its CFG-backed native assembly
+GameRef.create_native on a native car builds its CFG-backed native assembly
 and aliases the Java handle to it, without running a chassis-specific constructor.
 This covers Valocity's fake_racers doubles created at (0,-10000,0), followed by
-addTrafficCar(dummycar,null). The traffic registration owns placement/movement
-and visibility; removing it preserves the Java-owned car. Explicit insertion
-positions are projected onto actual lanes and published on the road before
-becoming visible. There are no Valocity-specific VM exceptions.
+addTrafficCar(dummycar,null). Registration owns insertion/visibility; removing it
+preserves the Java-owned car. Explicit insertion positions are projected onto
+actual lanes and published on the road before becoming visible. There are no
+Valocity-specific VM exceptions.
 
 Notifications emit balanced car_add <live-id> <registration-id> / car_rem
 <live-id> strings to original Java after placement. Java owns opponent lists,
@@ -391,13 +411,15 @@ Limitations: behaviour flags are stored without tuning; trailing model
 parameters, spline width/speed metadata, AI_params and opponent IDs do not tune
 the controller. Follow offsets are world-space. Complete pursuit, traffic lane changes,
 pair-contact reactions and opponent driver seating
-remain incomplete. AI tuning, lane offsets, population and streaming radii are
+remain incomplete. AI tuning, population and streaming radii are
 host models, not original-engine parity. Native bindings are not race completion.
 
 Validation uses the Release host objects and read-only local assets. road_routes
 covers directed graphs, native return formats, navigation ribbons and shared
 signal phases (1,146 heads across the installed City/exterior data). traffic_runtime
-covers real Taxi assemblies, id-only declarations, balanced lifecycle events,
+covers real Taxi assemblies, native day-racer staging and physical ticks,
+Wagon/Teg rendered tyre-to-road contact, weighted density scaling,
+id-only declarations, balanced lifecycle events,
 red-light stop/pause/green release, and cached signal emission meshes. The
 trigger_markers test retains marker animation and excludes vehicle animation.
 The race_vehicle integration executes original Bot methods on real City and ROC

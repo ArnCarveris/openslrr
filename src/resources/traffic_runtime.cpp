@@ -38,7 +38,6 @@ struct Registration {
   uint32_t cleared_crossing = 0;
   size_t edge = 0;
   float along = 0, speed = 0, cruise = 0;
-  std::optional<float> ride_height;
 };
 struct Seed {
   Model model;
@@ -221,29 +220,9 @@ void publish(Registration &r, const RoadRoutes &graph, float at) {
     p[1] = floor.height;
   gameref_set_matrix(r.car, p[0], p[1], p[2],
                      std::atan2(-direction[0], -direction[2]), 0, 0);
-  {
-    if (!r.ride_height) {
-      part_park_chassis(r.car);
-      std::vector<std::array<float, 3>> supports;
-      auto *body = gameref_get(r.car);
-      const bool hidden = body && body->streamed_hidden;
-      if (body)
-        body->streamed_hidden = false;
-      const bool supported = scene_instances_supports(r.car, supports);
-      if (body)
-        body->streamed_hidden = hidden;
-      if (supported) {
-        float bottom = std::numeric_limits<float>::infinity();
-        for (const auto &point : supports)
-          bottom = std::min(bottom, point[1]);
-        if (auto *n = gameref_get(r.car); n && std::isfinite(bottom))
-          r.ride_height = n->pos[1] - bottom;
-      }
-    }
-    if (r.ride_height)
-      gameref_set_matrix(r.car, p[0], p[1] + *r.ride_height, p[2],
-                         std::atan2(-direction[0], -direction[2]), 0, 0);
-  }
+  // setMatrix input is a contact point. Park computes the loaded wheel
+  // contact origin; a body-mesh bounding box is not a tyre contact plane.
+  part_park_chassis(r.car);
   if (auto *n = gameref_get(r.car))
     for (int i = 0; i < 3; ++i)
       n->vel[i] = direction[i] * r.speed;
@@ -304,9 +283,7 @@ int32_t add_car(const RpkIndex &rpk, void *ground, Object *car, Object *where,
   r.notify = owned;
   r.cruise = (15 + random() * 20) / 3.6f;
   auto cfg = load_part_config(rpk, uint32_t(c->type_id));
-  r.kinematic = owned || cfg.native_kind != "car" ||
-                r.car->class_name == "java.game.parts.Part" ||
-                !part_chassis(r.car);
+  r.kinematic = !part_chassis(r.car) || cfg.wheels.size() != 4;
   if (r.kinematic)
     part_set_external_motion(r.car, true);
   if (auto p = point(where)) {
@@ -637,6 +614,19 @@ void race_traffic_tick(Jvm &vm, float seconds) {
       if (e.second.ground == key)
         ids.push_back(e.first);
     std::sort(ids.begin(), ids.end());
+    float model_weight = 0;
+    for (const auto &model : p->models)
+      model_weight += model.weight;
+    int registered = 0;
+    for (auto id : ids)
+      if (!registrations.at(id).owned)
+        ++registered;
+    // Each original addTrafficCar entry has weight one, just like upstream's
+    // catalog. It does not reserve half the population ahead of road traffic.
+    const int rival_cap =
+        model_weight > 0
+            ? int(std::round(cap * registered / (model_weight + registered)))
+            : std::min(cap, registered);
     int visible = 0, rivals = 0;
     for (auto id : ids) {
       auto it = registrations.find(id);
@@ -652,9 +642,9 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         r.edge = 0;
         r.unplaced = true;
       }
-      if (r.visible &&
-          (visible >= cap || road_distance(position(r.car), focus) > 380 ||
-           blocked(*p, graph->traffic_edges()[r.edge]))) {
+      if (r.visible && (visible >= cap || (!r.owned && rivals >= rival_cap) ||
+                        road_distance(position(r.car), focus) > 380 ||
+                        blocked(*p, graph->traffic_edges()[r.edge]))) {
         queue(r, false);
         r.visible = false;
         n->streamed_hidden = true;
@@ -710,7 +700,7 @@ void race_traffic_tick(Jvm &vm, float seconds) {
           }
         }
       }
-      if (!r.visible && !r.owned && visible < cap && rivals < (cap + 1) / 2) {
+      if (!r.visible && !r.owned && visible < cap && rivals < rival_cap) {
         if (r.unplaced && !place(r, *graph, *p, focus, true))
           continue;
         if (road_distance(position(r.car), focus) > 300)
@@ -803,6 +793,8 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         publish(r, *graph, r.along);
         if (auto *n = gameref_get(car))
           n->streamed_hidden = false;
+        if (!r.kinematic)
+          race_set_traffic_mode(*resources, car);
         queue(r, true);
         ++visible;
         --seed.remaining;
