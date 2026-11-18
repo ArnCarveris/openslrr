@@ -117,6 +117,7 @@ class LibBgfxBackend final : public IRenderBackend {
 
  private:
   friend struct SceneMeshCacheRegression;
+  friend struct SceneShadowRegression;
   DebugOverlay debug_overlay_;
   bool debug_was_visible_ = false;
   struct ScenePart {
@@ -151,6 +152,7 @@ class LibBgfxBackend final : public IRenderBackend {
 
   // Diffuse * baked lightmap, the way the exe draws a map. No lightmap
   // (OSD, FMV, a mesh without the slot) keeps the existing shading.
+  void bind_scene_shadow(bool receive, uint8_t stage);
   void bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex,
                         bgfx::TextureHandle mix = BGFX_INVALID_HANDLE,
@@ -354,6 +356,7 @@ class LibBgfxBackend final : public IRenderBackend {
   size_t reflection_face_ = 0;
   bool reflection_ready_ = false;
   bool reflection_scene_ = false;
+  bool static_shadow_local_ = false; // The depth field belongs to the garage lamp.
   bool static_shadow_active_ = false;
   bgfx::FrameBufferHandle car_depth_fb_ = BGFX_INVALID_HANDLE;
   bgfx::TextureHandle car_depth_tex_ = BGFX_INVALID_HANDLE;

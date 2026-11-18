@@ -198,6 +198,15 @@ bgfx_compile_shaders(
   OUT_FILES_VAR SLRR_FS_SHADER_HEADERS
 )
 
+# bgfx's helper tracks the input and varying definition, not local includes.
+# Append to the first output of each receiver's multi-profile compile rule.
+foreach(_shadow_receiver IN ITEMS mesh vehicle)
+  add_custom_command(
+    OUTPUT "${SLRR_SHADER_OUT}/dxbc/fs_${_shadow_receiver}.sc.bin.h"
+    APPEND DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_shadow.sh"
+  )
+endforeach()
+
 target_sources(slrr_host PRIVATE
   src/render/bgfx_lib_backend.cpp
   src/render/bgfx_lighting.cpp

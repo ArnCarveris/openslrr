@@ -108,6 +108,27 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   bgfx::submit(view_id, program_);
 }
 
+  void LibBgfxBackend::bind_scene_shadow(bool enabled, uint8_t stage)
+{
+    const bool receive = enabled && static_shadow_active_ &&
+                         debug_overlay_.render_options().map_shadows;
+    const float params[4] = {receive ? 1.f : 0.f,
+                             receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
+    bgfx::setUniform(u_static_shadow_params_, params);
+    if (receive) {
+      const float eye[4] = {static_shadow_eye_[0], static_shadow_eye_[1],
+                            static_shadow_eye_[2], static_shadow_distance_};
+      bgfx::setUniform(u_static_shadow_eye_, eye);
+      bgfx::setUniform(u_static_shadow_mtx_, static_shadow_matrix_.data());
+    }
+    constexpr uint32_t shadow_sampler = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
+                                        BGFX_SAMPLER_COMPARE_LEQUAL;
+    const auto shadow_tex = receive ? static_shadow_tex_
+                                    : (bgfx::isValid(depth_white_) ? depth_white_ : static_shadow_tex_);
+    bgfx::setTexture(stage, s_static_shadow_,
+                     bgfx::isValid(shadow_tex) ? shadow_tex : white_tex_, shadow_sampler);
+}
+
   void LibBgfxBackend::bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex, bgfx::TextureHandle mix,
                         bool receive_static_shadow, const SceneSun* sun, const float* sky)
@@ -153,23 +174,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     bgfx::setUniform(u_lightmap_uv_, xf);
     bgfx::setTexture(1, s_lightmap_, lm);
     bgfx::setTexture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_);
-    const bool receive = receive_static_shadow && static_shadow_active_ &&
-                         debug_overlay_.render_options().map_shadows;
-    const float params[4] = {receive ? 1.f : 0.f,
-                             receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, 0.f};
-    bgfx::setUniform(u_static_shadow_params_, params);
-    if (receive) {
-      const float eye[4] = {static_shadow_eye_[0], static_shadow_eye_[1],
-                            static_shadow_eye_[2], static_shadow_distance_};
-      bgfx::setUniform(u_static_shadow_eye_, eye);
-      bgfx::setUniform(u_static_shadow_mtx_, static_shadow_matrix_.data());
-    }
-    constexpr uint32_t shadow_sampler = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
-                                        BGFX_SAMPLER_COMPARE_LEQUAL;
-    const auto shadow_tex = receive ? static_shadow_tex_
-                                    : (bgfx::isValid(depth_white_) ? depth_white_ : static_shadow_tex_);
-    bgfx::setTexture(3, s_static_shadow_,
-                     bgfx::isValid(shadow_tex) ? shadow_tex : white_tex_, shadow_sampler);
+    bind_scene_shadow(receive_static_shadow, 3);
     const bool receive_car = receive_static_shadow && car_depth_active_;
     const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / kShadowResolution, .0006f, 0.f};
     bgfx::setUniform(u_car_depth_params_, car_params);
@@ -303,6 +308,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         // material UV transforms need the scene's wrapping sampler here.
         bgfx::setTexture(2, s_env_, env, BGFX_SAMPLER_NONE);
         bgfx::setTexture(3,s_bake_,bake);
+        // Map shadows affect direct vehicle light, not a car depth map that
+        // contains this same car. Emissive lamps and previews stay unshadowed.
+        bind_scene_shadow(!preview && !instance.light_flags, 5);
         const bool two_sided = part.geo.info.version != 4 ||
             (group.material_flags & 0x02000000u) != 0;
         const float reflection[4] = {live_env ? 1.f : enhanced_env ? 2.f : 0.f,
@@ -414,7 +422,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
                             graphics.volumetric_clouds ? 2.f : 1.f};
       const bool scene_light = procedural_sky ||
           (world_mesh && outdoor_lighting_ && graphics.dynamic_lighting);
-      bind_baked_light(group, &part.tex, mix, world_mesh && view_id < 72,
+      bind_baked_light(group, &part.tex, mix, world_mesh,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
       if (instance.emissive_overlay && group && group->emission_index != 0xffff) {
         const auto& uv = group->emission_map;
@@ -552,11 +560,10 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, first, index_count);
           bgfx::setTexture(0, s_tex_, tex, BGFX_SAMPLER_NONE);
-          const bool receive = view_id < 72;
-          bind_baked_light(group, &part.tex, mix, receive,
+          bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
                            nullptr);
-          if (receive) bgfx::setUniform(u_local_light_, local_light_.data());
+          bgfx::setUniform(u_local_light_, local_light_.data());
           uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA |
                            BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
           if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;

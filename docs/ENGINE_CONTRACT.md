@@ -778,6 +778,17 @@ A checked "dynamic reflections" option does not prove that the car material
 reads that cubemap. Follow the binding into the shader. Check fallbacks to
 the old envmaps and the `vehicle_material` flags.
 
+Map shadow visibility is shared by scenery and vehicle shaders through
+`shaders/scene_shadow.sh`. Bind it at mesh stage 3 or vehicle stage 5; stage 4
+is the vehicle cubemap and must not be overwritten. Captured world meshes and
+prop batches receive the same world-space shadow field as the main view.
+The field identifies its source (sun or garage lamp), so only that light's
+direct diffuse/specular contribution is occluded. Ambient/environment light
+is preserved. Vehicle previews and emissive lamp surfaces disable reception;
+the separate car-depth map is not sampled by the same car as a receiver.
+This is still the existing limited-range field, not cascaded shadows or a
+complete real-light implementation. See RENDERING_ROADMAP.md for #201 progress.
+
 ### Mesh CPU/GPU ownership
 
 Scene geometry remains the authoritative CPU source for collision, picking,

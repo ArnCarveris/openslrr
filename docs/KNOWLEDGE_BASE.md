@@ -2226,3 +2226,20 @@ locals/arguments on a suspended cooperative stack. The 60,000 mixed-object
 fixture takes about 11ms to collect versus 168-171ms before; allocation costs
 26-29ms versus 23ms before. The baseline/current logs and limits are recorded in
 assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.
+
+
+### Shared shadow receivers (#201, first increment)
+
+- `src/render/bgfx_lighting.cpp:LibBgfxBackend::bind_scene_shadow` binds the
+  same field for scenery, vehicles and world reflection captures. Vehicle stage
+  5 avoids the cubemap at stage 4. The source tag distinguishes the sunlight
+  field from the existing garage-lamp field.
+- `shaders/scene_shadow.sh` shares filtering/bias/fade across the mesh and
+  vehicle shaders; only the associated direct light is attenuated. Ambient,
+  environment reflection, emissive lamps and previews retain their own policy.
+- `tests/test_scene_shadow_gpu.cpp` measures real D3D11 pixels: shadowed/lit
+  receivers, disabled field, preview/emission isolation, capture-view parity and
+  local-shadow isolation from sunlight. It does not validate full cubemap
+  composition, cascades, addon light discovery or complete garage behavior.
+- See RENDERING_ROADMAP.md and assets/validation/scene-shadow-foundation.txt
+  for the current scope, evidence and remaining #201 work.

@@ -11,6 +11,7 @@ namespace slrr {
 void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& video) {
   perf::Scope perf_scope(perf::Zone::Shadows);
   static_shadow_active_ = false;
+  static_shadow_local_ = false;
   // The garage has no sun map. The neon reuses this same view and looks down
   // on the bay, so the car and the room cast one shadow without a new pass.
   if (garage_ && local_light_[3] > 0.f && video.shadows != 0 &&
@@ -85,6 +86,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     static_shadow_distance_ = 40.f;
     static_shadow_world_ = nullptr;
     static_shadow_active_ = true;
+    static_shadow_local_ = true;
     return;
   }
   if (!eye || video.shadows == 0 || !scene_instances_has_ground_props()) {
