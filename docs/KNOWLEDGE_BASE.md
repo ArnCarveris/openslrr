@@ -171,6 +171,7 @@ current gaps to SLRR_rev code are in
 | UI | `src/ui/osd_registry.cpp:osd_add_widget`, `src/ui/osd_registry.cpp:osd_on_field_write` | OSD widgets, hit-testing, modal state |
 | Map ambience | `src/resources/scene_ambience.cpp:scene_ambience_attach`, `src/resources/scene_ambience.cpp:scene_ambience_tick` | `sfx_loop`/`sfx_random` lines of map placements |
 | Platform | `src/platform/host_input.cpp`, `src/platform/host_sfx.cpp`, `src/platform/host_music.cpp`, `src/platform/video_fmv.cpp`, `src/platform/host_game_options.cpp` | Input, audio, FMV, options |
+| Worker pool | `src/platform/job_system.cpp:jobs_parallel_for` | One worker per logical processor for loading work off the host thread (§6) |
 
 Code that exists but is not used:
 
@@ -192,8 +193,9 @@ Code that exists but is not used:
    native family through `src/natives/natives_boot.cpp:register_boot_natives`,
    loads options through the engine-owned `java.util.Config`
    (`src/platform/host_game_options.cpp:host_game_options_load`), scans every
-   `.rpk` under the root (`src/resources/rpk_index.cpp:open_all`), checks the
-   build number, opens the window and plays the intros.
+   `.rpk` under the root (`src/resources/rpk_index.cpp:open_all`, which reads
+   the packs on the worker pool and numbers them in directory order), checks
+   the build number, opens the window and plays the intros.
 3. `src/boot/boot.cpp:start_init` runs `Init.<init>(I)` with halting on the
    first unbound native.
 4. The main loop repeats: window pump, section render sync,
@@ -403,12 +405,132 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   (`src/natives/natives_script.cpp:register_script_natives`).
 - Car saves use the SDAT container (`src/natives/natives_io.cpp:sdat_frame`).
 
+### 5.10 Threads and the worker pool
+
+Read this before adding parallel work. The contract is
+[ENGINE_CONTRACT.md §6](ENGINE_CONTRACT.md#host-threads-and-the-worker-pool);
+this section is the working guide.
+
+**Threads that exist.**
+
+| Thread | Owner | Runs |
+| --- | --- | --- |
+| Host thread | `src/boot/boot.cpp:boot_game` | VM and script fibers, frame pump, physics, scene collection, bgfx submission, every GameRef and cache mutation |
+| bgfx render thread | bgfx (`src/render/bgfx_lib_backend.cpp:open`) | Graphics API calls for the frame the host submitted |
+| Worker pool, one per logical CPU minus one | `src/platform/job_system.cpp:jobs_parallel_for` | Data-parallel batches started by the host thread |
+| Exterior map parser | `src/natives/natives_resref.cpp:spawn_ground_shell` (`std::async`) | `scene_instances_ground_map` for the next chained map file |
+| Pedestrian stepper | `src/resources/part_runtime.cpp:PedSim` | Walker steering on copies of the walker records |
+| Audio and video | XAudio2, Media Foundation, VLC | Their own decode and output threads |
+
+**API** (`include/slrr/job_system.hpp`).
+
+- `jobs_parallel_for(count, body)` calls `body(i)` once per index and
+  returns when all have finished. The calling thread takes part. The first
+  exception is rethrown after every index has run.
+- It runs serially, on the calling thread, when `count` is 1, inside a job,
+  when the pool has no workers (one CPU, or after `jobs_shutdown`), or when
+  another thread's batch holds the pool. Never wait for a batch from inside a
+  job.
+- `jobs_concurrency()` gives the thread count, caller included. It follows
+  the process affinity mask.
+- `jobs_inside()` is true inside a job. `index_floor` uses it to pick its
+  serial path (`src/resources/scene_instances.cpp:index_floor`).
+- `jobs_printf` holds a job's log lines and prints them in index order when
+  the batch ends. `JobLogCapture` holds the lines of a task that runs
+  outside the pool, such as a `std::async`, for its caller to print. Use one
+  of them for any log line that can come from a job.
+
+**Pattern.** Every user follows prepare, run, publish:
+
+1. On the host thread, collect the inputs and size the results: one slot per
+   index, or a cache entry reserved before the batch, as
+   `src/resources/scene_instances.cpp:scene_instances_prepare_physics` does.
+2. Run the batch. A body reads its inputs and writes only its own slot.
+3. On the host thread, publish the slots in index order into caches,
+   registries and logs. Pack ids, cache contents and log order then do not
+   depend on the thread count.
+
+When results must be appended, keep the serial order: split the work into
+contiguous runs and append the runs in order
+(`src/resources/scene_instances.cpp:index_floor`). The same applies to
+offsets computed before a parallel copy
+(`src/resources/scene_instances.cpp:merge_static_meshes`).
+
+**What a job may touch.**
+
+| Safe to call or read from a job | Host thread only |
+| --- | --- |
+| `RpkIndex` const methods: its payload and RSD caches lock their own mutexes (`src/resources/rpk_index.cpp:read_payload`) | The VM, `Object`, `Value`, `Jvm::RootScope`, natives |
+| `load_scx_geometry`, `load_texture_file`, `parse_part_config`, `scene_instances_ground_map`, `src/resources/scene_instances.cpp:load_geometry`, `src/resources/scene_instances.cpp:build_native_collision` | GameRef state (`gameref_get`, matrices, parents) |
+| Immutable data that nothing writes during the batch | Scene caches: `g_meshes` through `geometry()`, `g_native_collision`, floor and ground caches. Preload missing meshes with `preload_meshes` first; a lookup that misses inserts. |
+| | bgfx: create textures and buffers after the batch. Decode on the pool, upload on the host (`src/render/bgfx_lib_backend.cpp:prefetch_part_textures`). |
+
+Before calling a function from a job, check it for `static` locals, globals
+and lazily filled caches. `RpkIndex` keeps its payload and RSD caches behind
+mutexes: payload reads from several jobs are safe but take turns, which
+limits the speed-up.
+
+**Pitfalls already met.**
+
+- `std::mutex` is not recursive. Do not hold a lock while running bodies that
+  may start another batch. `jobs_parallel_for` takes its own lock last for
+  this reason.
+- A `std::future` from `std::async` blocks in its destructor. Keep the
+  futures in the function that owns the data they read.
+- Freeing per-job containers costs time too: the cell runs of a large
+  `index_floor` take a few milliseconds to destroy.
+- Do not grow a buffer by one element range at a time with `reserve` of the
+  exact size. It reallocates every time and made `merge_static_meshes`
+  quadratic: 12.5 s of a city load.
+- A prefetched result that several consumers share needs one use per
+  consumer. Otherwise a failed first consumer forces the others to redo the
+  work serially (`src/render/bgfx_lib_backend.cpp:load_part_textures`).
+
+**Checking a change.**
+
+- Standalone tests (`tests/test_job_system.cpp`, built by hand) under g++
+  with `-fsanitize=thread`, and with `-fsanitize=address,undefined`.
+- Determinism: compare the `[rpk]`, `[scene]` and `[scx]` log lines of a
+  run on all cores with a run restricted to one core. For example, set the
+  parent PowerShell's `ProcessorAffinity` before `Start-Process`, or use
+  `start /affinity 1`. The lines must match, apart from the randomly chosen
+  sky dome.
+- Equivalence: when a parallel algorithm replaces a serial one, compare
+  their outputs once in a local build (not committed), as was done for
+  `index_floor` on all six city collision meshes.
+- Speed: time the stage on the city benchmark (§3) on all cores and with 1,
+  2 and 4 cores. `--perf-log` covers the frame. Load stages need local
+  timers.
+- Assets: same pack, prop, collision, mesh and texture counts as `main`, and
+  matching start-of-drive window captures (`--bench-shots`) when the same
+  sky dome is chosen.
+
+**Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
+lists the planned steps for the frame loop: measure where the CPU limits,
+cull scene collection in parallel, record draws with bgfx encoders, run
+physics after PR #48, and optional pipelining.
+
 ## 6. Invariants and pitfalls
 
 VM and lifetime:
 
 - Script threads are cooperative fibers on the host thread, never parallel
   workers. Native C++ work inside a fiber is not preempted.
+- Loading work that only reads files runs on the worker pool
+  (`src/platform/job_system.cpp:jobs_parallel_for`): pack indexing, mesh
+  loading (`src/resources/scene_instances.cpp:preload_meshes`, also called
+  by `collect_root` for the meshes new in a frame), a map's object types
+  (`src/resources/scene_instances.cpp:build_native_collision`), placement
+  collision bakes and their merge, prop batching, static collision that
+  appeared or moved
+  (`src/resources/scene_instances.cpp:scene_instances_prepare_physics`), the
+  floor index of large meshes (`src/resources/scene_instances.cpp:index_floor`)
+  and texture decoding
+  (`src/render/bgfx_lib_backend.cpp:prefetch_part_textures`). A job writes
+  only its own slot of a result the caller prepared and never touches the
+  VM, GameRef state, other cache entries or bgfx; the host thread publishes
+  the results. Steady per-frame work stays on the host thread. §5.10 is the
+  guide for adding parallel work.
 - An `Object*` held in C++ is not a root. Use `Jvm::RootScope`
   (`include/slrr/jvm.hpp:RootScope`) across yields, or register a root
   provider for a native registry.
@@ -596,6 +718,21 @@ These are entry points, not fixes. Each needs its own reproduction.
   capture also draws the preloaded garage shell; before, the paint and glass
   mirrored only the props and the clear colour
   (`src/render/bgfx_lib_backend.cpp:update_reflections`).
+- **#56 single-threaded game.** Checked with the city benchmark (§3) and
+  per-thread CPU sampling. Before, the host thread did nearly all the work:
+  about 20 of 29 s of process CPU in a run, with at most four threads busy at
+  once. A warm Valo City load took about 13 s on that thread, 12.5 s of it in
+  `src/resources/scene_instances.cpp:merge_static_meshes`, which grew its
+  buffer by one placement's mesh at a time. On a first launch over freshly
+  copied files, serial texture decoding added about 14 s. Loading work now
+  runs on the worker pool (§6) and the merge sizes its buffers once: the load takes
+  about 1–2 s warm and 5 s on a first launch, with up to 20 threads busy on
+  a 20-thread CPU.
+  The VM, physics, scene collection and bgfx submission stay on the host
+  thread by contract; in the drive they cost about 4–7 ms per frame. A
+  follow-up overlapped the chained `city2` parse with `city`'s props, indexed
+  large collision meshes on the pool and kept the log order serial: the warm
+  load is now under 1 s.
 
 ## 12. Self-check
 
@@ -644,6 +781,10 @@ Each answer names its evidence.
 17. *A script call does nothing and nothing crashes. Where do you look?*
     stderr, for `native/empty TREE without host binding`: outside Init an
     unbound native returns void instead of failing (§5.3).
+18. *Can a worker-pool job look up a mesh with `geometry()`?* Only if the
+    mesh is already loaded: a miss inserts into `g_meshes`. Preload the ids
+    with `preload_meshes` on the host thread first, and publish job results
+    on the host thread (§5.10).
 
 ## 13. Keeping this file true
 
