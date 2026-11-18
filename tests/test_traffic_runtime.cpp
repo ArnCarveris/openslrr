@@ -588,13 +588,21 @@ void inline_wheel_contact_and_population() {
       }
     return std::pair{total, days};
   };
-  for (float density : {.2f, .1f, 0.f}) {
+  for (float density : {.2f, .1f, .8f, 0.f}) {
     f.vm.set_static("java.util.Config", "trafficDensity",
                     Value::make_float(density));
     host_game_options_load(f.vm);
     for (int tick = 0; tick < 20; ++tick)
       race_traffic_tick(f.vm, 1.f / 60);
     auto [total, days] = count();
+    size_t local = 0;
+    for (const auto &vehicle : part_vehicle_positions())
+      if (race_traffic_pointer(vehicle.chassis) &&
+          road_distance(
+              {vehicle.position[0], vehicle.position[1], vehicle.position[2]},
+              focus) <= 165)
+        ++local;
+    SLRR_REQUIRE(local == total);
     size_t cap = size_t(std::lround(density * 100));
     std::printf("DENSITY %.1f total=%zu day=%zu normal=%zu\n", density, total,
                 days, total - days);
@@ -604,6 +612,8 @@ void inline_wheel_contact_and_population() {
       SLRR_REQUIRE(total - days >= cap / 2);
     else
       SLRR_REQUIRE(total == 0);
+    if (density > .5f)
+      SLRR_REQUIRE(total > 50);
   }
   f.vm.set_static("java.util.Config", "trafficDensity", Value::make_float(.2f));
   host_game_options_load(f.vm);
@@ -612,10 +622,60 @@ void inline_wheel_contact_and_population() {
     part_destroy(car);
   part_destroy(f.player);
 }
+void missing_lamp_stop_releases() {
+  RaceFixture f;
+  f.packs.open_all();
+  f.ground.class_name = "java.util.resource.GroundRef";
+  spawn_ground_shell(f.vm, f.packs, &f.ground);
+  scene_instances_enable_static_floor(false);
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph);
+  size_t edge = 0;
+  for (; edge < graph->traffic_edges().size(); ++edge)
+    if (!graph->traffic_edges()[edge].crossing &&
+        graph->traffic_signal(edge, 0) == -2 &&
+        graph->traffic_edges()[edge].length > 20)
+      break;
+  SLRR_REQUIRE(edge < graph->traffic_edges().size());
+  RoadRoute line;
+  line.points = graph->traffic_edges()[edge].points;
+  auto start = road_at(line, graph->traffic_edges()[edge].length - 3);
+  f.player = f.car();
+  gameref_set_matrix(f.player, start[0] + 15, start[1], start[2] + 15, 0, 0, 0);
+  f.controller.class_name = "java.io.Controller";
+  gameref_upsert(&f.controller);
+  part_command(&f.controller,
+               "controllable " + std::to_string(gameref_make_live(f.player)));
+  Object type;
+  type.fields["id"] = Value::make_int(
+      RpkIndex::make_full_id(f.packs.open_lib("cars/traffic/Taxi.rpk"), 6));
+  f.call("addTrafficP",
+         "(Ljava.util.resource.GameRef;Ljava.lang.Vector3;IFFF)I",
+         {Value::make_obj(&type), Value::make_obj(vec(f.vm, start)),
+          Value::make_int(1), Value::make_float(2), Value::make_float(5),
+          Value::make_float(2)});
+  traffic_step(f.vm, .02f);
+  Object *car = nullptr;
+  for (const auto &p : part_vehicle_positions())
+    if (p.chassis != f.player && race_traffic_pointer(p.chassis))
+      car = p.chassis;
+  SLRR_REQUIRE(car);
+  traffic_step(f.vm, 3);
+  auto *n = gameref_get(car);
+  RoadPoint stopped{n->pos[0], n->pos[1], n->pos[2]};
+  SLRR_REQUIRE(std::hypot(n->vel[0], n->vel[2]) < .1f);
+  traffic_step(f.vm, 10);
+  SLRR_REQUIRE(road_distance(stopped, {n->pos[0], n->pos[1], n->pos[2]}) > 3);
+  f.call("delTraffic", "()V");
+  part_destroy(f.player);
+  std::puts("PASS real missing-lamp approach stops then releases instead of "
+            "permanent red");
+}
 int main() {
   const standalone::Test tests[] = {
-      inline_wheel_contact_and_population, native_day_racer_staging,
-      actual_city_turns_and_wheels,        lifecycle_and_stream,
-      red_light_stop_and_release,          shared_signal_render_cache};
+      missing_lamp_stop_releases, inline_wheel_contact_and_population,
+      native_day_racer_staging,   actual_city_turns_and_wheels,
+      lifecycle_and_stream,       red_light_stop_and_release,
+      shared_signal_render_cache};
   return standalone::run("traffic_runtime", tests);
 }

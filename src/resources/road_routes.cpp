@@ -268,6 +268,9 @@ int RoadRoutes::signal(uint32_t crossing, uint32_t branch,
   auto it = cycles_.find(crossing);
   if (it == cycles_.end() || it->second.empty())
     return -1;
+  if (std::find(it->second.begin(), it->second.end(), branch) ==
+      it->second.end())
+    return -2; // Missing lamp: timed STOP, never a permanent red.
   constexpr double green = 10, phase = 13;
   double clock = std::max(0., seconds);
   auto slot = uint64_t(clock / phase);
@@ -499,13 +502,13 @@ std::optional<RoadRoute> RoadRoutes::between(const RoadPoint &s,
 
 namespace slrr {
 std::optional<RoadProjection>
-RoadRoutes::traffic_project(const RoadPoint &point,
-                            const RoadPoint *heading) const {
+RoadRoutes::traffic_project(const RoadPoint &point, const RoadPoint *heading,
+                            bool include_crossings) const {
   std::optional<RoadProjection> result;
   float best = std::numeric_limits<float>::infinity();
   for (size_t edge = 0; edge < traffic_edges_.size(); ++edge) {
     const auto &e = traffic_edges_[edge];
-    if (e.crossing || e.next.empty())
+    if ((!include_crossings && e.crossing) || e.next.empty())
       continue;
     for (size_t i = 1; i < e.points.size(); ++i) {
       auto delta = sub(e.points[i], e.points[i - 1]);

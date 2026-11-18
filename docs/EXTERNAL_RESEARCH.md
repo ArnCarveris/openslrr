@@ -459,6 +459,22 @@ rival share from those weights instead of taking half the population. The roundi
 and density-to-cap scale are host policies; neither the previous 50% reservation
 nor any fixed ratio is attributed to the original game.
 
+### Stopped traffic and local population follow-up
+
+SLRR_rev:src/engine/traffic-control.ts assigns a five-second STOP fallback to
+incoming branches without lamps on a regulated crossing. OpenSLRR had treated
+such branches as red forever; they now have a distinct timed-stop state. Including
+the grey curve in physical projection also avoids binding a car already in the
+junction to the red light of an unrelated approach.
+SLRR_rev:src/engine/bot.ts supplies two-second blocked detection, rear-clearance
+checks and 3.5-second reverse recovery. These are now supported by host traffic
+brains and both native/mechanical drive inputs, without overriding signal waits.
+
+The closer spawn/retention radii and removal of the density slider's .5 saturation
+are OpenSLRR stream tuning prompted by the playtest, not original native count
+semantics. A local City fixture verifies all visible initial cars lie within
+165m, including more than 50 cars when Config.trafficDensity is .8.
+
 ## 8. Draft PR #3: what it contains and what applies to main
 
 PR #3 documents were written against the merge base `77d19e7`. PRs #6

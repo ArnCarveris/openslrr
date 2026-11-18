@@ -126,9 +126,56 @@ void night_finish_runout() {
   std::puts("PASS night finish stop event coasts across the finish plane "
             "before braking");
 }
+void traffic_blocked_recovery() {
+  RaceFixture f;
+  f.packs.open_all();
+  auto graph = race_ground_roads(f.packs, &f.ground);
+  SLRR_REQUIRE(graph);
+  size_t edge = 0;
+  for (; edge < graph->traffic_edges().size(); ++edge)
+    if (!graph->traffic_edges()[edge].crossing &&
+        graph->traffic_signal(edge, 0) == -1 &&
+        !graph->traffic_edges()[edge].next.empty())
+      break;
+  SLRR_REQUIRE(edge < graph->traffic_edges().size());
+  const auto &e = graph->traffic_edges()[edge];
+  RoadRoute line;
+  line.points = e.points;
+  auto start = road_at(line, e.length * .5f),
+       next = road_at(line, e.length * .5f + 1);
+  float yaw = std::atan2(-(next[0] - start[0]), -(next[2] - start[2]));
+  auto *car = f.car();
+  gameref_set_matrix(car, start[0], start[1], start[2], yaw, 0, 0);
+  race_set_traffic_mode(f.packs, car);
+  RaceDriveInput input;
+  bool reverse = false;
+  for (int tick = 0; tick < 200; ++tick) {
+    SLRR_REQUIRE(race_drive_input(car, start, yaw, 0, .02f, input));
+    if (input.reverse) {
+      reverse = true;
+      SLRR_REQUIRE(input.throttle > 0 && input.brake == 0);
+      break;
+    }
+  }
+  SLRR_REQUIRE(reverse);
+  auto *rear = f.car();
+  gameref_set_matrix(rear, start[0] + std::sin(yaw) * 5, start[1],
+                     start[2] + std::cos(yaw) * 5, yaw, 0, 0);
+  SLRR_REQUIRE(race_drive_input(car, start, yaw, 0, .02f, input) &&
+               !input.reverse && input.brake == 1);
+  part_destroy(rear);
+  SLRR_REQUIRE(race_drive_input(car, start, yaw, 0, .02f, input) &&
+               input.reverse && input.throttle > 0);
+  race_brain_command(f.packs, car, "AI_stop");
+  SLRR_REQUIRE(race_drive_input(car, start, yaw, 0, .02f, input) &&
+               !input.reverse && input.brake == 1);
+  part_destroy(car);
+  std::puts("PASS blocked traffic physically requests reverse recovery; stop "
+            "cancels it");
+}
 int main() {
-  const standalone::Test tests[] = {spline_wait_and_arbitration,
-                                    city_route_drives_and_halts,
-                                    preview_bend_brakes,night_finish_runout};
+  const standalone::Test tests[] = {
+      traffic_blocked_recovery, spline_wait_and_arbitration,
+      city_route_drives_and_halts, preview_bend_brakes, night_finish_runout};
   return standalone::run("race_brain", tests);
 }

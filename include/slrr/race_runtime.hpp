@@ -14,7 +14,7 @@ void race_forget(void *key);
 void race_reset();
 struct RaceDriveInput {
   float throttle = 0, steer = 0, brake = 1;
-  bool start = false;
+  bool start = false, reverse = false;
 };
 bool race_brain_command(const RpkIndex &, void *brain, const std::string &);
 bool race_drive_input(Object *car, const RoadPoint &position, float yaw,

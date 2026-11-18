@@ -94,3 +94,20 @@ original signal producer/timing/STOP-YIELD and flare halos.
 - All seven integration suites pass, including unchanged physical ROC gate tests.
 - Latest visible City behavior still awaits user validation; pursuit, lane changes
   and full challenge/result transitions remain outside automated acceptance.
+
+2026-11-18 stopped-flow and local density follow-up
+- Fix regulated approaches with no matching lamp: signal state -2 represents a
+  five-second STOP, not permanent red. Actual City missing-lamp regression holds
+  initially then drives away; ordinary red/pause/green behavior remains checked.
+- Physical projection includes grey crossing curves, so a car already entering
+  a junction is not controlled by a neighbouring lane's red light.
+- Traffic route refresh every 2s; throttle-without-progress for 2s requests up to
+  3.5s physical reverse recovery with rear corridor check, then replans. Red and
+  timed STOP waits reset that timer. Test verifies rear blockage and AI_stop.
+- Config density no longer saturates at .5 (maximum cap now 100). Initial traffic
+  lies within 165m in the City fixture; spawn range 45..160m, front candidates
+  below 80m rejected; ordinary cars recycle outside 220m.
+- Density .8 fixture populated 61 cars (54 normal / 7 rivals), above the old cap
+  of 50, without reducing the inter-car spawn gap. Default remains 20 total.
+- These stream radii and count scale are host policy. Latest City UI driving
+  still awaits the maintainer's playtest; native coverage is not gameplay parity.

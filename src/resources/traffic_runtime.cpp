@@ -34,7 +34,7 @@ struct Registration {
   bool owned = false, visible = false, notify = false, notified = false,
        unplaced = true, kinematic = false;
   int mode = 0;
-  float distant_next = 0;
+  float distant_next = 0, stop_since = -1;
   uint32_t cleared_crossing = 0;
   size_t edge = 0;
   float along = 0, speed = 0, cruise = 0;
@@ -241,8 +241,18 @@ bool place(Registration &r, const RoadRoutes &graph, const Population &p,
     line.points = e.points;
     auto candidate = road_at(line, at);
     float distance = road_distance(candidate, focus);
-    if (initial && (distance < 70 || distance > 260))
+    if (initial && (distance < 45 || distance > 160))
       continue;
+    if (initial && distance < 80) {
+      PartMatrix frame;
+      if (auto *player = part_controlled_chassis();
+          player && scene_instances_script_matrix(player, frame.data())) {
+        float ahead = -(candidate[0] - focus[0]) * frame[8] -
+                      (candidate[2] - focus[2]) * frame[10];
+        if (ahead > distance * .25f)
+          continue;
+      }
+    }
     bool occupied = false;
     for (const auto &entry : registrations)
       if (entry.first != r.id && entry.second.visible &&
@@ -400,7 +410,7 @@ bool race_traffic_halted(void *ground, const RoadPoint &position, Object *car) {
   if (car && scene_instances_script_matrix(car, frame.data()))
     heading = {-frame[8], -frame[9], -frame[10]};
   auto projection =
-      graph ? graph->traffic_project(position, car ? &heading : nullptr)
+      graph ? graph->traffic_project(position, car ? &heading : nullptr, true)
             : std::nullopt;
   if (!projection)
     return false;
@@ -421,14 +431,29 @@ bool race_traffic_halted(void *ground, const RoadPoint &position, Object *car) {
         break;
       }
   if (registered) {
-    if (registered->edge != projection->edge)
+    if (registered->edge != projection->edge) {
       registered->cleared_crossing = 0;
+      registered->stop_since = -1;
+    }
     registered->edge = projection->edge;
     registered->along = projection->along;
     if (color == 2 && e.length - projection->along < 14)
       registered->cleared_crossing = e.to;
     if (registered->cleared_crossing == e.to)
       return false;
+    if (color == -2 && e.length - projection->along < 6) {
+      if (std::hypot(gameref_get(car)->vel[0], gameref_get(car)->vel[2]) <
+          .5f) {
+        if (registered->stop_since < 0)
+          registered->stop_since = clock_seconds;
+        if (clock_seconds - registered->stop_since >= 5) {
+          registered->cleared_crossing = e.to;
+          return false;
+        }
+      } else
+        registered->stop_since = -1;
+      return true;
+    }
   }
   return (color == 0 || color == 1) && e.length - projection->along < 22;
 }
@@ -596,9 +621,8 @@ void race_traffic_tick(Jvm &vm, float seconds) {
   auto *focus_car = part_controlled_chassis();
   const auto focus = focus_car ? position(focus_car) : RoadPoint{};
   const float density = host_game_options().traffic_density;
-  const int cap = std::isfinite(density)
-                      ? std::min(50, int(std::clamp(density, 0.f, 1.f) * 100))
-                      : 0;
+  const int cap =
+      std::isfinite(density) ? int(std::clamp(density, 0.f, 1.f) * 100) : 0;
   std::vector<void *> ground_keys;
   for (const auto &e : populations)
     ground_keys.push_back(e.first);
@@ -642,9 +666,10 @@ void race_traffic_tick(Jvm &vm, float seconds) {
         r.edge = 0;
         r.unplaced = true;
       }
-      if (r.visible && (visible >= cap || (!r.owned && rivals >= rival_cap) ||
-                        road_distance(position(r.car), focus) > 380 ||
-                        blocked(*p, graph->traffic_edges()[r.edge]))) {
+      if (r.visible &&
+          (visible >= cap || (!r.owned && rivals >= rival_cap) ||
+           road_distance(position(r.car), focus) > (r.owned ? 220 : 380) ||
+           blocked(*p, graph->traffic_edges()[r.edge]))) {
         queue(r, false);
         r.visible = false;
         n->streamed_hidden = true;

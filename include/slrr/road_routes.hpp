@@ -36,6 +36,7 @@ public:
   explicit RoadRoutes(const RoadNetwork &network,
                       const std::vector<RoadPoint> &signals = {});
   const std::vector<Signal> &signals() const { return signals_; }
+  // -2: missing lamp on a regulated approach (timed STOP); -1: unregulated.
   int signal(uint32_t crossing, uint32_t branch, double seconds) const;
   int edge_signal(size_t edge, double seconds) const;
 
@@ -47,7 +48,8 @@ public:
   const std::vector<Edge> &edges() const { return edges_; }
   const std::vector<Edge> &traffic_edges() const { return traffic_edges_; }
   std::optional<RoadProjection>
-  traffic_project(const RoadPoint &, const RoadPoint *heading = nullptr) const;
+  traffic_project(const RoadPoint &, const RoadPoint *heading = nullptr,
+                  bool include_crossings = false) const;
   int traffic_signal(size_t edge, double seconds) const;
 
 private:

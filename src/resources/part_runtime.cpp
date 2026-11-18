@@ -2299,7 +2299,7 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
     drive.wheels[i].steer = wheel_steering_angle(rec, i);
   if (!rec.inline_wheels.empty()) {
     drive.native_traffic = true;
-    drive.throttle = autonomous ? ai.throttle
+    drive.throttle = autonomous ? (ai.reverse ? -ai.throttle : ai.throttle)
                      : controls ? host_input().drive_throttle
                                 : 0;
     drive.brake = autonomous ? ai.brake
@@ -2329,7 +2329,7 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   drive.inertia = .28 + .01 * std::max(0.f, comp(chassis, "engine_inertia"));
   drive.torque = [dyno](double rpm) { return dyno_sample(dyno, float(rpm), 0, false); };
   drive.engaged = rec.physics_released;
-  drive.reverse = !autonomous && controls && in.drive_reverse;
+  drive.reverse = autonomous ? ai.reverse : controls && in.drive_reverse;
   drive.shift = autonomous || !controls ? 0 : in.drive_shift > .5f ? 1 : in.drive_shift < -.5f ? -1 : 0;
   drive.automatic_shift = autonomous || rec.transmission == 1;
   drive.automatic_first = autonomous || rec.transmission == 5;

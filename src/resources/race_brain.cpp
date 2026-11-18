@@ -22,6 +22,7 @@ struct Brain {
   std::string mode;
   RoadRoute route;
   float progress = 0, steering = 0, level = 1, replan = 0;
+  float blocked_for = 0, reverse_for = 0, reverse_steer = 0;
   int32_t target = 0;
   RoadPoint offset{};
   bool night = false, runout = false;
@@ -157,7 +158,7 @@ void traffic_route(Brain &b, const RoadPoint &position) {
   if (scene_instances_script_matrix(b.car, frame.data()))
     heading = {-frame[8], -frame[9], -frame[10]};
   auto projection =
-      graph ? graph->traffic_project(position, &heading) : std::nullopt;
+      graph ? graph->traffic_project(position, &heading, true) : std::nullopt;
   if (!projection)
     return;
   b.route = {};
@@ -249,6 +250,7 @@ bool race_brain_command(const RpkIndex &rpk, void *key,
   b.route = {};
   b.progress = 0;
   b.replan = 0;
+  b.blocked_for = b.reverse_for = 0;
   if (!b.car)
     return true;
   if (verb == "AI_race" || verb == "AI_GoToTarget") {
@@ -308,9 +310,47 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
     }
     b->runout = false;
   }
-  if (b->mode == "AI_GoToTraffic" &&
-      race_traffic_halted(car_ground(car), position, car))
-    return true;
+  if (b->mode == "AI_GoToTraffic") {
+    if (race_traffic_halted(car_ground(car), position, car)) {
+      b->blocked_for = 0;
+      return true; // A red light is not a failed driver.
+    }
+    if (b->reverse_for > 0) {
+      b->reverse_for = std::max(0.f, b->reverse_for - dt);
+      PartMatrix frame;
+      RoadPoint forward{};
+      if (scene_instances_script_matrix(car, frame.data()))
+        forward = {-frame[8], 0, -frame[10]};
+      bool clear = true;
+      for (const auto &peer : part_vehicle_positions())
+        if (peer.chassis != car) {
+          float dx = peer.position[0] - position[0],
+                dz = peer.position[2] - position[2];
+          float along = dx * forward[0] + dz * forward[2],
+                side = std::fabs(dx * forward[2] - dz * forward[0]);
+          if (along < 0 && along > -10 && side < 2.5 &&
+              std::fabs(peer.position[1] - position[1]) < 3)
+            clear = false;
+        }
+      if (clear) {
+        out.reverse = true;
+        out.throttle = .65f;
+        out.brake = speed < -3.3f ? .3f : 0;
+        out.steer = b->reverse_steer;
+        out.start = true;
+      }
+      if (b->reverse_for == 0) {
+        traffic_route(*b, position);
+        b->replan = 2;
+      }
+      return true;
+    }
+    b->replan -= dt;
+    if (b->replan <= 0) {
+      traffic_route(*b, position);
+      b->replan = 2;
+    }
+  }
   if (b->mode == "AI_follow") {
     b->replan -= dt;
     if (b->replan <= 0) {
@@ -431,6 +471,16 @@ bool race_drive_input(Object *car, const RoadPoint &position, float yaw,
       out.brake > .05f ? 0 : std::clamp((desired - speed) * .5f, 0.f, 1.f);
   out.steer = b->steering;
   out.start = true;
+  if (b->mode == "AI_GoToTraffic") {
+    b->blocked_for =
+        out.throttle > .45f && std::fabs(speed) < .5f ? b->blocked_for + dt : 0;
+    if (b->blocked_for > 2) {
+      b->blocked_for = 0;
+      b->reverse_for = 3.5f;
+      b->reverse_steer =
+          std::fabs(angle) > .1f ? -std::copysign(1.f, angle) : 1.f;
+    }
+  }
   return true;
 }
 } // namespace slrr

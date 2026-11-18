@@ -316,7 +316,7 @@ navigator-owned coloured ribbon, without sampling its texture argument.
 `traffic_runtime.cpp` keeps model weights, stable individual IDs and temporary
 road/crossing restrictions per ground. Model declarations may be id-only Java
 resource references, rather than live instances. Positioned reinsertion is a
-finite request, separate from permanent model weights. Density selects up to 50
+finite request, separate from permanent model weights. Density selects up to 100
 active cars (20 at the default .2). Registered Java cars each have catalog weight
 one; their visible share is rounded from that weight against the summed model
 weights. They no longer reserve half the population. For 100 registered rivals
@@ -324,6 +324,10 @@ and an ordinary model weight of 1,000, the test produces 2 rivals/18 ordinary at
 .2, 1/9 at .1 and none at zero. Those are fixture counts, not fixed production
 quotas: actual Java model weights and registered rivals determine the split.
 The density-to-cap scale remains a host policy, not recovered native timing.
+The full 0..1 range is effective: the old cap at .5 is removed. Spawn candidates
+are kept 45..160 m from the player, with candidates in front rejected below 80 m;
+ordinary cars recycle outside 220 m. This concentrates the population locally
+instead of spreading a small cap over the old 260/380 m spawn/retention ranges.
 
 Four-wheel native cars and native-only racer doubles now use the existing rigid
 body, floor collision and suspension solver while visible. The inline CFG wheels
@@ -379,8 +383,12 @@ passage latches clearance until the next road. These timings and the 2 m offset 
 not recovered original timing/stop lines.
 Signal lens emission is grouped into one cached mesh per ground shell (at most
 three colour groups), rebuilt on phase/registration changes. No separate draw
-per signal head is added. The native flare billboard/halo, STOP/YIELD policy and
-complete original junction producer remain outside this port.
+per signal head is added. A regulated approach without a matching lamp is a distinct timed STOP state,
+not a permanent red. Registered drivers stop there for five seconds, then latch
+clearance. Physical projections include the grey crossing curves, preventing a
+car already crossing from being rebound to another incoming red approach.
+The native flare billboard/halo, explicit STOP/YIELD sign discovery and complete
+original junction producer remain outside this port.
 
 `race_brain.cpp` interprets controllable/AI commands and supplies throttle,
 brake and steering to configure_drive in the existing Part solver. Player
@@ -389,6 +397,14 @@ plan a route; GoToTraffic follows roads and restrictions; follow periodically
 replans toward its target. The latest v221 NightRace finish policy preserves
 the destination and coasts across the finish plane when the radius-based Java
 stop event arrives early, then applies brakes.
+
+Traffic refreshes its route every two seconds, including projections onto
+crossing curves. Adapted from SLRR_rev traffic bot.ts, a driver requesting throttle
+without progress for two seconds attempts up to 3.5 seconds of reverse recovery,
+only while the rear corridor is clear, then replans. A red light/timed STOP resets
+the blocked timer and never triggers that manoeuvre. AI_stop cancels recovery.
+Reverse requests are supported by both the native force driver and the scripted
+mechanical gearbox. These recovery thresholds remain host policies from upstream.
 
 MWM ROC uses per-car ROC_cars/*.spl, not just maps/ROC_Track/race.spl. The loader
 samples the complete curve, projects the actual car position onto a segment,
