@@ -136,3 +136,22 @@ Commands:
   or a controlled before/after GPU benchmark. Original save files untouched.
 - Release host builds; all seven integration suites and nine Python coverage
   tests pass. Latest actual career performance awaits user verification.
+
+2026-11-18 actual-career profiling follow-up (diagnosis, no claimed FPS fix)
+- User reports 365-1680ms frames immediately in Valocity; pause restores FPS.
+  GPU counter ~57ms is smaller than the full frame and is not sufficient alone
+  to attribute the slowdown. Main render-thread time also excludes simulation.
+- Added automatic timing when the debug overlay is opened: scripts, traffic,
+  physics and vehicle/pedestrian/collision subtimes, collect/shadows/reflections,
+  flush/present, end-of-frame GC, outside measured host/wait and peak frame.
+- Added --bench-career using original GameLogic.load plus Garage, and
+  --bench-realtime to preserve wall-clock deltas/catch-up rather than fixed step.
+- Actual local career was copied into the isolated benchmark root. Original
+  game assets were reused; original saves/options were not written by these runs.
+- Career map run at 2560x1421, VSync on, five real-time drive seconds: initial
+  1144ms loading frame; subsequent completed windows ~6.94ms/frame, physics
+  .87-.91ms, traffic .03-.04ms, scripts .38-.41ms, GPU counter ~6.9ms.
+  It does NOT reproduce the reported persistent manual-session slowdown.
+- frame_profiler unit verifies snapshot publication, independent stage values,
+  window reset and restart clearing. Renderer/debug changes are diagnostic;
+  the exact slow manual scene still needs its new stage readings from the user.

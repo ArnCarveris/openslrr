@@ -783,12 +783,17 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   if(!script_thread_alive(jvm,g_mechanic_thread))apply_mechanic_infoline(jvm, g_spinning_mechanic);
   double sim_seconds = 0.0;
   {
-    perf::Scope scope(perf::Zone::Physics);
     sim_seconds = jvm.advance_sim_time(dt);
     character_set_sim_time(jvm.sim_time());
-    // Match the car solver's four-tick catch-up budget after a slow frame.
-    race_traffic_tick(jvm,static_cast<float>(std::min(sim_seconds,4.0/60.0)));
-    part_physics_advance(sim_seconds);
+    {
+      perf::Scope scope(perf::Zone::Traffic);
+      race_traffic_tick(jvm,
+                        static_cast<float>(std::min(sim_seconds, 4.0 / 60.0)));
+    }
+    {
+      perf::Scope scope(perf::Zone::Physics);
+      part_physics_advance(sim_seconds);
+    }
   }
   scene_ambience_tick(sim_seconds);
   scene_triggers_tick(jvm);

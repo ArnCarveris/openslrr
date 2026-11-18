@@ -1,4 +1,5 @@
 #include "slrr/race_runtime.hpp"
+#include "slrr/frame_profiler.hpp"
 #include "slrr/gc_roots.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/pedestrian_lines.hpp"
@@ -4444,9 +4445,9 @@ void part_physics_advance(double seconds) {
   physics_elapsed += std::min(seconds, kPhysicsTick * kMaxPhysicsTicksPerFrame);
   constexpr double tolerance = kPhysicsTick * 1e-10;
   if (physics_elapsed + tolerance >= kPhysicsTick) {
-    scene_instances_prepare_physics();
+    {perf::Scope scope(perf::Zone::Collision);scene_instances_prepare_physics();}
     while (physics_elapsed + tolerance >= kPhysicsTick) {
-      advance_chassis_tick();
+      {perf::Scope scope(perf::Zone::Vehicles);advance_chassis_tick();}
       physics_elapsed = std::max(0.0, physics_elapsed - kPhysicsTick);
     }
     for (auto &[key, rec] : records) {
@@ -4458,7 +4459,7 @@ void part_physics_advance(double seconds) {
   // After the solver, so a flap or a wheel placement cannot put the column back.
   pose_steering_wheels();
   pose_driver();
-  tick_pedestrians(seconds);
+  {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(seconds);}
 }
 
 void part_set_pedestrian_density(void* ground, float density) {

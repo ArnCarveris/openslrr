@@ -173,6 +173,22 @@ To measure frame time on a repeatable Valo City drive (the same street, frame by
   --perf-log city.csv
 ```
 
+For career-only performance issues, use `--bench-career save/carrer/NAME`
+instead of `--spawn-car`, with `--bench-map ValoCity`. This invokes the original
+career loader; use a copied game/save root for repeatable measurements because
+normal career working files and options can be written. `--bench-realtime` keeps
+wall-clock frame deltas, including stalls/catch-up, rather than the default
+fixed 1/60 s simulation benchmark. Its two-second warm-up and drive duration are
+wall-clock durations.
+
+Opening the debug overlay starts frame timing automatically. The Renderer tab
+shows CPU scripts, traffic, physics (with vehicle, pedestrian and collision
+subtimes), collection, shadows, reflections, presentation wait and GC. Physics
+and flush totals include their subtimes; do not sum every displayed row. Values
+are from the last completed measurement window, alongside bgfx's delayed render
+and GPU counters. A large GPU reading alone does not identify the whole frame's
+bottleneck.
+
 `--perf-log` prints one `[perf]` line per simulated second and writes the same fields to the CSV file. Add `--bench-shots DIR` to capture the window every 10 seconds. The run writes `save/game/options` on exit like a normal session.
 Select a visible vehicle or a preview in **Vehicle**, or use **Freeze
 telemetry** to hold a sample. **Tuning** changes tyre parameters and

@@ -875,3 +875,12 @@ scene state. Legacy cue animation must exclude vehicle/Part renders even when
 resource flags match a standalone marker. Closed per-car spline routes project
 the initial position and choose direction from its heading. See SCRIPT_RUNTIME
 for the updated real-terrain tests and remaining gameplay/host-model limits.
+
+
+Performance diagnosis: the debug Renderer tab enables frame profiling and shows
+separate traffic/physics/script/GC stages. Vehicle, pedestrian and collision
+preparation scopes are subtimes of Physics; render subpasses are inside Flush.
+Snapshots are published at the end of a completed measurement window on the host
+thread. Read the current career with an isolated save root for reproducible
+--bench-career runs; --bench-realtime preserves stall/catch-up behavior. A short
+spawn-car/fixed-step smoke cannot establish career or manual-play FPS parity.
