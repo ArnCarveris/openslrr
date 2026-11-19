@@ -797,7 +797,11 @@ in that case a live Scene.sun parented to the current world also establishes
 exterior intent. Explicit interior metadata takes priority.
 The garage binds its authored directional neon to world shading and shadow
 attenuation, without duplicating the previous point-light approximation. Its
-single bay map excludes the terrain shell but includes ordinary furniture.
+single bay map fits the decoded room footprint and includes the POLY shell as
+well as furniture. The light near plane clips ceilings above the emitter;
+never exclude an entire room mesh to remove a ceiling. A fitted interior field
+uses zero receiver fade distance: projection bounds reject outside samples,
+without the legacy distance/UV fade relighting the room edges.
 
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection

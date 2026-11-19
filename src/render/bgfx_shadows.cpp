@@ -44,7 +44,25 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     const bx::Vec3 light{local_light_[0], local_light_[1], local_light_[2]};
     float view[16], proj[16], clip[16];
     bx::mtxLookAt(view, light, bx::Vec3{light.x, light.y - 1.f, light.z}, {0.f, 0.f, 1.f});
-    constexpr float extent = 10.f;
+    float extent = 10.f;
+    // Garage shells include floor, walls and some furniture. Fit their actual
+    // footprint; a fixed 20m-wide field leaves much of a stock bay unshadowed.
+    for (const auto& instance : instances_) {
+      if (!instance.geometry || !instance.geometry->ground_polygons) continue;
+      const auto& mesh = *instance.geometry;
+      const auto& m = instance.transform;
+      for (int corner = 0; corner < 8; ++corner) {
+        float p[3];
+        for (int axis = 0; axis < 3; ++axis)
+          p[axis] = ((corner & (1 << axis)) ? mesh.info.bbox_max[axis]
+                                           : mesh.info.bbox_min[axis]) * mesh.position_scale;
+        p[2] = -p[2];
+        const float x = m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12]-light.x;
+        const float z = m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]-light.z;
+        if (std::isfinite(x) && std::isfinite(z))
+          extent = std::max(extent, std::max(std::abs(x),std::abs(z))+.5f);
+      }
+    }
     bx::mtxOrtho(proj, -extent, extent, -extent, extent, 0.15f, 16.f, 0.f,
                  caps->homogeneousDepth);
     bx::mtxMul(clip, view, proj);
@@ -78,18 +96,21 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
         submit(group.index_start, group.index_count);
       }
     };
-    // The room stays a receiver. Casting the shell from a light under the
-    // ceiling would put the whole floor in shadow.
+    // Include built-in room geometry and furniture. The light near plane
+    // clips ceilings above the emitter; excluding the entire POLY shell also
+    // removed legitimate interior casters.
     for (const auto& instance : instances_) {
       if (instance.sky || instance.light_flags || !instance.geometry ||
-          instance.geometry->ground_polygons || instance.gpu_skin || instance.emissive_overlay) continue;
+          instance.gpu_skin || instance.emissive_overlay) continue;
       const auto found = instance_meshes_.find(instance.geometry.get());
       if (found == instance_meshes_.end()) continue;
       cast(found->second.vbh, found->second.ibh, found->second.geo.groups,
            instance.transform.data());
     }
     static_shadow_eye_ = {light.x, light.y, light.z};
-    static_shadow_distance_ = 40.f;
+    // The fitted interior field is bounded by its projection, not by a
+    // legacy distance/UV fade which relights the edges of the room.
+    static_shadow_distance_ = 0.f;
     static_shadow_active_ = true;
     // The authored neon is directional. Its visibility must attenuate that
     // direct light, not a weak extra point light over an unshadowed fallback.

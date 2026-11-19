@@ -10,6 +10,148 @@ void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void garage_geometry(LibBgfxBackend &b) {
+    Fixture f;
+    f.packs.set_root(fs::absolute("game").string());
+    f.packs.open_all();
+    scene_instances_set_resources(&f.packs);
+    const auto pack = f.packs.open_lib("misc/garage.rpk");
+    Object root, stuff;
+    root.class_name = "java.util.resource.GroundRef";
+    gameref_upsert(&root, GameRefKind::GroundRef)->type_id =
+        RpkIndex::make_full_id(pack, 0x7a);
+    spawn_ground_shell(f.vm, f.packs, &root);
+    gameref_upsert(&stuff, GameRefKind::RenderRef)->type_id =
+        RpkIndex::make_full_id(pack, 0x42);
+    gameref_set_parent(&stuff, &root);
+    scene_instances_select(&root, nullptr, false, SceneEnvironment::Interior);
+    b.instances_ = scene_instances_collect();
+    for (const auto &obj : b.instances_)
+      b.cache_scene_mesh(obj.geometry, nullptr, false);
+    auto realFloor =
+        std::make_shared<ScxGeometry>(*b.instances_.front().geometry);
+    realFloor->indices.clear();
+    realFloor->groups.clear();
+    const auto &source = *b.instances_.front().geometry;
+    for (const auto &original : source.groups) {
+      auto group = original;
+      group.index_start = uint32_t(realFloor->indices.size());
+      for (size_t i = original.index_start;
+           i + 2 < original.index_start + original.index_count; i += 3) {
+        bool floor = true;
+        for (int k = 0; k < 3; ++k) {
+          auto v = source.indices[i + k] * 3;
+          floor &= std::abs(source.positions[v + 1]) < .2f &&
+                   source.normals[v + 1] > .5f;
+        }
+        if (floor)
+          realFloor->indices.insert(realFloor->indices.end(),
+                                    source.indices.begin() + i,
+                                    source.indices.begin() + i + 3);
+      }
+      group.index_count =
+          uint32_t(realFloor->indices.size()) - group.index_start;
+      if (group.index_count)
+        realFloor->groups.push_back(group);
+    }
+    SLRR_REQUIRE(!realFloor->indices.empty());
+    b.garage_ = true;
+    b.outdoor_lighting_ = false;
+    b.local_light_ = {0, 3.3f, 0, 8};
+    VideoOptions video;
+    video.shadows = 2;
+    const float eye[3] = {0, 2, -4};
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    // All room corners must lie inside the actual fitted shadow footprint.
+    for (int corner = 0; corner < 4; ++corner) {
+      bx::Vec3 point{
+          corner & 1 ? source.info.bbox_max[0] : source.info.bbox_min[0], 0,
+          -(corner & 2 ? source.info.bbox_max[2] : source.info.bbox_min[2])};
+      const auto uv = bx::mulH(point, b.static_shadow_matrix_.data());
+      SLRR_REQUIRE(uv.x > 0 && uv.x < 1 && uv.y > 0 && uv.y < 1);
+    }
+    SLRR_REQUIRE(b.static_shadow_distance_ == 0);
+    constexpr uint16_t size = 256;
+    const auto color = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT);
+    const auto depth = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[] = {color, depth};
+    const auto fb = bgfx::createFrameBuffer(2, attachments, true);
+    const auto readback =
+        bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::RGBA8,
+                              BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+    auto floor = realFloor;
+    b.cache_scene_mesh(floor, nullptr, false);
+    SceneInstance receiver;
+    receiver.geometry = floor;
+    bx::mtxIdentity(receiver.transform.data());
+    receiver.lighting.set = receiver.lighting.has_direction = true;
+    for (int i = 0; i < 3; ++i) {
+      receiver.lighting.diffuse[i] = .8f;
+      receiver.lighting.ambient[i] = .1f;
+    }
+    float identity[16];
+    bx::mtxIdentity(identity);
+    float projection[16]{};
+    projection[0] = projection[9] = .05f;
+    projection[6] = .01f;
+    projection[14] = .5f;
+    projection[15] = 1;
+    auto capture = [&](bool enabled) {
+      b.static_shadow_active_ = enabled;
+      bgfx::setViewFrameBuffer(5, fb);
+      bgfx::setViewRect(5, 0, 0, size, size);
+      bgfx::setViewClear(5, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, uint32_t(0xff),
+                         0.f);
+      bgfx::setViewTransform(5, identity, projection);
+      b.draw_instance(5, receiver, identity, false, 0);
+      bgfx::TextureRegion dst, src;
+      dst.init(readback);
+      src.init(color);
+      bgfx::blit(100, dst, src);
+      bgfx::frame();
+      std::vector<uint8_t> bytes(size * size * 4);
+      auto ready = bgfx::read(dst, bytes.data());
+      for (int i = 0; i < 16; ++i)
+        if (bgfx::frame() >= ready)
+          return bytes;
+      throw std::runtime_error("garage readback timeout");
+    };
+    const auto lit = capture(false), shadow = capture(true);
+    unsigned changed = 0;
+    for (size_t i = 0; i < lit.size(); i += 4)
+      if (int(lit[i]) - int(shadow[i]) > 10)
+        ++changed;
+    std::printf("GARAGE real geometry shadow coverage=%u pixels\n", changed);
+    SLRR_REQUIRE(changed > 20 && changed < size * size / 2);
+    // Move the actual furniture mesh: baked texture pixels stay identical,
+    // while its depth-map footprint must move across the real garage floor.
+    for (auto &instance : b.instances_)
+      if (instance.key == &stuff)
+        instance.transform[12] += 1.f;
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    const auto moved = capture(true);
+    unsigned moving = 0;
+    for (size_t i = 0; i < moved.size(); i += 4)
+      if (std::abs(int(moved[i]) - int(shadow[i])) > 10)
+        ++moving;
+    std::printf("GARAGE furniture motion changes %u real-floor shadow pixels\n",
+                moving);
+    SLRR_REQUIRE(moving > 20);
+    bgfx::destroy(readback);
+    bgfx::destroy(fb);
+    auto children = gameref_get(&root)->children;
+    for (auto child : children)
+      gameref_remove(child);
+    gameref_remove(&root);
+    scene_instances_set_resources(nullptr);
+    b.instances_.clear();
+    b.garage_ = false;
+    b.local_light_ = {};
+  }
   static void addon_bounds(LibBgfxBackend& b) {
     if (!fs::exists("game/maps/Addon_Maps/Drag_Track.rpk")) {
       std::puts("SKIP optional Drag Track asset regression: addon not installed");
@@ -575,6 +717,7 @@ int main() {
     SceneShadowRegression::real_world_cache(backend);
     SceneShadowRegression::addon_bounds(backend);
     SceneShadowRegression::scene_environment(backend);
+    SceneShadowRegression::garage_geometry(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

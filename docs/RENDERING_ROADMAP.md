@@ -144,6 +144,27 @@ In-game acceptance at the user's reported views remains separate from those
 asset/GPU checks. Large monolithic addon meshes can now correctly participate
 in more passes; this is a correctness fix, not a measured performance gain.
 
+## Real garage caster/receiver follow-up
+
+A subsequent user retest still appeared to show only baked shadows. The previous
+pixel tests proved visibility reception but not the complete real room. The bay
+pass excluded every ground-POLY instance (including built-in interior geometry)
+and used a fixed 20 m footprint, while the first stock room spans about 37 m.
+Its legacy distance/UV fade also relit edges inside that footprint.
+
+Fit the orthographic footprint to transformed room bounds plus a margin. Include
+room POLY geometry: the existing near plane rejects ceiling geometry above the
+emitter without removing legitimate room casters. Disable receiver distance/UV
+fading for this fitted interior field (zero distance), keeping projection/tap
+bounds. Directional neon ambient remains authored; this does not implement
+multiple physical interior fixtures or replace baked detail in source textures.
+
+New regression uses actual garage shell, furniture and floor triangles. With
+textures held fixed, it compares shadow-enabled/disabled floor pixels and then
+moves the furniture mesh, proving dynamic coverage. A wider real-script on/off
+capture confirms floor shadows beneath furniture. Temporary camera/capture
+instrumentation is removed from the production executable.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

@@ -76,7 +76,11 @@ float sceneShadowVisibility(vec3 p,vec3 world)
     if(u_shadowRanges.x>0.0)
         return mix(1.0,cascadeVisibility(world,distanceToEye),u_staticShadowParams.x);
     float edge=min(min(p.x,1.0-p.x),min(p.y,1.0-p.y));
-    float fade=(1.0-smoothstep(u_staticShadowEye.w*.2,u_staticShadowEye.w,distanceToEye))*smoothstep(0.0,.22,edge);
+    // A fitted interior field (w=0) covers its complete footprint. The
+    // projection/tap boundary already rejects points outside that field.
+    float fade=1.0;
+    if(u_staticShadowEye.w>0.0)
+        fade=(1.0-smoothstep(u_staticShadowEye.w*.2,u_staticShadowEye.w,distanceToEye))*smoothstep(0.0,.22,edge);
     float visible=shadowTapField(p,vec2(0.0,0.0),1.0,receiverBias(p,u_staticShadowParams.z,u_staticShadowParams.y));
     return mix(1.0,visible,u_staticShadowParams.x*fade);
 }
