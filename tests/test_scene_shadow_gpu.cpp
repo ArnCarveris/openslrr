@@ -402,6 +402,115 @@ struct SceneShadowRegression {
     std::printf("GARAGE furniture motion changes %u real-floor shadow pixels\n",
                 moving);
     SLRR_REQUIRE(moving > 20);
+    // Restore the stock window positions: the furniture SCX also contains
+    // the window overlays, so the preceding movement test translated those.
+    for (auto& instance : b.instances_) if (instance.key == &stuff) instance.transform[12]-=1.f;
+    b.update_static_shadow(eye,video);
+    // Daylight is an independent directional source: adding it must keep the
+    // point source/shadow field, and changing only clock time moves its
+    // footprint.
+    const auto point_before = b.point_light_;
+    const float old_time = scene_sun_time();
+    scene_sun_set_time(15.f * 3600);
+    b.update_interior_sun(video);
+    SLRR_REQUIRE(b.interior_sun_active_);
+    SLRR_REQUIRE(b.point_light_ == point_before && b.point_shadow_active_);
+    b.draw_previews();
+    bgfx::frame();
+    const auto solar = capture(true);
+    b.interior_sun_active_ = false;
+    const auto neon_only = capture(true);
+    unsigned sunlight_pixels = 0;
+    for (size_t i = 0; i < solar.size(); i += 4)
+      if (int(solar[i]) - int(neon_only[i]) > 10)
+        ++sunlight_pixels;
+    std::printf("GARAGE directional sunlight through alpha windows=%u pixels\n",
+                sunlight_pixels);
+    SLRR_REQUIRE(sunlight_pixels > 20 && sunlight_pixels < size * size / 2);
+    // Same mesh and camera, but an opaque alpha mask must seal the window.
+    std::string mask_path;
+    for (const auto &obj : b.instances_)
+      for (const auto &g : obj.geometry->groups)
+        if (g.name == "ablak")
+          mask_path = obj.geometry->textures.at(g.texture_index);
+    SLRR_REQUIRE(!mask_path.empty());
+    const auto original_mask = b.osd_tex_.at(mask_path);
+    const uint32_t opaque_pixel = 0xffffffff;
+    const auto opaque_mask =
+        bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0,
+                              bgfx::copy(&opaque_pixel, 4));
+    b.osd_tex_[mask_path] = opaque_mask;
+    b.update_interior_sun(video);
+    b.draw_previews();
+    bgfx::frame();
+    const auto sealed = capture(true);
+    unsigned masked_pixels = 0;
+    for (size_t i = 0; i < solar.size(); i += 4)
+      if (int(solar[i]) - int(sealed[i]) > 10)
+        ++masked_pixels;
+    std::printf("GARAGE opaque window alpha blocks %u sunlight pixels\n",
+                masked_pixels);
+    SLRR_REQUIRE(masked_pixels > 20);
+    b.osd_tex_[mask_path] = original_mask;
+    bgfx::destroy(opaque_mask);
+    const auto afternoon_matrix = b.interior_sun_matrix_;
+    scene_sun_set_time(16.f * 3600);
+    b.update_interior_sun(video);
+    SLRR_REQUIRE(b.interior_sun_matrix_ != afternoon_matrix);
+    b.draw_previews();
+    bgfx::frame();
+    const auto late_solar = capture(true);
+    unsigned solar_motion = 0;
+    for (size_t i = 0; i < solar.size(); i += 4)
+      if (std::abs(int(solar[i]) - int(late_solar[i])) > 10)
+        ++solar_motion;
+    std::printf("GARAGE clock-only sunlight motion=%u pixels\n", solar_motion);
+    SLRR_REQUIRE(solar_motion > 20);
+    auto flare_capture = [&](const bx::Vec3 &camera) {
+      const auto &sun = b.interior_sun_;
+      const bx::Vec3 direction{-sun.direction[0], -sun.direction[1],
+                               sun.direction[2]};
+      float view[16], proj[16];
+      bx::mtxLookAt(view, camera, bx::add(camera, direction));
+      bx::mtxProj(proj, 60.f, 1.f, .1f, 100.f,
+                  bgfx::getCaps()->homogeneousDepth);
+      bgfx::setViewFrameBuffer(5, fb);
+      bgfx::setViewRect(5, 0, 0, size, size);
+      bgfx::setViewClear(5, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, uint32_t(0xff),
+                         0.f);
+      bgfx::setViewTransform(5, view, proj);
+      bgfx::touch(5);
+      b.draw_sun_flare(view, proj, 5);
+      bgfx::TextureRegion dst, src;
+      dst.init(readback);
+      src.init(color);
+      bgfx::blit(100, dst, src);
+      bgfx::frame();
+      std::vector<uint8_t> bytes(size * size * 4);
+      const auto ready = bgfx::read(dst, bytes.data());
+      for (int i = 0; i < 16; ++i)
+        if (bgfx::frame() >= ready) {
+          uint64_t sum = 0;
+          for (size_t j = 0; j < bytes.size(); j += 4)
+            sum += bytes[j] + bytes[j + 1] + bytes[j + 2];
+          return sum;
+        }
+      throw std::runtime_error("flare readback timeout");
+    };
+    const auto visible_flare = flare_capture({-17, 2.5f, -8.5f});
+    const auto blocked_flare = flare_capture({0, 1.5f, 0});
+    const auto frame_flare = flare_capture({-17, 2.5f, -9.46f});
+    std::printf("GARAGE frame flare=%llu\n",static_cast<unsigned long long>(frame_flare));
+    SLRR_REQUIRE(frame_flare == 0);
+    std::printf("GARAGE camera-to-sun flare: window=%llu roof=%llu\n",
+                static_cast<unsigned long long>(visible_flare),
+                static_cast<unsigned long long>(blocked_flare));
+    SLRR_REQUIRE(visible_flare > blocked_flare + 1000 && blocked_flare == 0);
+    scene_sun_set_time(0);
+    b.update_interior_sun(video);
+    SLRR_REQUIRE(!b.interior_sun_active_);
+    scene_sun_set_time(old_time);
+    b.interior_sun_active_=false;
     bgfx::destroy(readback);
     bgfx::destroy(fb);
     auto children = gameref_get(&root)->children;

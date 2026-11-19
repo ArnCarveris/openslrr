@@ -1,3 +1,23 @@
+// Independent interior daylight field; ambient is never multiplied by it.
+uniform mat4 u_interiorSunMtx;
+uniform vec4 u_interiorSunDir; // toward sun, atlas texel size
+uniform vec4 u_interiorSunColor; // direct radiance, enabled
+float interiorSunVisibility(vec3 world)
+{
+    if(u_interiorSunColor.w<0.5) return 0.0;
+    vec3 p=mul(u_interiorSunMtx,vec4(world,1.0)).xyz;
+    if(any(lessThanEqual(p,vec3(0.0,0.0,0.0))) || any(greaterThanEqual(p,vec3(1.0,1.0,1.0)))) return 0.0;
+    float bias=0.000015;
+    float t=u_interiorSunDir.w*0.5;
+    return (shadow2D(s_interiorSun,vec3(p.xy+vec2(t,t),p.z-bias))+
+            shadow2D(s_interiorSun,vec3(p.xy+vec2(-t,t),p.z-bias))+
+            shadow2D(s_interiorSun,vec3(p.xy+vec2(t,-t),p.z-bias))+
+            shadow2D(s_interiorSun,vec3(p.xy-vec2(t,t),p.z-bias)))*0.25;
+}
+vec3 interiorSunDiffuse(vec3 normal,vec3 world)
+{
+    return u_interiorSunColor.rgb*max(dot(normal,normalize(u_interiorSunDir.xyz)),0.0)*interiorSunVisibility(world);
+}
 // Shared world-space visibility; stages are assigned by each material caller.
 // x enabled, y atlas texel, z single-field bias, w sun(0)/local(1).
 uniform vec4 u_staticShadowParams;

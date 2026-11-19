@@ -6,6 +6,7 @@ SAMPLER2D(s_vehicleEnv, 2);
 SAMPLER2D(s_vehicleBake, 3);
 SAMPLERCUBE(s_sceneReflection, 4);
 SAMPLER2DSHADOW(s_staticShadow, 5);
+SAMPLER2DSHADOW(s_interiorSun, 6);
 #include "scene_shadow.sh"
 uniform vec4 u_dynamicReflection; // x: reflection mode, y: two-sided material
 uniform vec4 u_reflectionProbe;
@@ -64,6 +65,10 @@ void main()
         localRadiance=localLightRadiance(delta,u_localLight.w,u_sunDir.w < -0.5);
         illum+=localRadiance*max(dot(n,localDir),0.0)*localVisibility;
     }
+    vec3 solarDir=normalize(mul(u_view,vec4(u_interiorSunDir.xyz,0.0)).xyz);
+    float solarVisibility=interiorSunVisibility(v_worldPos);
+    vec3 solarRadiance=u_interiorSunColor.rgb*solarVisibility;
+    illum+=solarRadiance*max(dot(n,solarDir),0.0);
     vec3 color = albedo*illum*bake;
     vec3 viewDir = normalize(-v_viewPos);
     vec3 halfDir = normalize(lightDir + viewDir);
@@ -74,6 +79,10 @@ void main()
     localHalf*=inversesqrt(max(dot(localHalf,localHalf),0.000001));
     vec3 localSpecular=u_vehicleSpec.rgb*pow(max(dot(n,localHalf),0.0),max(u_vehicleSpec.a,1.0))
                       *max(dot(n,localDir),0.0)*localRadiance*localVisibility;
+    vec3 solarHalf=solarDir+viewDir;
+    solarHalf*=inversesqrt(max(dot(solarHalf,solarHalf),0.000001));
+    localSpecular+=u_vehicleSpec.rgb*pow(max(dot(n,solarHalf),0.0),max(u_vehicleSpec.a,1.0))
+                   *max(dot(n,solarDir),0.0)*solarRadiance;
     color += (u_sunDir.w < -0.5 ? vec3(0.0,0.0,0.0)
               : u_vehicleSpec.rgb*(spec+sheen*0.35)*(1.0-use)*sunVisibility)+localSpecular;
     vec2 envUv = channelUv(u_vehicleChannels.z, v_texcoord0, v_texcoord1, v_texcoord2);

@@ -26,12 +26,17 @@
 namespace slrr {
 
 void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, uint16_t view_id) {
-  if (std::none_of(instances_.begin(), instances_.end(),
+  if (!interior_sun_active_ && std::none_of(instances_.begin(), instances_.end(),
                    [](const SceneInstance& instance) { return instance.sky; }))
     return;
-  const auto sun = instances_.front().lighting;
-  const auto& flare = sun.flare;
-  if (!sun.has_direction || !flare.texture || flare.max_size <= 0.f) return;
+  if (instances_.empty()) return;
+  const auto sun = interior_sun_active_ ? interior_sun_ : instances_.front().lighting;
+  auto flare = sun.flare;
+  if (interior_sun_active_) {
+    flare.min_size=.5f; flare.max_size=3.f;
+    flare.color=0xe4e4e4ff; flare.flares=8; flare.rays=6;
+  }
+  if (!sun.has_direction || (!interior_sun_active_ && !flare.texture) || flare.max_size <= 0.f) return;
 
   // Directional lights point away from the sun. Reflect script Z into bgfx.
   const bx::Vec3 direction{-sun.direction[0], -sun.direction[1], sun.direction[2]};
@@ -44,7 +49,8 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   const float edge = std::max(std::abs(x), std::abs(y));
   if (edge >= 1.1f) return;
   const float visibility = std::clamp((1.1f - edge) * 5.f, 0.f, 1.f);
-  const auto texture = tex_for_osd_icon(scene_instances_texture(flare.texture));
+  const auto texture = tex_for_osd_icon(interior_sun_active_
+      ? scene_instances_daylight_flare_texture() : scene_instances_texture(flare.texture));
   if (texture.idx == white_tex_.idx) return;
   float combined[16], inverse[16], identity[16];
   bx::mtxMul(combined, view, projection);
@@ -97,21 +103,42 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   const float tint[] = {alpha * float(flare.color >> 24) / 255.f,
                         alpha * float((flare.color >> 16) & 255) / 255.f,
                         alpha * float((flare.color >> 8) & 255) / 255.f, 1.f};
-  const float settings[] = {0.f, 1.f, 0.f, 0.f};
-  bind_baked_light(nullptr, nullptr);
+  const float settings[] = {0.f, 1.f, 0.f, interior_sun_active_ ? -4.f : 0.f};
+  float camera[16]; bx::mtxInverse(camera, view);
+  const float camera_position[4] = {camera[12],camera[13],camera[14],0.f};
+  bind_baked_light(nullptr, nullptr, BGFX_INVALID_HANDLE, false, nullptr,
+                   interior_sun_active_ ? camera_position : nullptr);
+  // Gate every ghost/ray with the same camera-to-sun visibility, not its own
+  // screen position. This includes the alpha window/frame and room occluders.
+  bind_interior_sun(interior_sun_active_, 5);
   bgfx::setUniform(u_color_, tint);
   bgfx::setUniform(u_alpha_test_, settings);
   bgfx::setTransform(identity);
   bgfx::setVertexBuffer(0, &vb);
   bgfx::setIndexBuffer(&ib);
   bgfx::setTexture(0, s_tex_, texture);
-  bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_GREATER |
+  bgfx::setState(BGFX_STATE_WRITE_RGB |
+                 (interior_sun_active_ ? uint64_t(0) : BGFX_STATE_DEPTH_TEST_GREATER) |
                  BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
   bgfx::submit(view_id, program_);
 }
 
+void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
+  const bool active = enabled && interior_sun_active_;
+  const float direction[4] = {-interior_sun_.direction[0], -interior_sun_.direction[1],
+                               interior_sun_.direction[2], 1.f/1024.f};
+  const float color[4] = {interior_sun_.diffuse[0], interior_sun_.diffuse[1],
+                           interior_sun_.diffuse[2], active ? 1.f : 0.f};
+  bgfx::setUniform(u_interior_sun_dir_, direction);
+  bgfx::setUniform(u_interior_sun_color_, color);
+  bgfx::setUniform(u_interior_sun_mtx_, interior_sun_matrix_.data());
+  bgfx::setTexture(stage, s_interior_sun_, active ? interior_sun_tex_ : depth_white_,
+      BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
+}
+
   void LibBgfxBackend::bind_scene_shadow(bool enabled, uint8_t stage)
 {
+    bind_interior_sun(enabled, stage == 5 ? 6 : 5);
     const bool receive = enabled && static_shadow_active_ &&
                          debug_overlay_.render_options().map_shadows;
     const float params[4] = {receive ? 1.f : 0.f,

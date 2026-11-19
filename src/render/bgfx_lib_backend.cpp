@@ -232,6 +232,16 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
         bgfx::createUniform("u_pointShadowFaces", bgfx::UniformType::Mat4, 6);
     u_point_shadow_params_ =
         bgfx::createUniform("u_pointShadowParams", bgfx::UniformType::Vec4);
+    s_interior_sun_ = bgfx::createUniform("s_interiorSun", bgfx::UniformType::Sampler);
+    u_interior_sun_mtx_ = bgfx::createUniform("u_interiorSunMtx", bgfx::UniformType::Mat4);
+    u_interior_sun_dir_ = bgfx::createUniform("u_interiorSunDir", bgfx::UniformType::Vec4);
+    u_interior_sun_color_ = bgfx::createUniform("u_interiorSunColor", bgfx::UniformType::Vec4);
+    u_aperture_params_ = bgfx::createUniform("u_apertureParams", bgfx::UniformType::Vec4);
+    u_aperture_matrices_ = bgfx::createUniform("u_apertureMatrices", bgfx::UniformType::Mat4, 32);
+    u_aperture_uv_ = bgfx::createUniform("u_apertureUv", bgfx::UniformType::Vec4, 32);
+    u_aperture_edge_ = bgfx::createUniform("u_apertureEdge", bgfx::UniformType::Vec4, 32);
+    s_aperture_ = bgfx::createUniform("s_aperture", bgfx::UniformType::Sampler);
+
     // bgfx returns an invalid program, without a message in Release, when the
     // fragment $input list differs from the vertex $output list. The features
     // behind these programs then switch themselves off silently.
@@ -382,6 +392,11 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
     shadow_cascades_active_ = false;
     point_shadow_active_ = false;
+    if (bgfx::isValid(interior_sun_fb_)) bgfx::destroy(interior_sun_fb_);
+    interior_sun_fb_ = BGFX_INVALID_HANDLE;
+    interior_sun_tex_ = BGFX_INVALID_HANDLE;
+    interior_sun_active_ = false;
+    interior_sun_casters_.clear();
     point_light_.reset();
     cached_point_light_.reset();
     shadow_origin_world_ = nullptr;
@@ -393,7 +408,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
          {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_,
           &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_,
           &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
-          &u_point_shadow_params_}) {
+          &u_point_shadow_params_, &s_interior_sun_, &u_interior_sun_mtx_,
+          &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
+          &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -703,6 +720,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     if (!covered) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
+      update_interior_sun(video);
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
       float car_matrix[16];
@@ -1339,11 +1357,13 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 65> base_order{};
+    std::array<uint16_t, 66> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
-      if (i == kWorldView && point_shadow_active_)
-        base_order[base_slot++] = 64;
+      if (i == kWorldView) {
+        if (point_shadow_active_) base_order[base_slot++] = 64;
+        base_order[base_slot++] = 65;
+      }
       base_order[base_slot++] = i;
     }
     if (!point_shadow_active_)
@@ -1359,11 +1379,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 65> order{};
+      std::array<uint16_t, 66> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
-      if (point_shadow_active_)
-        order[slot++] = 64;
+      if (point_shadow_active_) order[slot++] = 64;
+      order[slot++] = 65;
       order[slot++] = kFmvLayer;
       order[slot++] = kOsdUnder;
       for (const auto& entry : views) order[slot++] = entry.second;

@@ -199,6 +199,24 @@ continue to move furniture over actual floor materials. Game captures with a
 source moved 3 m show the lighting/shadow/highlight response; the first source
 leaves distant parts of the room darker. More lamps and visual tuning remain.
 
+## Interior directional daylight and alpha windows
+
+A separate directional sun now coexists with the first interior point source.
+It follows the continuous clock, adds direct diffuse/specular light and keeps
+ambient separate from the sky. A 1024-square depth field covers the room and is
+shared by scenery, vehicles and captured scenery. The legacy `ablak` window
+section supplies actual triangles/UVs and its alpha mask; frames/opaque shell,
+roof and interior objects remain occluders. Coplanar shell masking is limited to
+8 cm, one texture and 32 window triangles. This is alpha coverage, not physical
+glass transmission or automatic support for arbitrary addon window materials.
+
+GPU tests using the real garage show sunlight changes when only the clock
+changes; replacing window alpha with an opaque mask blocks the corresponding
+light. Flare ghosts/rays use camera-to-sun visibility from the same field; tests
+cover visible glass versus blocked roof/frame. See
+[interior-directional-sun.txt](../assets/validation/interior-directional-sun.txt).
+Fixture placement, multiple neons and their explicit white emission remain open.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

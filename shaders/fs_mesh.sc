@@ -9,6 +9,7 @@ SAMPLER2DSHADOW(s_staticShadow, 3);
 SAMPLER2DSHADOW(s_carDepth, 4);
 uniform mat4 u_carDepthMtx;
 uniform vec4 u_carDepthParams;
+SAMPLER2DSHADOW(s_interiorSun, 5);
 #include "scene_shadow.sh"
 uniform vec4 u_sunAmb;
 uniform vec4 u_sunDiff;
@@ -255,6 +256,7 @@ void main()
 		float facing = max(dot(n, delta * inversesqrt(max(d2, 0.001))), 0.0);
 		illumination += localLightRadiance(delta,u_localLight.w,u_sunDir.w < -0.5)*facing*localVisibility;
 	}
+	illumination += interiorSunDiffuse(n,v_worldPos);
 	vec3 shaded = tex.rgb * bake * tint * placement * illumination;
 	if (u_alphaTest.y > 1.5) {
 		// EmissionMaskMap (SCX 0x06000005) selects lit windows/sign detail.
@@ -262,6 +264,7 @@ void main()
 		vec3 emission = texture2D(s_lightmap, emissionUv).rgb;
 		shaded = tex.rgb * tint * placement * emission;
 	}
+    if(u_alphaTest.w < -3.5) shaded *= interiorSunVisibility(u_cloudSky.xyz);
 	// Sky and OSD set u_alphaTest.y. Their fragments stay sharp.
 	if (u_fogColor.a > 0.5 && u_alphaTest.y < 0.5) {
 		float span = max(u_fogRange.y - u_fogRange.x, 1.0);

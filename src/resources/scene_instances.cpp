@@ -812,6 +812,13 @@ void scene_instances_set_envmap(uint32_t resource) { g_environment = resource; }
 std::shared_ptr<const ScxGeometry> scene_instances_geometry(uint32_t resource) {
   return geometry(resource);
 }
+std::string scene_instances_daylight_flare_texture() {
+  if (!g_resources) return {};
+  const auto* pack = g_resources->pack_by_path("maps/skydome.rpk");
+  return pack ? scene_instances_texture(RpkIndex::make_full_id(pack->pack_id, 0x100))
+              : std::string{};
+}
+
 std::string scene_instances_texture(uint32_t resource) {
   if (!resource || !g_resources) return {};
   if (const auto it = g_texture_paths.find(resource); it != g_texture_paths.end())

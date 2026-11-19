@@ -10,8 +10,228 @@
 
 namespace slrr {
 
-void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& video) {
+// A separate directional field: punctual shadow visibility must never occlude
+// sunlight, nor may the sky's ambient term replace the direct source.
+void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
+  const bool was_active = interior_sun_active_;
+  interior_sun_active_ = false;
+  if (!garage_ || video.shadows == 0 ||
+      !host_enhanced_graphics().dynamic_lighting ||
+      !debug_overlay_.render_options().map_shadows) {
+    interior_sun_casters_.clear();
+    return;
+  }
+  struct Aperture {
+    std::array<float, 16> inverse;
+    std::array<float, 4> uv, edge;
+  };
+  std::vector<Aperture> apertures;
+  bgfx::TextureHandle window_texture = BGFX_INVALID_HANDLE;
+  // Stock compatibility adapter: "ablak" is the authored window section.
+  // Do not infer light transmission from arbitrary blended signs or glass cars.
+  for (const auto &instance : instances_) {
+    if (!instance.geometry || instance.sky || instance.vehicle_material)
+      continue;
+    const auto &geo = *instance.geometry;
+    for (const auto &group : geo.groups) {
+      if (group.name != "ablak" ||
+          !scx_surface(geo.info.version, group).blend ||
+          group.texture_index >= geo.textures.size())
+        continue;
+      const auto texture = tex_for_osd_icon(geo.textures[group.texture_index]);
+      if (!bgfx::isValid(texture) || texture.idx == white_tex_.idx)
+        continue;
+      // One texture and at most 32 triangles per interior are budgeted. Reject
+      // unsupported mixed masks rather than opening an unmasked wall.
+      if (bgfx::isValid(window_texture) && texture.idx != window_texture.idx)
+        continue;
+      window_texture = texture;
+      const auto &uv = group.base_map.channel == 2   ? geo.uv3
+                       : group.base_map.channel == 1 ? geo.uv2
+                                                     : geo.uvs;
+      for (size_t i = group.index_start;
+           i + 2 < group.index_start + group.index_count &&
+           apertures.size() < 32;
+           i += 3) {
+        bx::Vec3 v[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        float t[3][2];
+        bool valid = true;
+        for (int k = 0; k < 3; ++k) {
+          const auto index = geo.indices[i + k];
+          if (index * 3 + 2 >= geo.positions.size() ||
+              index * 2 + 1 >= uv.size()) {
+            valid = false;
+            break;
+          }
+          const float scale = geo.position_scale;
+          v[k] = bx::mul({geo.positions[index * 3] * scale,
+                          geo.positions[index * 3 + 1] * scale,
+                          -geo.positions[index * 3 + 2] * scale},
+                         instance.transform.data());
+          t[k][0] =
+              uv[index * 2] * group.base_map.scale_u + group.base_map.offset_u;
+          t[k][1] = uv[index * 2 + 1] * group.base_map.scale_v +
+                    group.base_map.offset_v;
+        }
+        if (!valid)
+          continue;
+        const auto a = bx::sub(v[1], v[0]), b = bx::sub(v[2], v[0]);
+        const auto cross = bx::cross(a, b);
+        if (bx::dot(cross, cross) < 1e-8f)
+          continue;
+        const auto n = bx::normalize(cross);
+        const float basis[16] = {a.x, a.y, a.z, 0, b.x,    b.y,    b.z,    0,
+                                 n.x, n.y, n.z, 0, v[0].x, v[0].y, v[0].z, 1};
+        Aperture aperture;
+        bx::mtxInverse(aperture.inverse.data(), basis);
+        aperture.uv = {t[0][0], t[0][1], t[1][0] - t[0][0], t[1][1] - t[0][1]};
+        aperture.edge = {t[2][0] - t[0][0], t[2][1] - t[0][1], 0, 0};
+        apertures.push_back(aperture);
+      }
+    }
+  }
+  if (apertures.empty()) {
+    interior_sun_casters_.clear();
+    return;
+  }
+  interior_sun_ = SceneSun{};
+  scene_sun_apply_day_cycle(interior_sun_);
+  if (interior_sun_.direction[1] >= 0)
+    return;
+  constexpr uint16_t size = 1024;
+  if (!bgfx::isValid(interior_sun_fb_)) {
+    const auto depth = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::D32F,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (!bgfx::isValid(depth))
+      return;
+    interior_sun_fb_ = bgfx::createFrameBuffer(1, &depth, true);
+    if (!bgfx::isValid(interior_sun_fb_)) {
+      bgfx::destroy(depth);
+      return;
+    }
+    interior_sun_tex_ = depth;
+  }
+  float center[3]{};
+  float radius = 1;
+  for (const auto &instance : instances_) {
+    if (!instance.geometry || !instance.geometry->ground_polygons)
+      continue;
+    const auto &geo = *instance.geometry;
+    const float scale = geo.position_scale;
+    auto c =
+        bx::mul({(geo.info.bbox_min[0] + geo.info.bbox_max[0]) * scale * .5f,
+                 (geo.info.bbox_min[1] + geo.info.bbox_max[1]) * scale * .5f,
+                 -(geo.info.bbox_min[2] + geo.info.bbox_max[2]) * scale * .5f},
+                instance.transform.data());
+    center[0] = c.x;
+    center[1] = c.y;
+    center[2] = c.z;
+    radius = std::max(radius,
+                      std::hypot(geo.info.bbox_max[0] - geo.info.bbox_min[0],
+                                 geo.info.bbox_max[2] - geo.info.bbox_min[2]) *
+                              scale * .5f +
+                          4);
+    break;
+  }
+  // A metre-scale interior field, independent of the outdoor kilometre splits.
+  const float travel[3] = {interior_sun_.direction[0],
+                           interior_sun_.direction[1],
+                           -interior_sun_.direction[2]};
+  const auto *caps = bgfx::getCaps();
+  const auto projection =
+      shadow_projection(center, travel, radius, size, caps->homogeneousDepth,
+                        caps->originBottomLeft);
+  interior_sun_matrix_ = projection.sample;
+  std::vector<ShadowCasterStamp> stamps;
+  for (const auto &instance : instances_) {
+    if (!instance.geometry || instance.sky || instance.light_flags ||
+        instance.emissive_overlay || instance.gpu_skin ||
+        (instance.vehicle_material && !debug_overlay_.render_options().shadows))
+      continue;
+    cache_scene_mesh(instance.geometry, instance.key, false);
+    const auto &part = instance_meshes_.at(instance.geometry.get());
+    stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                      part.vbh.idx, part.ibh.idx, instance.transform});
+  }
+  interior_sun_active_ = true;
+  if (was_active && interior_sun_mask_ == window_texture.idx &&
+      interior_sun_cached_matrix_ == interior_sun_matrix_ &&
+      stamps == interior_sun_casters_)
+    return;
+  constexpr uint16_t view = 65;
+  bgfx::setViewFrameBuffer(view, interior_sun_fb_);
+  bgfx::setViewRect(view, 0, 0, size, size);
+  bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
+  bgfx::setViewTransform(view, projection.view.data(),
+                         projection.projection.data());
+  bgfx::touch(view);
+  std::array<std::array<float, 16>, 32> matrices{};
+  std::array<std::array<float, 4>, 32> uvs{}, edges{};
+  for (size_t i = 0; i < apertures.size(); ++i) {
+    matrices[i] = apertures[i].inverse;
+    uvs[i] = apertures[i].uv;
+    edges[i] = apertures[i].edge;
+  }
+  for (const auto &stamp : stamps) {
+    const auto &part = instance_meshes_.at(stamp.source);
+    if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh))
+      continue;
+    // The overlay and the wall may be coincident. Cut only the shell within
+    // 8 cm of the actual window plane, never furniture or the opposite wall.
+    const float aperture_params[4] = {
+        part.geo.ground_polygons ? float(apertures.size()) : 0.f, .08f, 0, 0};
+    for (const auto &group : part.geo.groups) {
+      const auto surface = scx_surface(part.geo.info.version, group);
+      if (surface.blend && group.name != "ablak")
+        continue;
+      const bool window = surface.blend && group.name == "ablak" &&
+          group.texture_index < part.geo.textures.size() &&
+          tex_for_osd_icon(part.geo.textures[group.texture_index]).idx == window_texture.idx;
+      const float threshold = surface.blend     ? (window ? .5f : -1.f)
+                              : !surface.cutout ? -1.f
+                              : part.geo.info.version == 4
+                                  ? group.alpha_reference / 255.f
+                                  : .5f;
+      const float params[4] = {0, threshold, float(group.base_map.channel), 0};
+      bgfx::setUniform(u_static_shadow_params_, params);
+      bgfx::setUniform(u_aperture_params_, aperture_params);
+      if (part.geo.ground_polygons) {
+        bgfx::setUniform(u_aperture_matrices_, matrices.data(),
+                         uint16_t(apertures.size()));
+        bgfx::setUniform(u_aperture_uv_, uvs.data(),
+                         uint16_t(apertures.size()));
+        bgfx::setUniform(u_aperture_edge_, edges.data(),
+                         uint16_t(apertures.size()));
+      }
+      bgfx::setTexture(1, s_aperture_, window_texture,
+                       BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+      const auto slot = group.texture_index;
+      bgfx::setTexture(0, s_tex_,
+                       window ? window_texture
+                       : surface.blend ? white_tex_
+                       : slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                           ? part.tex[slot]
+                           : white_tex_);
+      bgfx::setTransform(stamp.transform.data());
+      bgfx::setVertexBuffer(0, part.vbh);
+      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+      bgfx::submit(view, static_shadow_program_);
+    }
+  }
+  const float none[4]{};
+  bgfx::setUniform(u_aperture_params_, none);
+  interior_sun_mask_ = window_texture.idx;
+  interior_sun_casters_ = std::move(stamps);
+  interior_sun_cached_matrix_ = interior_sun_matrix_;
+}
+
+void LibBgfxBackend::update_static_shadow(const float *eye,
+                                          const VideoOptions &video) {
   perf::Scope perf_scope(perf::Zone::Shadows);
+  const float no_apertures[4]{};
+  bgfx::setUniform(u_aperture_params_, no_apertures);
   static_shadow_active_ = false;
   static_shadow_local_ = false;
   shadow_cascades_active_ = false;

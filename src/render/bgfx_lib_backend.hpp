@@ -350,6 +350,25 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_point_shadow_params_ = BGFX_INVALID_HANDLE;
   std::array<std::array<float, 16>, 6> point_shadow_matrices_{};
   bool point_shadow_active_ = false;
+  void update_interior_sun(const VideoOptions& video);
+  void bind_interior_sun(bool enabled, uint8_t stage);
+  bgfx::FrameBufferHandle interior_sun_fb_ = BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle interior_sun_tex_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_interior_sun_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_interior_sun_mtx_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_interior_sun_dir_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_interior_sun_color_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_aperture_params_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_aperture_matrices_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_aperture_uv_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_aperture_edge_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_aperture_ = BGFX_INVALID_HANDLE;
+  std::array<float,16> interior_sun_matrix_{};
+  SceneSun interior_sun_;
+  bool interior_sun_active_ = false;
+  uint16_t interior_sun_mask_ = UINT16_MAX;
+  std::array<float,16> interior_sun_cached_matrix_{};
+
   void update_reflections(const float* eye);
   void destroy_reflections();
   std::array<bgfx::TextureHandle, 2> reflection_cubes_{{
@@ -383,6 +402,7 @@ class LibBgfxBackend final : public IRenderBackend {
     std::array<float,16> transform{};
     bool operator==(const ShadowCasterStamp&) const = default;
   };
+  std::vector<ShadowCasterStamp> interior_sun_casters_;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
   bool shadow_cache_valid_ = false;

@@ -826,8 +826,35 @@ updates change shading without redrawing depth.
 
 This first implementation budgets one interior point source. There is no authored
 multi-fixture placement system, spot/projector headlight path, outdoor point-light
-registry or simultaneous sun/point-shadow allocation yet. PBR, HDR/tonemapping,
+registry yet. PBR, HDR/tonemapping,
 area lights and removal of baked detail in diffuse textures are separate work.
+
+Interior daylight uses a separate 1024-square D32F directional shadow map
+(4 MiB), on reserved view 65 ordered before world 5/6, alongside the point atlas.
+Its direction/radiance use the continuous day cycle; sky ambient never substitutes
+for direct sunlight. Scenery, vehicle diffuse/specular and reflection captures
+sample this independent field (mesh stage 5, vehicle stage 6). The existing
+point-light ambient/falloff is retained. No extra ambient is added by daylight.
+
+The stock garage adapter treats the blended SCX section `ablak` as a sunlight
+aperture: actual transformed triangles, authored base UVs and alpha mask. Up to
+32 triangles sharing one mask are supported. The mask cuts opaque shell fragments
+only within 8 cm of the window plane, and the window surfaces themselves cast
+alpha-tested shadows (threshold .5). Walls elsewhere, roof, frames and ordinary
+objects remain casters. Unsupported masks/triangles do not open extra shell.
+This is a legacy asset adapter, not automatic transmission for all blended glass.
+Texture alpha controls binary coverage, not physical coloured-glass transmission.
+
+An unchanged projection/mask handle/caster stamp reuses the daylight field.
+Clock, geometry and caster motion update it; night, missing apertures or disabled
+map shadows/dynamic lighting disable interior daylight safely. Skinned casters
+remain excluded. The source and sky share time, but are distinct contributions.
+Interior flare artwork resolves through the active root's skydome resource; all
+rays/ghosts use camera-to-sun shadow visibility, including window alpha and frames.
+It draws as a lens overlay only when that visibility permits it. Preview/emission
+passes disable daylight reception, and backend close destroys the extra resources.
+Actual fixture placement/multiple neon sources and white fixture emission remain
+separate work; this increment preserves the existing point adapter.
 
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection

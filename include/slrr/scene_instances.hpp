@@ -126,6 +126,8 @@ std::shared_ptr<const ScxGeometry> scene_instances_geometry(uint32_t resource);
 // Parse render meshes off the calling thread and publish them before return.
 void scene_instances_preload(const std::vector<uint32_t>& resources);
 std::string scene_instances_texture(uint32_t resource);
+// Stock flare artwork resolved through the current resource root, never cwd.
+std::string scene_instances_daylight_flare_texture();
 // Nearest mesh the ray enters, in unreflected script metres. Sky and
 // instances outside the active world are ignored. Null when the ray only
 // starts inside a volume (the garage shell around the camera).
