@@ -1,6 +1,7 @@
 // Active cached map/garage shadows and vehicle depth maps.
 #include "bgfx_lib_backend.hpp"
 #include "point_shadows.hpp"
+#include "shadow_quality.hpp"
 #include "shadow_cascades.hpp"
 #include "slrr/frame_profiler.hpp"
 
@@ -11,14 +12,19 @@
 namespace slrr {
 
 void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
-  const bool was_active = fixture_shadow_active_;
+  bool was_active = fixture_shadow_active_;
   fixture_shadow_active_ = false;
   if (fixture_lights_.empty() || !garage_ || video.shadows == 0 ||
       !debug_overlay_.render_options().map_shadows) {
     fixture_shadow_casters_.clear();
     return;
   }
-  constexpr uint16_t tile = 512, width = tile * 4, height = tile * 3;
+  const uint16_t tile=local_shadow_resolution(),width=tile*4,height=tile*3;
+  if(bgfx::isValid(fixture_shadow_fb_) && fixture_shadow_tile_!=tile) {
+    bgfx::destroy(fixture_shadow_fb_);fixture_shadow_fb_=BGFX_INVALID_HANDLE;
+    fixture_shadow_tex_=BGFX_INVALID_HANDLE;was_active=false;
+  }
+  fixture_shadow_tile_=tile;
   if (!bgfx::isValid(fixture_shadow_fb_)) {
     const auto depth = bgfx::createTexture2D(
         width, height, false, 1, bgfx::TextureFormat::D32F,
@@ -128,7 +134,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
 // A separate directional field: punctual shadow visibility must never occlude
 // sunlight, nor may the sky's ambient term replace the direct source.
 void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
-  const bool was_active = interior_sun_active_;
+  bool was_active = interior_sun_active_;
   interior_sun_active_ = false;
   if (!garage_ || video.shadows == 0 ||
       !host_enhanced_graphics().dynamic_lighting ||
@@ -213,7 +219,15 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   scene_sun_apply_day_cycle(interior_sun_);
   if (interior_sun_.direction[1] >= 0)
     return;
-  constexpr uint16_t size = 1024;
+  const uint16_t size=sun_shadow_resolution();
+  if(interior_sun_size_!=size) {
+    if(bgfx::isValid(interior_sun_fb_)) bgfx::destroy(interior_sun_fb_);
+    if(bgfx::isValid(interior_aperture_fb_)) bgfx::destroy(interior_aperture_fb_);
+    interior_sun_fb_=BGFX_INVALID_HANDLE;interior_sun_tex_=BGFX_INVALID_HANDLE;
+    interior_aperture_fb_=BGFX_INVALID_HANDLE;interior_aperture_tex_=BGFX_INVALID_HANDLE;
+    was_active=false;
+  }
+  interior_sun_size_=size;
   if (!bgfx::isValid(interior_sun_fb_)) {
     const auto depth = bgfx::createTexture2D(
         size, size, false, 1, bgfx::TextureFormat::D32F,
@@ -387,6 +401,9 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
 
 void LibBgfxBackend::update_static_shadow(const float *eye,
                                           const VideoOptions &video) {
+  const uint16_t point_shadow_tile=local_shadow_resolution();
+  const uint16_t point_shadow_width=point_shadow_tile*3,point_shadow_height=point_shadow_tile*2;
+  const uint16_t resolution=scenery_shadow_resolution();
   perf::Scope perf_scope(perf::Zone::Shadows);
   const float no_apertures[4]{};
   bgfx::setUniform(u_aperture_params_, no_apertures);
@@ -521,7 +538,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   // Dealers/addons may contain only ordinary SCX meshes, or no ground in view.
   const auto sun = scene_instances_light();
   if (!sun.has_direction || sun.direction[1] >= 0.02f) return;
-  constexpr uint16_t size = kShadowResolution * 2;
+  const uint16_t size = resolution * 2;
   const bool conservative =
       (bgfx::getCaps()->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
   if (size != static_shadow_size_ && bgfx::isValid(static_shadow_fb_)) {
@@ -556,9 +573,9 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
     shadow_origin_world_=scene_instances_world();
     shadow_origin_={focus[0],focus[1],focus[2]};
   }
-  shadow_rebase_origin(shadow_origin_,focus,direction,kShadowResolution);
+  shadow_rebase_origin(shadow_origin_,focus,direction,resolution);
   const float relative_focus[3]={focus[0]-shadow_origin_[0],focus[1]-shadow_origin_[1],focus[2]-shadow_origin_[2]};
-  const auto outer = shadow_projection(relative_focus,direction,shadow_radii.back(),kShadowResolution,
+  const auto outer = shadow_projection(relative_focus,direction,shadow_radii.back(),resolution,
       caps->homogeneousDepth,caps->originBottomLeft);
   auto outer_world_view=outer.view;
   for(int row=0;row<3;++row) for(int axis=0;axis<3;++axis)
@@ -580,7 +597,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   std::array<ShadowProjection,4> projections;
   bool same_projection=shadow_cached_origin_==shadow_origin_;
   for(size_t i=0;i<4;++i) {
-    projections[i]=shadow_projection(relative_focus,direction,shadow_radii[i],kShadowResolution,
+    projections[i]=shadow_projection(relative_focus,direction,shadow_radii[i],resolution,
         caps->homogeneousDepth,caps->originBottomLeft);
     same_projection=same_projection && projections[i].sample==shadow_cascade_matrices_[i];
   }
@@ -611,9 +628,9 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
     const auto frustum=view_frustum(world_view.data(),projection.projection.data());
     const auto view_id = shadow_views[cascade];
     bgfx::setViewFrameBuffer(view_id, static_shadow_fb_);
-    bgfx::setViewRect(view_id, uint16_t(cascade % 2 * kShadowResolution),
-                      uint16_t(cascade / 2 * kShadowResolution),
-                      kShadowResolution, kShadowResolution);
+    bgfx::setViewRect(view_id, uint16_t(cascade % 2 * resolution),
+                      uint16_t(cascade / 2 * resolution),
+                      resolution, resolution);
     bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
     bgfx::setViewTransform(view_id, projection.view.data(),
                            projection.projection.data());
@@ -690,7 +707,11 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
   if (!position || video.shadows == 0 || !debug_overlay_.render_options().shadows ||
       !bgfx::isValid(static_shadow_program_)) return;
 
-  constexpr uint16_t size = kShadowResolution;
+  const uint16_t size=scenery_shadow_resolution();
+  if(bgfx::isValid(car_depth_fb_) && car_depth_size_!=size) {
+    bgfx::destroy(car_depth_fb_);car_depth_fb_=BGFX_INVALID_HANDLE;car_depth_tex_=BGFX_INVALID_HANDLE;
+  }
+  car_depth_size_=size;
   if (!bgfx::isValid(car_depth_fb_)) {
     const auto texture = bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::D32F,
         BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |

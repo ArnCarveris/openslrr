@@ -13,6 +13,94 @@ void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void ambient_occlusion(LibBgfxBackend& b) {
+    Fixture f;Object root;
+    gameref_upsert(&root)->flags=kWorldTreeRoot;
+    scene_instances_select(&root,nullptr,false,SceneEnvironment::Interior);
+    const auto saved=host_enhanced_graphics();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_strength=150;host_enhanced_graphics().ao_radius=150;
+    b.garage_=true;b.outdoor_lighting_=false;b.fog_enabled_=false;
+    b.fixture_lights_.clear();b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    PointLight ambient;ambient.intensity=0;ambient.ambient={.7f,.7f,.7f};b.point_light_=ambient;
+    auto floor=std::make_shared<ScxGeometry>();floor->info.ok=true;floor->info.version=4;floor->position_scale=1;
+    floor->positions={-4,0,0,4,0,0,-4,0,-8,4,0,-8};floor->normals={0,1,0,0,1,0,0,1,0,0,1,0};
+    floor->uvs.resize(8);floor->indices={0,2,1,1,2,3};ScxGroup group;group.index_count=6;floor->groups={group};
+    auto cube=std::make_shared<ScxGeometry>();*cube=*floor;
+    cube->positions={-.5f,0,-2.5f,.5f,0,-2.5f,.5f,1,-2.5f,-.5f,1,-2.5f,-.5f,0,-3.5f,.5f,0,-3.5f,.5f,1,-3.5f,-.5f,1,-3.5f};
+    cube->indices={0,1,2,0,2,3,4,6,5,4,7,6,0,4,5,0,5,1,3,2,6,3,6,7,0,3,7,0,7,4,1,5,6,1,6,2};
+    cube->normals.resize(24);cube->uvs.resize(16);
+    for(size_t i=0;i<8;++i) {cube->normals[i*3]=0;cube->normals[i*3+1]=1;cube->normals[i*3+2]=0;}
+    cube->groups[0].index_count=uint32_t(cube->indices.size());
+    SceneInstance receiver,blocker;receiver.geometry=floor;blocker.geometry=cube;
+    bx::mtxIdentity(receiver.transform.data());bx::mtxIdentity(blocker.transform.data());
+    receiver.lighting.set=receiver.lighting.has_direction=true;receiver.lighting.direction[1]=-1;
+    blocker.lighting=receiver.lighting;
+    b.instances_={receiver,blocker};b.cache_scene_mesh(floor,nullptr,false);b.cache_scene_mesh(cube,nullptr,false);
+    constexpr uint16_t width=160,height=120;
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    float view[16],projection[16],render[16];
+    bx::mtxLookAt(view,{3,3,-4},{0,0,3});bx::mtxProj(projection,60.f,float(width)/height,.05f,100.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    uint16_t draw_view=5;bool draw_blocker=true;
+    auto capture=[&](int method,int quality) {
+      host_enhanced_graphics().ao_method=method;host_enhanced_graphics().ao_quality=quality;
+      b.update_ambient_occlusion(view,projection,width,height,5);b.draw_previews();
+      bgfx::setViewFrameBuffer(draw_view,fb);bgfx::setViewRect(draw_view,0,0,width,height);
+      bgfx::setViewClear(draw_view,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+      bgfx::setViewTransform(draw_view,view,render);
+      b.draw_instance(draw_view,receiver,receiver.transform.data(),false,0);
+      if(draw_blocker) b.draw_instance(draw_view,blocker,blocker.transform.data(),false,0);
+      bgfx::TextureRegion dst,src;dst.init(readback);src.init(color);bgfx::blit(100,dst,src);bgfx::frame();
+      std::vector<uint8_t> bytes(width*height*4);const auto ready=bgfx::read(dst,bytes.data());
+      for(int i=0;i<16;++i) if(bgfx::frame()>=ready) return bytes;
+      throw std::runtime_error("AO readback timeout");
+    };
+    b.instances_={receiver};draw_blocker=false;
+    const auto flat_plain=capture(0,1);
+    for(int method=1;method<=2;++method) for(int quality=0;quality<3;++quality) {
+      const auto flat=capture(method,quality);unsigned dark=0,visible=0;uint64_t total=0,reference=0;
+      for(size_t i=0;i<flat.size();i+=4) if(flat_plain[i]>10) {
+        ++visible;total+=flat[i];reference+=flat_plain[i];
+        if(int(flat_plain[i])-int(flat[i])>3) ++dark;
+      }
+      std::printf("AO flat method=%d dark=%u/%u average=%g reference=%g\n",method,dark,visible,double(total)/visible,double(reference)/visible);
+      SLRR_REQUIRE(dark<visible/10);
+    }
+    b.instances_={receiver,blocker};draw_blocker=true;
+    const auto plain=capture(0,1);
+    std::vector<uint8_t> methods[2];
+    for(int method=1;method<=2;++method) for(int quality=0;quality<3;++quality) {
+      const auto image=capture(method,quality);unsigned shaded=0;
+      for(size_t i=0;i<image.size();i+=4) if(int(plain[i])-int(image[i])>3) ++shaded;
+      std::printf("AO method=%d quality=%d contact pixels=%u dimensions=%ux%u\n",method,quality,shaded,b.ao_width_,b.ao_height_);
+      SLRR_REQUIRE(shaded>10 && shaded<width*height/2);
+      SLRR_REQUIRE(b.ao_width_==(quality==2?width:width/2));
+      methods[method-1]=image;
+    }
+    SLRR_REQUIRE(methods[0]!=methods[1]);
+    draw_view=72;SLRR_REQUIRE(capture(2,1)==plain);draw_view=5;
+    // AO can only affect ambient diffuse: retain exactly the same direct light.
+    b.point_light_.reset();b.garage_=false;b.outdoor_lighting_=true;
+    receiver.lighting.ambient[0]=receiver.lighting.ambient[1]=receiver.lighting.ambient[2]=0;
+    blocker.lighting=receiver.lighting;
+    const auto direct=capture(0,1);SLRR_REQUIRE(capture(2,1)==direct);
+    b.update_ambient_occlusion(view,projection,80,60,5);
+    SLRR_REQUIRE(b.ao_screen_width_==80 && b.ao_width_==40);
+    host_enhanced_graphics().ao_method=0;b.update_ambient_occlusion(view,projection,width,height,5);
+    SLRR_REQUIRE(!b.ao_active_ && !bgfx::isValid(b.ao_depth_fb_) && !bgfx::isValid(b.ao_raw_fb_));
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;b.instances_.clear();b.garage_=b.outdoor_lighting_=false;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    gameref_remove(&root);scene_instances_set_resources(nullptr);
+    std::puts("PASS HBAO/GTAO quality/contact, indirect-only, reflection isolation, resize and off cleanup");
+  }
   static void reflection_occupants() {
     Fixture f;Object car,seat,person,pedestrian,world;
     auto* c=gameref_upsert(&car);c->vehicle_material=true;
@@ -311,6 +399,26 @@ struct SceneShadowRegression {
       if(int(bare_wall[i])-int(car_wall[i])>8) ++wall_pixels;
     std::printf("NEON vehicle shadow on vertical wall=%u pixels\n",wall_pixels);
     SLRR_REQUIRE(wall_pixels>100);
+    const auto saved_shadow_options=host_enhanced_graphics();
+    for(int quality=0;quality<3;++quality) {
+      host_enhanced_graphics().shadow_quality=quality;
+      b.update_fixture_shadows(video);b.draw_previews();bgfx::frame();
+      SLRR_REQUIRE(b.fixture_shadow_tile_==(256u<<quality));
+      const auto revision=b.fixture_shadow_revision_;
+      b.update_fixture_shadows(video);SLRR_REQUIRE(b.fixture_shadow_revision_==revision);
+      std::vector<uint8_t> filters[3];
+      for(int filter=0;filter<3;++filter) {
+        host_enhanced_graphics().shadow_smoothing=filter;
+        filters[filter]=capture(false);unsigned shaded=0;
+        for(size_t i=0;i<bare_wall.size();i+=4)
+          if(int(bare_wall[i])-int(filters[filter][i])>8) ++shaded;
+        SLRR_REQUIRE(shaded>100);
+        b.update_fixture_shadows(video);SLRR_REQUIRE(b.fixture_shadow_revision_==revision);
+      }
+      SLRR_REQUIRE(filters[0]!=filters[1] && filters[1]!=filters[2]);
+    }
+    host_enhanced_graphics()=saved_shadow_options;
+    std::puts("PASS shadow quality reallocates, smoothing changes pixels without depth redraw");
     caster.transform[14]=5; b.instances_={receiver,caster};
     b.update_fixture_shadows(video);b.draw_previews();bgfx::frame();
     const auto cleared_wall=capture(false);unsigned remaining_wall=0;
@@ -671,6 +779,13 @@ struct SceneShadowRegression {
     scene_instances_select(&root,nullptr,false,SceneEnvironment::Interior);
     host_enhanced_graphics().local_lights=false;b.update_local_light();
     SLRR_REQUIRE(b.fixture_lights_.empty());
+    host_enhanced_graphics()=graphics;
+    for(int quality=0;quality<3;++quality) {
+      host_enhanced_graphics().shadow_quality=quality;
+      b.update_interior_sun(video);b.draw_previews();bgfx::frame();
+      SLRR_REQUIRE(b.interior_sun_size_==(512u<<quality));
+      SLRR_REQUIRE(bgfx::isValid(b.interior_sun_fb_));
+    }
     host_enhanced_graphics()=graphics;
     b.fixture_shadow_active_=false;
     gameref_remove(&neon);
@@ -1260,6 +1375,7 @@ int main() {
     SceneShadowRegression::reflection_occupants();
     SceneShadowRegression::garage_geometry(backend);
     SceneShadowRegression::vehicle_wall(backend);
+    SceneShadowRegression::ambient_occlusion(backend);
     SceneShadowRegression::point_lifetime(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "

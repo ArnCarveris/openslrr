@@ -1,6 +1,7 @@
 // Sun uniforms, baked lightmaps, and the vehicle material pass.
 #include "bgfx_lib_backend.hpp"
 #include "point_shadows.hpp"
+#include "shadow_quality.hpp"
 #include "shadow_cascades.hpp"
 
 #include "slrr/part_runtime.hpp"
@@ -126,7 +127,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
 void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   const auto count=enabled?std::min(fixture_lights_.size(),kFixtureLights):size_t(0);
   const bool shadows=count && fixture_shadow_active_;
-  const float params[4]={float(count),1.f/2048.f,1.f/1536.f,shadows?1.f:0.f};
+  const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
   bgfx::setUniform(u_fixture_params_,params);
   if(count) {
     std::array<std::array<float,4>,kFixtureLights> positions{},colors{},directions{};
@@ -148,7 +149,7 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
 void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
   const bool active = enabled && interior_sun_active_;
   const float direction[4] = {-interior_sun_.direction[0], -interior_sun_.direction[1],
-                               interior_sun_.direction[2], 1.f/1024.f};
+                               interior_sun_.direction[2], 1.f/interior_sun_size_};
   const float color[4] = {interior_sun_.diffuse[0], interior_sun_.diffuse[1],
                            interior_sun_.diffuse[2], active ? 1.f : 0.f};
   bgfx::setUniform(u_interior_sun_dir_, direction);
@@ -162,6 +163,8 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
 
   void LibBgfxBackend::bind_scene_shadow(bool enabled, uint8_t stage)
 {
+    const float filter[4]={float(std::clamp(host_enhanced_graphics().shadow_smoothing,0,2)),0,0,0};
+    bgfx::setUniform(u_shadow_filter_,filter);
     bind_fixture_lights(enabled);
     bind_interior_sun(enabled, stage == 5 ? 6 : 5);
     const bool receive = enabled && static_shadow_active_ &&
@@ -170,8 +173,8 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
                              receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
     bgfx::setUniform(u_static_shadow_params_, params);
     const bool point = receive && point_shadow_active_;
-    const float point_params[4] = {point ? 1.f : 0.f, 1.f / point_shadow_width,
-                                   1.f / point_shadow_height, .015f};
+    const float point_params[4] = {point ? 1.f : 0.f, 1.f / (local_shadow_resolution()*3),
+                                   1.f / (local_shadow_resolution()*2), .015f};
     bgfx::setUniform(u_point_shadow_params_, point_params);
     if (point)
       bgfx::setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
@@ -262,7 +265,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
     bgfx::setTexture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_, receive_static_shadow ? world_sampler() : BGFX_SAMPLER_NONE);
     bind_scene_shadow(receive_static_shadow, 3);
     const bool receive_car = receive_static_shadow && car_depth_active_;
-    const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / kShadowResolution, .0006f, 0.f};
+    const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / car_depth_size_, .0006f, 0.f};
     bgfx::setUniform(u_car_depth_params_, car_params);
     if (receive_car) bgfx::setUniform(u_car_depth_mtx_, car_depth_matrix_.data());
     bgfx::setTexture(4, s_car_depth_, receive_car ? car_depth_tex_ : depth_white_,
@@ -391,6 +394,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         bgfx::setUniform(u_sun_spec_, sun_s);
         bgfx::setUniform(u_sun_dir_, sun_r);
         bind_point_light(!preview && !instance.light_flags);
+        bind_ambient_occlusion(!preview && !transparent && !instance.light_flags && view_id==ao_world_view_);
         bgfx::setUniform(u_diffuse_,diffuse);
         const float spec[4] = {group.specular[0], group.specular[1], group.specular[2],
                                group.shininess > 0.f ? group.shininess : 1.f};
@@ -528,6 +532,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
                                   instance.lighting.has_direction)));
       bind_baked_light(group, &part.tex, mix, world_mesh,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
+      bind_ambient_occlusion(world_mesh && view_id==ao_world_view_);
       if (instance.emissive_overlay && group && group->emission_index != 0xffff) {
         const auto& uv = group->emission_map;
         const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),

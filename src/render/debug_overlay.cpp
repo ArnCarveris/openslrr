@@ -73,6 +73,12 @@ void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& o
   ImGui::Checkbox("Anisotropic filtering (hardware max)", &enhanced.anisotropic_filtering);
   ImGui::Checkbox("Map sunlight", &enhanced.dynamic_lighting);
   ImGui::Checkbox("Local lights", &enhanced.local_lights);
+  ImGui::Combo("Ambient occlusion",&enhanced.ao_method,"Off\0HBAO\0GTAO\0");
+  ImGui::Combo("AO quality",&enhanced.ao_quality,"Low\0Medium\0High\0");
+  ImGui::SliderInt("AO strength (%)",&enhanced.ao_strength,0,200);
+  ImGui::SliderInt("AO radius (cm)",&enhanced.ao_radius,25,300);
+  ImGui::Combo("Shadow quality",&enhanced.shadow_quality,"Low\0Medium\0High\0");
+  ImGui::Combo("Shadow smoothing",&enhanced.shadow_smoothing,"Sharp\0Soft\0Very soft\0");
   ImGui::Checkbox("Dynamic reflections", &enhanced.dynamic_reflections);
   ImGui::Text("Reflection capture: %s", reflection_status);
   if (vm) {

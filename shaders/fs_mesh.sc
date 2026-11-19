@@ -13,6 +13,7 @@ SAMPLER2DSHADOW(s_interiorSun, 5);
 SAMPLER2DSHADOW(s_fixtureShadow, 7);
 SAMPLER2D(s_sunAperture, 8);
 #include "scene_shadow.sh"
+#include "ambient_occlusion.sh"
 uniform vec4 u_sunAmb;
 uniform vec4 u_sunDiff;
 uniform vec4 u_localLight; // world position, radius
@@ -252,10 +253,10 @@ void main()
 	float sunVisibility = u_staticShadowParams.w > 0.5 ? 1.0 : visibility;
 	float localVisibility = u_staticShadowParams.w > 0.5 ? visibility : 1.0;
 	vec3 illumination = vec3(light, light, light) * sunVisibility * mix(0.55, 1.0, carVisibility);
-	if (u_sunDir.w < -0.5) illumination = u_sunAmb.rgb;
+	if (u_sunDir.w < -0.5) illumination = u_sunAmb.rgb*ambientVisibility(gl_FragCoord.xy);
 	else if (u_sunDir.w > 0.5 && use < 0.5) {
 		float direct = max(dot(n, normalize(u_sunDir.xyz)), 0.0);
-		illumination = u_sunAmb.rgb + u_sunDiff.rgb * direct * min(sunVisibility, carVisibility);
+		illumination = u_sunAmb.rgb*ambientVisibility(gl_FragCoord.xy) + u_sunDiff.rgb * direct * min(sunVisibility, carVisibility);
 	}
 	if (u_localLight.w > 0.0) {
 		vec3 delta = u_localLight.xyz - v_worldPos;

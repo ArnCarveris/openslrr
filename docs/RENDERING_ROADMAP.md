@@ -258,6 +258,24 @@ a car farther from a wall may physically cast only onto the floor; no global
 wall decal is substituted. See
 [interior-seams-occupants.txt](../assets/validation/interior-seams-occupants.txt).
 
+## Ambient occlusion and quality controls (#193 / #201)
+
+Main-view HBAO and GTAO are selectable in Video Options and debug Renderer,
+with low/medium/high sampling tiers, strength and radius. A camera-matched
+single-sample depth prepass drives stable spatial horizon sampling and bilateral
+filtering/upsampling; AO attenuates indirect diffuse only. Off is the default.
+This increment does not implement HDR, temporal AO, bent normals or the remaining
+post-processing backlog. Reflections/previews/UI do not reuse the main AO field.
+
+Shadow quality selects depth resolutions; sharp/soft/very-soft edge filters are
+independent. Resizing invalidates cached depths; changing filtering reuses them.
+The patched Java source and rebuilt TUFA container expose and persist all controls.
+GPU tests verify flat planes, contact occlusion, method differences, all tiers,
+indirect-only application, resize/off cleanup, changed shadow pixels and cache reuse.
+Isolated garage captures and the Options layout were inspected; a representative
+hardware/FPS comparison and the reported deformed-body artifacts still need broader
+in-game validation. See [ao-shadow-options.txt](../assets/validation/ao-shadow-options.txt).
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow
@@ -278,7 +296,7 @@ wall decal is substituted. See
 
 Scene.java was inspected: it selects discrete sky/light/fog/environment presets
 and skips exterior sunlight setup for internalScene. No Java workaround is
-needed for the receiver defects fixed here; no Java patch is shipped yet.
+needed for the receiver defects fixed here; the OptionsDialog patch ships the new graphics controls.
 
 ## Validation contract
 

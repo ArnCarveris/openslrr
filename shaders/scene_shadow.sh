@@ -1,3 +1,4 @@
+uniform vec4 u_shadowFilter; // 0 sharp, 1 soft, 2 very soft
 // Projected depth slope on the actual receiver surface. Keep derivatives
 // outside varying bounds branches (uniform light enable/count branches are OK).
 vec2 shadowReceiverGradient(vec3 p)
@@ -16,6 +17,11 @@ uniform vec4 u_fixturePositions[12];
 uniform vec4 u_fixtureColors[12];
 uniform vec4 u_fixtureDirections[12];
 uniform mat4 u_fixtureMatrices[12];
+float fixtureReceiverTap(vec2 uv,vec3 receiver,vec2 receiverUv,vec2 gradient)
+{
+    float depth=receiver.z+dot(gradient,(uv-receiverUv)*vec2(4.0,3.0))-0.000005;
+    return shadow2D(s_fixtureShadow,vec3(uv,depth));
+}
 void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specular,
                      out vec3 diffuse,out vec3 highlight)
 {
@@ -63,6 +69,16 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                                    shadow2D(s_fixtureShadow,vec3(b,db)),weight.x),
                                mix(shadow2D(s_fixtureShadow,vec3(c,dc)),
                                    shadow2D(s_fixtureShadow,vec3(d,dd)),weight.x),weight.y);
+                vec2 nearest=base+step(vec2(0.5,0.5),weight)*texel;
+                if(u_shadowFilter.x<0.5) visibility=fixtureReceiverTap(nearest,p,receiverUv,gradient);
+                else if(u_shadowFilter.x>1.5) {
+                    visibility=0.0;
+                    for(int fy=-1;fy<=1;++fy) for(int fx=-1;fx<=1;++fx) {
+                        float w=float((fx==0?2:1)*(fy==0?2:1));
+                        visibility+=w*fixtureReceiverTap(nearest+vec2(float(fx),float(fy))*texel,p,receiverUv,gradient);
+                    }
+                    visibility*=0.0625;
+                }
             }
         }
         vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
@@ -80,6 +96,11 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
 uniform mat4 u_interiorSunMtx;
 uniform vec4 u_interiorSunDir; // toward sun, atlas texel size
 uniform vec4 u_interiorSunColor; // direct radiance, enabled
+float sunReceiverTap(vec2 uv,vec3 receiver,vec2 gradient)
+{
+    float depth=receiver.z+dot(gradient,uv-receiver.xy)-0.000002;
+    return shadow2D(s_interiorSun,vec3(uv,depth));
+}
 float interiorSunVisibility(vec3 world)
 {
     if(u_interiorSunColor.w<0.5) return 0.0;
@@ -94,15 +115,27 @@ float interiorSunVisibility(vec3 world)
     vec2 weight=fract(grid);
     vec2 a=clamp(base,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*1.5,1.0-texel*1.5));
     vec2 b=a+vec2(texel,0.0),c=a+vec2(0.0,texel),d=a+vec2(texel,texel);
-    // Sub-millimetre residual bias; a multi-centimetre constant offsets
+    // Small residual depth bias; a multi-centimetre constant offsets
     // receivers across the paper-thin ceiling/wall junction and leaks sunlight.
-    float bias=0.0000005;
+    float bias=0.000002;
     float da=p.z+dot(gradient,a-p.xy)-bias;
     float db=p.z+dot(gradient,b-p.xy)-bias;
     float dc=p.z+dot(gradient,c-p.xy)-bias;
     float dd=p.z+dot(gradient,d-p.xy)-bias;
-    return aperture.y*mix(mix(shadow2D(s_interiorSun,vec3(a,da)),shadow2D(s_interiorSun,vec3(b,db)),weight.x),
+    float result=mix(mix(shadow2D(s_interiorSun,vec3(a,da)),shadow2D(s_interiorSun,vec3(b,db)),weight.x),
                mix(shadow2D(s_interiorSun,vec3(c,dc)),shadow2D(s_interiorSun,vec3(d,dd)),weight.x),weight.y);
+    vec2 nearest=a+step(vec2(0.5,0.5),weight)*texel;
+    if(u_shadowFilter.x<0.5) result=sunReceiverTap(nearest,p,gradient);
+    else if(u_shadowFilter.x>1.5) {
+        result=0.0;
+        for(int fy=-1;fy<=1;++fy) for(int fx=-1;fx<=1;++fx) {
+            float w=float((fx==0?2:1)*(fy==0?2:1));
+            vec2 uv=clamp(nearest+vec2(float(fx),float(fy))*texel,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*0.5,1.0-texel*0.5));
+            result+=w*sunReceiverTap(uv,p,gradient);
+        }
+        result*=0.0625;
+    }
+    return aperture.y*result;
 }
 vec3 interiorSunDiffuse(vec3 normal,vec3 world)
 {
@@ -147,7 +180,8 @@ float pointShadowVisibility(vec3 world)
     vec2 tile=vec2((float(face)-row*3.0)/3.0,row*0.5);
     vec2 texel=u_pointShadowParams.yz;
     vec2 uv=clamp(tile+p.xy*scale,tile+texel*1.5,tile+scale-texel*1.5);
-    vec2 offset=texel*0.5;
+    if(u_shadowFilter.x<0.5) return shadow2D(s_staticShadow,vec3(uv,p.z));
+    vec2 offset=texel*(u_shadowFilter.x>1.5?1.0:0.5);
     return (shadow2D(s_staticShadow,vec3(uv+offset,p.z))+
             shadow2D(s_staticShadow,vec3(uv-offset,p.z))+
             shadow2D(s_staticShadow,vec3(uv+vec2(offset.x,-offset.y),p.z))+
@@ -170,7 +204,8 @@ float shadowTapField(vec3 p, vec2 tile, float scale, float bias)
     vec2 uv=p.xy*scale+tile;
     // Symmetric tent PCF: a smooth footprint for thin poles/cables moving
     // across texels as sunlight changes. Hardware compare remains bilinear.
-    float t=u_staticShadowParams.y*1.5;
+    if(u_shadowFilter.x<0.5) return shadow2D(s_staticShadow,vec3(uv,depth));
+    float t=u_staticShadowParams.y*(u_shadowFilter.x>1.5?2.5:1.5);
     float result=shadow2D(s_staticShadow,vec3(uv,depth))*4.0;
     result+=(shadow2D(s_staticShadow,vec3(uv+vec2(t,0.0),depth))+
              shadow2D(s_staticShadow,vec3(uv-vec2(t,0.0),depth))+

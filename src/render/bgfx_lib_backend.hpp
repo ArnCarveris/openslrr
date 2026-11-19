@@ -343,6 +343,19 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_local_light_ = BGFX_INVALID_HANDLE;
   std::array<float, 4> local_light_{};
   void update_local_light();
+  void update_ambient_occlusion(const float* view,const float* projection,uint16_t width,uint16_t height,uint16_t world_view);
+  void bind_ambient_occlusion(bool enabled);
+  void destroy_ao_targets();
+  bgfx::ProgramHandle ao_program_=BGFX_INVALID_HANDLE,ao_skin_depth_program_=BGFX_INVALID_HANDLE;
+  bgfx::FrameBufferHandle ao_depth_fb_=BGFX_INVALID_HANDLE,ao_raw_fb_=BGFX_INVALID_HANDLE,ao_filter_fb_=BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle ao_depth_tex_=BGFX_INVALID_HANDLE,ao_raw_tex_=BGFX_INVALID_HANDLE,ao_filter_tex_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_ao_depth_=BGFX_INVALID_HANDLE,s_ao_input_=BGFX_INVALID_HANDLE,s_ao_field_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_ao_screen_=BGFX_INVALID_HANDLE,u_ao_projection_=BGFX_INVALID_HANDLE,u_ao_config_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_ao_params_=BGFX_INVALID_HANDLE,u_ao_sampling_=BGFX_INVALID_HANDLE,u_ao_field_size_=BGFX_INVALID_HANDLE;
+  std::array<float,4> ao_projection_{};
+  uint16_t ao_width_=0,ao_height_=0,ao_screen_width_=0,ao_screen_height_=0,ao_world_view_=UINT16_MAX;
+  bool ao_active_=false;
+
   static constexpr size_t kFixtureLights=12;
   std::vector<SpotLight> fixture_lights_;
   void update_fixture_shadows(const VideoOptions& video);
@@ -357,6 +370,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_fixture_matrices_=BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
   bool fixture_shadow_active_=false;
+  uint16_t fixture_shadow_tile_=512;
   uint64_t fixture_shadow_revision_=0;
 
   bool bind_point_light(bool enabled);
@@ -385,6 +399,7 @@ class LibBgfxBackend final : public IRenderBackend {
   std::array<float,16> interior_sun_matrix_{};
   SceneSun interior_sun_;
   bool interior_sun_active_ = false;
+  uint16_t interior_sun_size_=1024;
   uint16_t interior_sun_mask_ = UINT16_MAX;
   std::array<float,16> interior_sun_cached_matrix_{};
 
@@ -412,6 +427,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_shadow_origin_ = BGFX_INVALID_HANDLE;
   std::array<float,3> shadow_origin_{};
   void* shadow_origin_world_ = nullptr;
+  bgfx::UniformHandle u_shadow_filter_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_shadow_ranges_ = BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,4> shadow_cascade_matrices_{};
   struct ShadowCasterStamp {
@@ -438,6 +454,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_car_depth_params_ = BGFX_INVALID_HANDLE;
   std::array<float, 16> car_depth_matrix_{};
   bool car_depth_active_ = false;
+  uint16_t car_depth_size_=2048;
   void update_car_depth(const float* position, const VideoOptions& video);
   uint16_t static_shadow_size_ = 0;
   float static_shadow_distance_ = 0.f;

@@ -962,6 +962,28 @@ nothing. The passes check the handle and switch themselves off. A varying added
 to `vs_mesh` must therefore be added to every fragment shader paired with it.
 Startup reports each failed program as `[bgfx] program <name> failed to link`.
 
+Ambient occlusion uses a separate camera-matched normal-Z D32F prepass in view
+140, then R8 horizon evaluation and separable depth-aware filtering in views
+141–143 before the main world draw. It does not replace the swapchain or require
+a colour post-process chain. Low/medium AO use half resolution; high full.
+HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.
+Reconstruct sample positions at the exact depth texel centres, including the
+centre used by normal reconstruction; otherwise flat receivers develop false AO.
+Finite-slice GTAO is normalised against its unobstructed hemisphere.
+Only main-view opaque indirect diffuse is attenuated. Direct sun/lamps, emission,
+transparent glass, preview/inset views, cubemap captures and UI opt out. Off or
+zero strength destroys the AO targets; resizing/quality changes recreate them.
+Do not sample an earlier camera's field in another view. Samplers 9/10 are AO/depth.
+No temporal accumulation, depth pyramid, bent normals or HDR is implied.
+
+Host shadow quality selects local projection tiles 256/512/1024, interior sun
+512/1024/2048, and vehicle depth/exterior cascade tiles 1024/2048/2048.
+Resize invalidates the corresponding cached depths. Medium preserves the former
+resolution. Smoothing is independent: sharp, soft, very soft comparison filters;
+it does not invalidate caster depths or change lighting direction/distance.
+All comparison taps preserve receiver-plane correction where present. Options
+persist alongside host graphics; OptionsDialog native IDs 7–12 and debug UI agree.
+
 The active world renders to the swap chain. No offscreen scene-copy or HiZ depth
 pyramid is wired into the frame path; the unused implementations are removed.
 The optional scene size filter only rejects small projected bounds and does not

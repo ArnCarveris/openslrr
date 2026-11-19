@@ -73,6 +73,10 @@
 #include "dxbc/vs_shadow.sc.bin.h"
 #include "glsl/vs_shadow.sc.bin.h"
 #include "dxbc/fs_static_shadow.sc.bin.h"
+#include "dxbc/vs_ao.sc.bin.h"
+#include "glsl/vs_ao.sc.bin.h"
+#include "dxbc/fs_ao.sc.bin.h"
+#include "glsl/fs_ao.sc.bin.h"
 #include "glsl/fs_static_shadow.sc.bin.h"
 
 #include "bgfx_lib_backend.hpp"
@@ -97,6 +101,8 @@ static const bgfx::EmbeddedShader k_fs[] = {
     BGFX_EMBEDDED_SHADER(fs_mesh),
     BGFX_EMBEDDED_SHADER(fs_static_shadow),
     BGFX_EMBEDDED_SHADER_END()};
+static const bgfx::EmbeddedShader k_ao[] = {
+    BGFX_EMBEDDED_SHADER(vs_ao), BGFX_EMBEDDED_SHADER(fs_ao), BGFX_EMBEDDED_SHADER_END()};
 static const bgfx::EmbeddedShader k_vehicle[] = {
     BGFX_EMBEDDED_SHADER(vs_vehicle), BGFX_EMBEDDED_SHADER(fs_vehicle),
     BGFX_EMBEDDED_SHADER_END()};
@@ -179,6 +185,17 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     skin_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_skin, rt, "vs_skin"),
         bgfx::createEmbeddedShader(k_fs, rt, "fs_mesh"));
+    ao_program_=create_owned_program(bgfx::createEmbeddedShader(k_ao,rt,"vs_ao"),bgfx::createEmbeddedShader(k_ao,rt,"fs_ao"));
+    ao_skin_depth_program_=create_owned_program(bgfx::createEmbeddedShader(k_skin,rt,"vs_skin"),bgfx::createEmbeddedShader(k_fs,rt,"fs_static_shadow"));
+    s_ao_depth_=bgfx::createUniform("s_aoDepth",bgfx::UniformType::Sampler);
+    s_ao_input_=bgfx::createUniform("s_aoInput",bgfx::UniformType::Sampler);
+    s_ao_field_=bgfx::createUniform("s_aoField",bgfx::UniformType::Sampler);
+    u_ao_screen_=bgfx::createUniform("u_aoScreen",bgfx::UniformType::Vec4);
+    u_ao_projection_=bgfx::createUniform("u_aoProjection",bgfx::UniformType::Vec4);
+    u_ao_config_=bgfx::createUniform("u_aoConfig",bgfx::UniformType::Vec4);
+    u_ao_params_=bgfx::createUniform("u_aoParams",bgfx::UniformType::Vec4);
+    u_ao_sampling_=bgfx::createUniform("u_aoSampling",bgfx::UniformType::Vec4);
+    u_ao_field_size_=bgfx::createUniform("u_aoFieldSize",bgfx::UniformType::Vec4);
     u_skin_bones_ = bgfx::createUniform("u_skinBones", bgfx::UniformType::Mat4, 48);
     static_shadow_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_vs, rt, "vs_shadow"),
@@ -196,6 +213,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_shadow_cascades_ = bgfx::createUniform("u_shadowCascades", bgfx::UniformType::Mat4,4);
     u_shadow_origin_ = bgfx::createUniform("u_shadowOrigin", bgfx::UniformType::Vec4);
     u_shadow_ranges_ = bgfx::createUniform("u_shadowRanges", bgfx::UniformType::Vec4);
+    u_shadow_filter_=bgfx::createUniform("u_shadowFilter",bgfx::UniformType::Vec4);
     vehicle_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_vehicle, rt, "vs_vehicle"),
         bgfx::createEmbeddedShader(k_vehicle, rt, "fs_vehicle"));
@@ -256,6 +274,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     // behind these programs then switch themselves off silently.
     const std::pair<const char*, bgfx::ProgramHandle> programs[] = {
         {"mesh", program_}, {"osd_text", text_program_}, {"skin", skin_program_},
+        {"ao",ao_program_},{"ao_skin_depth",ao_skin_depth_program_},
         {"static_shadow", static_shadow_program_}, {"inst", inst_program_},
         {"inst_shadow", inst_shadow_program_}, {"vehicle", vehicle_program_}};
     for (const auto& [name, handle] : programs)
@@ -394,6 +413,13 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     car_depth_fb_ = BGFX_INVALID_HANDLE;
     car_depth_tex_ = BGFX_INVALID_HANDLE;
     car_depth_active_ = false;
+    destroy_ao_targets();
+    for(auto* program:{&ao_program_,&ao_skin_depth_program_}) {
+      if(bgfx::isValid(*program)) bgfx::destroy(*program);*program=BGFX_INVALID_HANDLE;
+    }
+    for(auto* uniform:{&s_ao_depth_,&s_ao_input_,&s_ao_field_,&u_ao_screen_,&u_ao_projection_,&u_ao_config_,&u_ao_params_,&u_ao_sampling_,&u_ao_field_size_}) {
+      if(bgfx::isValid(*uniform)) bgfx::destroy(*uniform);*uniform=BGFX_INVALID_HANDLE;
+    }
     if (bgfx::isValid(static_shadow_program_)) bgfx::destroy(static_shadow_program_);
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
     static_shadow_program_ = BGFX_INVALID_HANDLE;
@@ -422,7 +448,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     static_shadow_active_ = false;
     for (auto *handle :
          {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_,
-          &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_,
+          &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_, &u_shadow_filter_,
           &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
           &u_point_shadow_params_, &s_interior_sun_, &s_sun_aperture_, &u_interior_sun_mtx_,
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
@@ -740,6 +766,8 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       update_static_shadow(world_cam ? world_eye : nullptr, video);
       update_fixture_shadows(video);
       update_interior_sun(video);
+      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
+      else destroy_ao_targets();
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
       float car_matrix[16];
@@ -1397,11 +1425,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 140> base_order{};
+    std::array<uint16_t, 144> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
       if (i == kWorldView) {
-        for(uint16_t f=128;f<140;++f) base_order[base_slot++]=f;
+        for(uint16_t f=128;f<144;++f) base_order[base_slot++]=f;
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
         base_order[base_slot++] = 66;
@@ -1422,10 +1450,10 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 140> order{};
+      std::array<uint16_t, 144> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
-      for(uint16_t f=128;f<140;++f) order[slot++]=f;
+      for(uint16_t f=128;f<144;++f) order[slot++]=f;
       if (point_shadow_active_) order[slot++] = 64;
       order[slot++] = 65;
       order[slot++] = 66;

@@ -19,8 +19,21 @@ The **Video Options** menu applies the resolution and the Enhanced settings in g
 | 3 | Scenery sunlight | 0 off, any non-zero value on |
 | 4 | Local lights | 0 off, any non-zero value on |
 | 5 | Framerate adaptive behaviour | 0 Classic (60 Hz), any non-zero value Adaptive |
+| 6 | Anisotropic filtering | 0 off, non-zero on |
+| 7 | Ambient occlusion | 0 off (default), 1 HBAO, 2 GTAO |
+| 8 | AO quality | 0 low, 1 medium (default), 2 high |
+| 9 | Shadow quality | 0 low, 1 medium (default), 2 high |
+| 10 | Shadow smoothing | 0 sharp, 1 soft (default), 2 very soft |
+| 11 | AO strength | 0–200 percent (default 100) |
+| 12 | AO radius | 25–300 centimetres (default 100) |
 
 The menu and ImGui share options 0â€“4. They reset on the next launch. Resolution, the global shadow toggle, and flares use the game's existing configuration.
+
+AO affects indirect diffuse light in the main world view. It leaves direct sunlight,
+lamps, emission, reflections and UI unchanged. Low/medium use half-resolution AO;
+high uses full resolution. AO is off by default to preserve the existing frame cost.
+Higher shadow quality increases depth resolution and memory; smoothing changes
+comparison filtering independently. Start with medium quality and soft edges.
 
 ## Framerate adaptive behaviour
 

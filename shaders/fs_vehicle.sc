@@ -10,6 +10,7 @@ SAMPLER2DSHADOW(s_interiorSun, 6);
 SAMPLER2DSHADOW(s_fixtureShadow, 7);
 SAMPLER2D(s_sunAperture, 8);
 #include "scene_shadow.sh"
+#include "ambient_occlusion.sh"
 uniform vec4 u_dynamicReflection; // x: reflection mode, y: two-sided material
 uniform vec4 u_reflectionProbe;
 uniform vec4 u_reflectionBoxMin;
@@ -50,8 +51,8 @@ void main()
     float visibility = sceneShadowVisibility(v_staticShadow, v_worldPos);
     float sunVisibility = u_staticShadowParams.w > 0.5 ? 1.0 : visibility;
     float localVisibility = u_staticShadowParams.w > 0.5 ? visibility : 1.0;
-    vec3 illum = u_sunDir.w < -0.5 ? u_sunAmb.rgb : u_sunDiff.a > 0.5
-        ? (u_sunAmb.rgb + u_sunDiff.rgb*ndl*sunVisibility)
+    vec3 illum = u_sunDir.w < -0.5 ? u_sunAmb.rgb*ambientVisibility(gl_FragCoord.xy) : u_sunDiff.a > 0.5
+        ? (u_sunAmb.rgb*ambientVisibility(gl_FragCoord.xy) + u_sunDiff.rgb*ndl*sunVisibility)
         : vec3(shade, shade, shade);
     vec2 raw = channelUv(u_lightmap.z, v_texcoord0, v_texcoord1, v_texcoord2);
     vec2 luv = vec2(((raw.x - 0.5) - u_lightmapUv.z) * u_lightmapUv.x + 0.5,
