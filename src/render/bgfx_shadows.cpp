@@ -1,5 +1,6 @@
 // Active cached map/garage shadows and vehicle depth maps.
 #include "bgfx_lib_backend.hpp"
+#include "point_shadows.hpp"
 #include "shadow_cascades.hpp"
 #include "slrr/frame_profiler.hpp"
 
@@ -15,108 +16,120 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   static_shadow_local_ = false;
   shadow_cascades_active_ = false;
   shadow_meshes_.clear();
-  // The garage has no sun map. The neon reuses this same view and looks down
-  // on the bay, so the car and furniture cast onto the room without a new pass.
-  if (garage_ && local_light_[3] > 0.f && video.shadows != 0 &&
-      debug_overlay_.render_options().map_shadows &&
+  point_shadow_active_ = false;
+  if (point_light_ && point_light_->valid() && point_light_->casts_shadows &&
+      video.shadows != 0 && debug_overlay_.render_options().map_shadows &&
       bgfx::isValid(static_shadow_program_)) {
-    shadow_cache_valid_ = false;
-    shadow_origin_world_ = nullptr;
-    constexpr uint16_t size = kShadowResolution;
-    if (!bgfx::isValid(static_shadow_fb_) || size != static_shadow_size_) {
-      if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
+    const auto &light = *point_light_;
+    if (!bgfx::isValid(static_shadow_fb_) ||
+        static_shadow_size_ != point_shadow_width) {
+      shadow_cache_valid_ = false;
+      if (bgfx::isValid(static_shadow_fb_))
+        bgfx::destroy(static_shadow_fb_);
       static_shadow_fb_ = BGFX_INVALID_HANDLE;
       static_shadow_tex_ = BGFX_INVALID_HANDLE;
-      constexpr uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP |
-          BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT;
-      const auto depth = bgfx::createTexture2D(size, size, false, 1,
-                                              bgfx::TextureFormat::D32F, flags);
-      if (!bgfx::isValid(depth)) return;
+      const auto depth = bgfx::createTexture2D(
+          point_shadow_width, point_shadow_height, false, 1,
+          bgfx::TextureFormat::D32F,
+          BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+      if (!bgfx::isValid(depth))
+        return;
       static_shadow_fb_ = bgfx::createFrameBuffer(1, &depth, true);
       if (!bgfx::isValid(static_shadow_fb_)) {
         bgfx::destroy(depth);
         return;
       }
       static_shadow_tex_ = depth;
-      static_shadow_size_ = size;
+      static_shadow_size_ = point_shadow_width;
     }
-    const auto* caps = bgfx::getCaps();
-    const bx::Vec3 light{local_light_[0], local_light_[1], local_light_[2]};
-    float view[16], proj[16], clip[16];
-    bx::mtxLookAt(view, light, bx::Vec3{light.x, light.y - 1.f, light.z}, {0.f, 0.f, 1.f});
-    float extent = 10.f;
-    // Garage shells include floor, walls and some furniture. Fit their actual
-    // footprint; a fixed 20m-wide field leaves much of a stock bay unshadowed.
-    for (const auto& instance : instances_) {
-      if (!instance.geometry || !instance.geometry->ground_polygons) continue;
-      const auto& mesh = *instance.geometry;
-      const auto& m = instance.transform;
-      for (int corner = 0; corner < 8; ++corner) {
-        float p[3];
-        for (int axis = 0; axis < 3; ++axis)
-          p[axis] = ((corner & (1 << axis)) ? mesh.info.bbox_max[axis]
-                                           : mesh.info.bbox_min[axis]) * mesh.position_scale;
-        p[2] = -p[2];
-        const float x = m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12]-light.x;
-        const float z = m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]-light.z;
-        if (std::isfinite(x) && std::isfinite(z))
-          extent = std::max(extent, std::max(std::abs(x),std::abs(z))+.5f);
-      }
+    shadow_origin_ = light.position;
+    shadow_origin_world_ = scene_instances_world();
+    std::vector<const SceneInstance *> casters;
+    std::vector<ShadowCasterStamp> stamps;
+    for (const auto &instance : instances_) {
+      if (!instance.geometry || instance.sky || instance.light_flags ||
+          instance.gpu_skin || instance.emissive_overlay ||
+          (instance.vehicle_material &&
+           !debug_overlay_.render_options().shadows))
+        continue;
+      cache_scene_mesh(instance.geometry, instance.key, false);
+      const auto &part = instance_meshes_.at(instance.geometry.get());
+      if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh))
+        continue;
+      casters.push_back(&instance);
+      shadow_meshes_.insert(instance.geometry.get());
+      stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                        part.vbh.idx, part.ibh.idx, instance.transform});
     }
-    bx::mtxOrtho(proj, -extent, extent, -extent, extent, 0.15f, 16.f, 0.f,
-                 caps->homogeneousDepth);
-    bx::mtxMul(clip, view, proj);
-    const float crop[16] = {
-        .5f, 0.f, 0.f, 0.f, 0.f, caps->originBottomLeft ? .5f : -.5f, 0.f, 0.f,
-        0.f, 0.f, caps->homogeneousDepth ? .5f : 1.f, 0.f, .5f, .5f,
-        caps->homogeneousDepth ? .5f : 0.f, 1.f};
-    bx::mtxMul(static_shadow_matrix_.data(), clip, crop);
-    bgfx::setViewFrameBuffer(kStaticShadowView, static_shadow_fb_);
-    bgfx::setViewRect(kStaticShadowView, 0, 0, size, size);
-    bgfx::setViewClear(kStaticShadowView, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
-    bgfx::setViewTransform(kStaticShadowView, view, proj);
-    bgfx::touch(kStaticShadowView);
-    const uint64_t state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
-    auto cast = [&](bgfx::VertexBufferHandle vb, bgfx::IndexBufferHandle ib,
-                    const auto& groups, const float* matrix) {
-      if (!bgfx::isValid(vb) || !bgfx::isValid(ib)) return;
-      auto submit = [&](uint32_t start, uint32_t count) {
-        const float opaque[4] = {0.f, -1.f, 0.f, 0.f};
-        bgfx::setUniform(u_static_shadow_params_, opaque);
-        bgfx::setTexture(0, s_tex_, white_tex_);
-        bgfx::setTransform(matrix);
-        bgfx::setVertexBuffer(0, vb);
-        bgfx::setIndexBuffer(ib, start, count);
-        bgfx::setState(state);
-        bgfx::submit(kStaticShadowView, static_shadow_program_);
-      };
-      if (groups.empty()) return;
-      for (const auto& group : groups) {
-        if ((group.material_flags & 0x40000000u) || group.diffuse[3] < .99f) continue;
-        submit(group.index_start, group.index_count);
-      }
-    };
-    // Include built-in room geometry and furniture. The light near plane
-    // clips ceilings above the emitter; excluding the entire POLY shell also
-    // removed legitimate interior casters.
-    for (const auto& instance : instances_) {
-      if (instance.sky || instance.light_flags || !instance.geometry ||
-          instance.gpu_skin || instance.emissive_overlay) continue;
-      const auto found = instance_meshes_.find(instance.geometry.get());
-      if (found == instance_meshes_.end()) continue;
-      cast(found->second.vbh, found->second.ibh, found->second.geo.groups,
-           instance.transform.data());
-    }
-    static_shadow_eye_ = {light.x, light.y, light.z};
-    // The fitted interior field is bounded by its projection, not by a
-    // legacy distance/UV fade which relights the edges of the room.
-    static_shadow_distance_ = 0.f;
     static_shadow_active_ = true;
-    // The authored neon is directional. Its visibility must attenuate that
-    // direct light, not a weak extra point light over an unshadowed fallback.
-    static_shadow_local_ = false;
+    static_shadow_local_ = true;
+    point_shadow_active_ = true;
+    static_shadow_eye_ = light.position;
+    static_shadow_distance_ = light.range;
+    // Colour/intensity/ambient updates do not change the depth field.
+    const bool same_light = cached_point_light_ &&
+                            cached_point_light_->position == light.position &&
+                            cached_point_light_->range == light.range;
+    if (shadow_cache_valid_ && same_light && stamps == shadow_cached_casters_)
+      return;
+    const auto *caps = bgfx::getCaps();
+    for (unsigned face = 0; face < 6; ++face) {
+      const auto projection = point_shadow_projection(
+          face, light.range, caps->homogeneousDepth, caps->originBottomLeft);
+      point_shadow_matrices_[face] = projection.sample;
+      const auto frustum =
+          view_frustum(projection.view.data(), projection.projection.data());
+      const auto view = point_shadow_views[face];
+      bgfx::setViewFrameBuffer(view, static_shadow_fb_);
+      bgfx::setViewRect(view, uint16_t(face % 3 * point_shadow_tile),
+                        uint16_t(face / 3 * point_shadow_tile),
+                        point_shadow_tile, point_shadow_tile);
+      bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, uint32_t(0), 1.f, 0);
+      bgfx::setViewTransform(view, projection.view.data(),
+                             projection.projection.data());
+      bgfx::touch(view);
+      for (const auto *instance : casters) {
+        auto matrix = instance->transform;
+        for (int axis = 0; axis < 3; ++axis)
+          matrix[12 + axis] -= light.position[axis];
+        if (!shadow_bounds_visible(*instance->geometry, matrix, frustum))
+          continue;
+        const auto &part = instance_meshes_.at(instance->geometry.get());
+        for (const auto &group : part.shadow_groups) {
+          const auto surface = scx_surface(part.geo.info.version, group);
+          if (surface.blend)
+            continue;
+          const auto slot = group.texture_index;
+          const auto texture =
+              slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                  ? part.tex[slot]
+                  : white_tex_;
+          const float threshold = !surface.cutout ? -1.f
+                                  : part.geo.info.version == 4
+                                      ? group.alpha_reference / 255.f
+                                      : .5f;
+          const float params[4] = {0, threshold, float(group.base_map.channel),
+                                   0};
+          bgfx::setUniform(u_static_shadow_params_, params);
+          bgfx::setTexture(0, s_tex_, texture);
+          bgfx::setTransform(matrix.data());
+          bgfx::setVertexBuffer(0, part.vbh);
+          bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+          bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+          bgfx::submit(view, static_shadow_program_);
+        }
+      }
+    }
+    static_shadow_matrix_ = point_shadow_matrices_[3];
+    cached_point_light_ = point_light_;
+    shadow_cached_casters_ = std::move(stamps);
+    shadow_cache_valid_ = true;
+    ++shadow_atlas_revision_;
     return;
   }
+  if (cached_point_light_)
+    shadow_cache_valid_ = false;
+  cached_point_light_.reset();
   if (!eye || video.shadows == 0 || !scene_instances_outdoor()) {
     shadow_cache_valid_ = false;
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);

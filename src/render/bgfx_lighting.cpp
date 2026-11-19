@@ -1,5 +1,6 @@
 // Sun uniforms, baked lightmaps, and the vehicle material pass.
 #include "bgfx_lib_backend.hpp"
+#include "point_shadows.hpp"
 #include "shadow_cascades.hpp"
 
 #include "slrr/part_runtime.hpp"
@@ -116,6 +117,12 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     const float params[4] = {receive ? 1.f : 0.f,
                              receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
     bgfx::setUniform(u_static_shadow_params_, params);
+    const bool point = receive && point_shadow_active_;
+    const float point_params[4] = {point ? 1.f : 0.f, 1.f / point_shadow_width,
+                                   1.f / point_shadow_height, .015f};
+    bgfx::setUniform(u_point_shadow_params_, point_params);
+    if (point)
+      bgfx::setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
     const bool cascaded = receive && shadow_cascades_active_;
     const float origin[4]={shadow_origin_[0],shadow_origin_[1],shadow_origin_[2],0.f};
     bgfx::setUniform(u_shadow_origin_,origin);
@@ -134,6 +141,26 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
                                     : (bgfx::isValid(depth_white_) ? depth_white_ : static_shadow_tex_);
     bgfx::setTexture(stage, s_static_shadow_,
                      bgfx::isValid(shadow_tex) ? shadow_tex : white_tex_, shadow_sampler);
+}
+
+bool LibBgfxBackend::bind_point_light(bool enabled) {
+  const bool point = enabled && point_light_ && point_light_->valid();
+  const float legacy_color[4] = {1.f, .94f, .8f, 3.f};
+  const float none[4]{};
+  if (point) {
+    const auto &light = *point_light_;
+    const float position[4] = {light.position[0], light.position[1],
+                               light.position[2], light.range};
+    const float color[4] = {light.color[0], light.color[1], light.color[2],
+                            light.intensity};
+    bgfx::setUniform(u_local_light_, position);
+    bgfx::setUniform(u_point_light_color_, color);
+  } else {
+    bgfx::setUniform(u_local_light_,
+                     enabled && !point_light_ ? local_light_.data() : none);
+    bgfx::setUniform(u_point_light_color_, legacy_color);
+  }
+  return point;
 }
 
   void LibBgfxBackend::bind_baked_light(const ScxGroup* group,
@@ -188,6 +215,13 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     if (receive_car) bgfx::setUniform(u_car_depth_mtx_, car_depth_matrix_.data());
     bgfx::setTexture(4, s_car_depth_, receive_car ? car_depth_tex_ : depth_white_,
         BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
+    if (bind_point_light(receive_static_shadow && !sky)) {
+      const float mode[4] = {0, 0, 0, -1};
+      const auto &ambient = point_light_->ambient;
+      const float amb[4] = {ambient[0], ambient[1], ambient[2], 0};
+      bgfx::setUniform(u_sun_dir_, mode);
+      bgfx::setUniform(u_sun_amb_, amb);
+    }
     const float fog_color[4] = {fog_color_[0], fog_color_[1], fog_color_[2],
                                 fog_enabled_ ? 1.f : 0.f};
     const float fog_range[4] = {fog_near_, fog_far_, 0.f, 0.f};
@@ -282,7 +316,12 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         }
         // A spheremap ColorMixTex outputs texture.a times the env factor.
         if (color_mix_env) diffuse[3] = strength;
-        const SceneSun sun = instance.lighting;
+        const bool point = point_light_ && point_light_->valid() && !preview &&
+                           !instance.light_flags;
+        SceneSun sun = instance.lighting;
+        if (point)
+          std::copy(point_light_->ambient.begin(), point_light_->ambient.end(),
+                    sun.ambient);
         const float sun_d[4] = {sun.diffuse[0], sun.diffuse[1], sun.diffuse[2],
                                 sun.set ? 1.f : 0.f};
         const float sun_a[4] = {sun.ambient[0], sun.ambient[1], sun.ambient[2], 0.f};
@@ -291,13 +330,15 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         // Game direction is where the light travels. Toward it, with Z
         // flipped into the same space as the rendered vertices.
         const float sun_r[4] = {-sun.direction[0], -sun.direction[1],
-                                sun.direction[2], sun.has_direction ? 1.f : 0.f};
+                                sun.direction[2],
+                                point               ? -1.f
+                                : sun.has_direction ? 1.f
+                                                    : 0.f};
         bgfx::setUniform(u_sun_diff_, sun_d);
         bgfx::setUniform(u_sun_amb_, sun_a);
         bgfx::setUniform(u_sun_spec_, sun_s);
         bgfx::setUniform(u_sun_dir_, sun_r);
-        const float no_light[4]{};
-        bgfx::setUniform(u_local_light_, preview || garage_ ? no_light : local_light_.data());
+        bind_point_light(!preview && !instance.light_flags);
         bgfx::setUniform(u_diffuse_,diffuse);
         const float spec[4] = {group.specular[0], group.specular[1], group.specular[2],
                                group.shininess > 0.f ? group.shininess : 1.f};
@@ -446,9 +487,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         if (mask.idx == white_tex_.idx) return;
         bgfx::setTexture(1, s_lightmap_, mask);
       }
-      // The garage neon is already the authored directional source above.
-      // Do not add its old unoccluded point-light approximation a second time.
-      if (world_mesh && !garage_) bgfx::setUniform(u_local_light_, local_light_.data());
+
       uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA;
       if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;
       if (instance.cull_backfaces && !(flags & 0x02000000u))
@@ -578,7 +617,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
                            nullptr);
-          bgfx::setUniform(u_local_light_, local_light_.data());
+
           uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA |
                            BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
           if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;

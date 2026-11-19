@@ -795,13 +795,39 @@ retain automatic ground-prop detection. Resource reset clears the scene intent.
 An inherited unassigned `internalScene` may be absent from the sparse host object;
 in that case a live Scene.sun parented to the current world also establishes
 exterior intent. Explicit interior metadata takes priority.
-The garage binds its authored directional neon to world shading and shadow
-attenuation, without duplicating the previous point-light approximation. Its
-single bay map fits the decoded room footprint and includes the POLY shell as
-well as furniture. The light near plane clips ceilings above the emitter;
-never exclude an entire room mesh to remove a ceiling. A fitted interior field
-uses zero receiver fade distance: projection bounds reject outside samples,
-without the legacy distance/UV fade relighting the room edges.
+The garage's enhanced path now adapts its legacy neon into a `PointLight`
+(`include/slrr/scene_light.hpp`): render-space metres, colour, engine intensity,
+radial range, ambient fill, owner and shadow flag. This is a positional source,
+not a second directional contribution. The adapter retains the neon owner/colour,
+places an explicit local 3.3 m anchor through its owner transform, uses intensity
+18 and range 32 m, and reduces the authored ambient to 15%. These are documented
+compatibility defaults, not recovered fixture positions or calibrated lumens.
+The record is cleared/reselected each frame; inventory/hidden/other-world owners
+are rejected by the scene transform traversal. Local/dynamic-light options gate it.
+
+One point-shadow atlas contains six 512-square D32F faces in a 1536x1024 2D
+texture (6 MiB depth payload). Face views 0/1/2/3/4/64 precede the world;
+`draw_previews` must reserve/reorder view 64 before world 5/6, including inset
+sorting. Do not collide with previews 8..63, OSD 70 or reflections 72+.
+Perspectives cover 92 degrees for overlap, near .05 m and the light's range.
+Caster transforms and face matrices share a light-relative origin. Cutout
+materials retain their alpha rules. Skinned casters remain excluded.
+
+`u_pointShadowFaces[6]` and `u_pointShadowParams` select the dominant cube face
+in the existing scenery/vehicle depth sampler. Four comparison taps stay in
+that face. The radial receiver bias is .015 m. Light radiance uses inverse-square
+attenuation with a smooth range window and a bounded near-source denominator.
+`u_sunDir.w=-1` selects explicit positional-light ambient instead of the legacy
+fixed/directional light. Direct local diffuse/specular is occluded; ambient and
+reflections remain separate. Captured scenery samples the same light/shadow field.
+Exact unchanged caster/projection state reuses the atlas; light position/range or
+caster identity/revision/buffer/transform changes invalidate it. Colour/intensity
+updates change shading without redrawing depth.
+
+This first implementation budgets one interior point source. There is no authored
+multi-fixture placement system, spot/projector headlight path, outdoor point-light
+registry or simultaneous sun/point-shadow allocation yet. PBR, HDR/tonemapping,
+area lights and removal of baked detail in diffuse textures are separate work.
 
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection
@@ -809,7 +835,7 @@ translation is snapped in light space; every frame uses the current sun rather
 than an angular cache threshold. Blend the last 15% of each inner range into
 the next and fade the final level over 900-1,000 m. Views 0/2/3/4 and vehicle
 depth view 1 precede world view 5; ordering must keep all shadow passes before world
-receivers. The garage retains its single 2048-square local-light map. These
+receivers. The garage instead uses the six-face point atlas described above. These
 are radial distance cascades, not camera-frustum-fitted splits. Scenery casters
 outside the main view must be uploaded and retained for their shadow submissions.
 Collect outer shadow candidates once and cull their reflected-Z render bounds

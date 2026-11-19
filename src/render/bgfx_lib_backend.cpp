@@ -226,6 +226,12 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_fog_range_ = bgfx::createUniform("u_fogRange", bgfx::UniformType::Vec4);
     u_fog_eye_ = bgfx::createUniform("u_fogEye", bgfx::UniformType::Vec4);
     u_sun_dir_ = bgfx::createUniform("u_sunDir", bgfx::UniformType::Vec4);
+    u_point_light_color_ =
+        bgfx::createUniform("u_pointLightColor", bgfx::UniformType::Vec4);
+    u_point_shadow_faces_ =
+        bgfx::createUniform("u_pointShadowFaces", bgfx::UniformType::Mat4, 6);
+    u_point_shadow_params_ =
+        bgfx::createUniform("u_pointShadowParams", bgfx::UniformType::Vec4);
     // bgfx returns an invalid program, without a message in Release, when the
     // fragment $input list differs from the vertex $output list. The features
     // behind these programs then switch themselves off silently.
@@ -375,12 +381,19 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
     shadow_cascades_active_ = false;
+    point_shadow_active_ = false;
+    point_light_.reset();
+    cached_point_light_.reset();
     shadow_origin_world_ = nullptr;
     shadow_cache_valid_ = false;
     shadow_cached_casters_.clear();
     shadow_meshes_.clear();
     static_shadow_active_ = false;
-    for (auto* handle : {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_, &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_, &u_shadow_origin_}) {
+    for (auto *handle :
+         {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_,
+          &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_,
+          &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
+          &u_point_shadow_params_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -1053,14 +1066,33 @@ void LibBgfxBackend::cache_scene_mesh(
   }
 void LibBgfxBackend::update_local_light() {
     local_light_ = {};
-    if (!garage_ || !host_enhanced_graphics().local_lights) return;
+    point_light_.reset();
+    if (!garage_ || !host_enhanced_graphics().local_lights ||
+        !host_enhanced_graphics().dynamic_lighting)
+      return;
     for (const auto* node : gameref_directional_lights()) {
       float matrix[16];
       if ((node->type_id & 0xffff) != 0x001d ||
           !scene_instances_script_matrix(node->key, matrix)) continue;
       // Stock garage scripts put the neon light at the map origin.
       // Position the emitter above the bay, at approximate fixture height.
-      local_light_ = {matrix[12], matrix[13] + 3.3f, -matrix[14], 8.f};
+      // Explicit compatibility adapter: the stock neon has no punctual-light
+      // authoring metadata. Keep its owner/color; use a documented bay anchor.
+      PointLight light;
+      light.owner = node->key;
+      light.position = {matrix[12] + matrix[4] * 3.3f,
+                        matrix[13] + matrix[5] * 3.3f,
+                        -(matrix[14] + matrix[6] * 3.3f)};
+      for (int i = 0; i < 3; ++i) {
+        light.color[i] = std::max(node->directional_light.diffuse[i], 0.f);
+        light.ambient[i] =
+            std::max(node->directional_light.ambient[i], 0.f) * .15f;
+      }
+      if (!light.valid())
+        continue;
+      point_light_ = light;
+      local_light_ = {light.position[0], light.position[1], light.position[2],
+                      light.range};
       break;
     }
 }
@@ -1307,7 +1339,16 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    bgfx::setViewOrder(0, 64, nullptr);
+    std::array<uint16_t, 65> base_order{};
+    size_t base_slot = 0;
+    for (uint16_t i = 0; i < 64; ++i) {
+      if (i == kWorldView && point_shadow_active_)
+        base_order[base_slot++] = 64;
+      base_order[base_slot++] = i;
+    }
+    if (!point_shadow_active_)
+      base_order[base_slot++] = 64;
+    bgfx::setViewOrder(0, uint16_t(base_order.size()), base_order.data());
     const auto* main_camera = fullscreen_script_camera();
     const auto* main_vp = main_camera ? gameref_get(main_camera->viewport) : nullptr;
     const bool inset = main_vp && (main_vp->vp_w < .99f || main_vp->vp_h < .99f);
@@ -1318,13 +1359,17 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 64> order{};
+      std::array<uint16_t, 65> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
+      if (point_shadow_active_)
+        order[slot++] = 64;
       order[slot++] = kFmvLayer;
       order[slot++] = kOsdUnder;
       for (const auto& entry : views) order[slot++] = entry.second;
       for (uint16_t i = kPreview0 + uint16_t(views.size() - 1); i < 64; ++i) order[slot++] = i;
+      if (!point_shadow_active_)
+        order[slot++] = 64;
       bgfx::setViewOrder(0, uint16_t(order.size()), order.data());
     }
     uint16_t id = kPreview0;

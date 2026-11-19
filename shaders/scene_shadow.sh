@@ -5,6 +5,44 @@ uniform vec4 u_staticShadowEye;
 uniform mat4 u_shadowCascades[4];
 uniform vec4 u_shadowOrigin;
 uniform vec4 u_shadowRanges; // x=0 selects single/local field, otherwise radial splits.
+uniform mat4 u_pointShadowFaces[6];
+uniform vec4 u_pointShadowParams; // enabled, inv atlas width/height, bias metres
+uniform vec4 u_pointLightColor; // source colour and engine intensity
+vec3 localLightRadiance(vec3 delta,float range,bool punctual)
+{
+    float d2=dot(delta,delta);
+    float fade=saturate(1.0-d2/(range*range));
+    float attenuation=fade*fade/(1.0+d2);
+    if(punctual) {
+        float window=saturate(1.0-pow(d2/(range*range),2.0));
+        attenuation=window*window/max(d2,0.25);
+    }
+    return u_pointLightColor.rgb*(u_pointLightColor.w*attenuation);
+}
+float pointShadowVisibility(vec3 world)
+{
+    vec3 delta=world-u_shadowOrigin.xyz;
+    float distance=length(delta);
+    if(distance<0.05) return 1.0;
+    vec3 a=abs(delta);
+    int face=a.x>=a.y && a.x>=a.z ? (delta.x>=0.0?0:1)
+           : a.y>=a.z ? (delta.y>=0.0?2:3) : (delta.z>=0.0?4:5);
+    vec3 biased=delta*(max(distance-u_pointShadowParams.w,0.0)/distance);
+    vec4 clip=mul(u_pointShadowFaces[face],vec4(biased,1.0));
+    if(clip.w<=0.0) return 1.0;
+    vec3 p=clip.xyz/clip.w;
+    if(any(lessThan(p,vec3(0.0,0.0,0.0))) || any(greaterThan(p,vec3(1.0,1.0,1.0)))) return 1.0;
+    vec2 scale=vec2(1.0/3.0,0.5);
+    float row=step(2.5,float(face));
+    vec2 tile=vec2((float(face)-row*3.0)/3.0,row*0.5);
+    vec2 texel=u_pointShadowParams.yz;
+    vec2 uv=clamp(tile+p.xy*scale,tile+texel*1.5,tile+scale-texel*1.5);
+    vec2 offset=texel*0.5;
+    return (shadow2D(s_staticShadow,vec3(uv+offset,p.z))+
+            shadow2D(s_staticShadow,vec3(uv-offset,p.z))+
+            shadow2D(s_staticShadow,vec3(uv+vec2(offset.x,-offset.y),p.z))+
+            shadow2D(s_staticShadow,vec3(uv+vec2(-offset.x,offset.y),p.z)))*0.25;
+}
 float receiverBias(vec3 p,float bias,float texel)
 {
     vec3 dx=dFdx(p),dy=dFdy(p);
@@ -72,6 +110,7 @@ float cascadeVisibility(vec3 world, float distanceToEye)
 float sceneShadowVisibility(vec3 p,vec3 world)
 {
     if(u_staticShadowParams.x<=0.0) return 1.0;
+    if(u_pointShadowParams.x>0.5) return pointShadowVisibility(world);
     float distanceToEye=length(world-u_staticShadowEye.xyz);
     if(u_shadowRanges.x>0.0)
         return mix(1.0,cascadeVisibility(world,distanceToEye),u_staticShadowParams.x);

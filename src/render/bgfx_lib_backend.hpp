@@ -3,16 +3,18 @@
 // Internal to the libbgfx renderer. The public surface stays
 // slrr/render_backend.hpp. Method bodies live in the sibling cpp files.
 
-#include "slrr/dds_image.hpp"
-#include "slrr/render_backend.hpp"
-#include "slrr/scene_instances.hpp"
-#include "slrr/gameref.hpp"
-#include "slrr/host_game_options.hpp"
-#include "slrr/scene_sun.hpp"
-#include "slrr/osd_registry.hpp"
 #include "debug_overlay.hpp"
 #include "osd_text_batch.hpp"
 #include "scene_mesh_data.hpp"
+#include "slrr/dds_image.hpp"
+#include "slrr/gameref.hpp"
+#include "slrr/host_game_options.hpp"
+#include "slrr/osd_registry.hpp"
+#include "slrr/render_backend.hpp"
+#include "slrr/scene_instances.hpp"
+#include "slrr/scene_light.hpp"
+#include "slrr/scene_sun.hpp"
+#include <optional>
 
 #include <bgfx/bgfx.h>
 
@@ -50,7 +52,8 @@ class LibBgfxBackend final : public IRenderBackend {
 
   // Map cascades use views 0/2/3/4; vehicle depth uses view 1.
   // The world is view 5 or 6, depending on the FMV backdrop. Previews start at 8. The
-  // interface stays on kOsdView, above those rects.
+  // interface stays on kOsdView, above those rects. Point shadows alternatively
+  // use 0/1/2/3/4/64; reserved view 64 is reordered before the world.
   static constexpr uint16_t kShadowResolution = 2048;
   static constexpr uint16_t kStaticShadowView = 0;
   static constexpr uint16_t kVehicleShadowFirst = 1;
@@ -340,6 +343,13 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_local_light_ = BGFX_INVALID_HANDLE;
   std::array<float, 4> local_light_{};
   void update_local_light();
+  bool bind_point_light(bool enabled);
+  std::optional<PointLight> point_light_, cached_point_light_;
+  bgfx::UniformHandle u_point_light_color_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_point_shadow_faces_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_point_shadow_params_ = BGFX_INVALID_HANDLE;
+  std::array<std::array<float, 16>, 6> point_shadow_matrices_{};
+  bool point_shadow_active_ = false;
   void update_reflections(const float* eye);
   void destroy_reflections();
   std::array<bgfx::TextureHandle, 2> reflection_cubes_{{
@@ -379,7 +389,7 @@ class LibBgfxBackend final : public IRenderBackend {
   uint64_t shadow_atlas_revision_ = 0;
   bool shadow_cascades_active_ = false;
   std::unordered_set<const ScxGeometry*> shadow_meshes_;
-  bool static_shadow_local_ = false; // The depth field belongs to the garage lamp.
+  bool static_shadow_local_ = false; // Positional-light field, rather than sun visibility.
   bool static_shadow_active_ = false;
   bgfx::FrameBufferHandle car_depth_fb_ = BGFX_INVALID_HANDLE;
   bgfx::TextureHandle car_depth_tex_ = BGFX_INVALID_HANDLE;

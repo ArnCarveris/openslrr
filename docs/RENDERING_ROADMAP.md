@@ -165,6 +165,40 @@ moves the furniture mesh, proving dynamic coverage. A wider real-script on/off
 capture confirms floor shadows beneath furniture. Temporary camera/capture
 instrumentation is removed from the production executable.
 
+## First real positional source: interior point light
+
+The user validated floor shadows but reported missing wall shadows, then requested
+starting real light sources. A production vehicle-depth test under a deliberately
+chosen sun angle shadows a vertical wall (4,456 pixels). This rejects a general
+floor-only receiver restriction; it does not certify the user's exact outdoor
+parking/sun configuration. The legacy garage neon pointed straight down, leaving
+vertical walls on ambient fill with no direct source for their shadows to occlude.
+
+`PointLight` now provides a common renderer record: owner, render-space position,
+colour, intensity, range, ambient and a shadow flag. The first adapter converts
+the existing garage neon into one punctual source. It retains its owner/colour,
+uses a local 3.3 m anchor, intensity 18, range 32 m and 15% of the authored ambient.
+This is a deliberate compatibility policy; actual ceiling fixture placement and
+native/script authoring for new point/spot lights are not implemented yet.
+
+Six 512-square perspective faces share a 1536x1024 D32F atlas (6 MiB versus the
+previous interior map's 16 MiB). Light-relative caster transforms, dominant-face
+comparison and four filtered taps support walls/floors/ceilings. View 64 is
+reserved/reordered before world views so the sixth face is available in-frame.
+The source has inverse-square falloff and a smooth radial cutoff. Its direct
+light and vehicle highlights share visibility with captured scenery. The old
+fixed/directional contribution is suppressed on the migrated interior path;
+ambient is explicit and source-texture baked detail remains.
+
+Cache reuse needs unchanged projection/caster state. Moving a light/caster or
+changing geometry/range updates depth. Colour/intensity changes only update
+shading. Scope/lifetime, option toggles and invalid-light values are tested.
+Same-frame GPU tests cover every face, lateral blocker removal, a reflection
+view, colour/intensity/range and exact depth reuse. Real garage geometry tests
+continue to move furniture over actual floor materials. Game captures with a
+source moved 3 m show the lighting/shadow/highlight response; the first source
+leaves distant parts of the room darker. More lamps and visual tuning remain.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow
@@ -172,8 +206,9 @@ instrumentation is removed from the production executable.
 - Broader cascade motion/quality validation: alpha foliage, moving casters,
   sunset/low angles, split transitions and bias on actual assets; reduce CPU
   collection/submission cost without reintroducing visible temporal jumps.
-- Shared scene light records and real headlight/street/interior emitters,
-  including their controls, damage, occlusion, lifetime and GPU budgets.
+- Point/spot authoring and submission, multiple interior emitters and real
+  headlight/street lights, including controls, damage, allocation and GPU budgets;
+  the first owner-scoped interior point adapter is implemented above.
 - Linear-light PBR material representation, legacy SCX adaptation, clearcoat,
   roughness filtering and a specified optional material-format extension.
 - Sky geometry independence, continuous Scene.java inputs and cloud quality.

@@ -1,15 +1,268 @@
 // Real D3D11 pixels through production vehicle/scenery shaders and bindings.
 #include "../src/render/bgfx_lib_backend.hpp"
+#include "../src/render/point_shadows.hpp"
 #include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
 #include "slrr/mainloop.hpp"
 #include <bx/math.h>
+#include <limits>
 namespace slrr {
 void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 }
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void point_lifetime(LibBgfxBackend &b) {
+    Fixture f;
+    scene_instances_set_resources(&f.packs);
+    Object world, other, neon;
+    gameref_upsert(&world)->flags = kWorldTreeRoot;
+    gameref_upsert(&other)->flags = kWorldTreeRoot;
+    auto *node = gameref_upsert(&neon, GameRefKind::RenderRef);
+    node->type_id = 0x1d;
+    node->directional_light.set = node->directional_light.has_direction = true;
+    gameref_set_parent(&neon, &world);
+    gameref_make_live(&neon);
+    gameref_register_light(&neon);
+    const auto saved = host_enhanced_graphics();
+    host_enhanced_graphics().local_lights =
+        host_enhanced_graphics().dynamic_lighting = true;
+    b.garage_ = true;
+    scene_instances_select(&world, nullptr, false, SceneEnvironment::Interior);
+    b.update_local_light();
+    SLRR_REQUIRE(b.point_light_ && b.point_light_->valid() &&
+                 b.point_light_->owner == &neon);
+    gameref_set_matrix(&neon, 2, 1, 3, 0, 0, 0);
+    b.update_local_light();
+    SLRR_REQUIRE(b.point_light_->position[0] == 2 &&
+                 std::abs(b.point_light_->position[1] - 4.3f) < .0001f &&
+                 b.point_light_->position[2] == -3);
+    auto invalid = *b.point_light_;
+    invalid.range = 0;
+    SLRR_REQUIRE(!invalid.valid());
+    invalid = *b.point_light_;
+    invalid.intensity = std::numeric_limits<float>::quiet_NaN();
+    SLRR_REQUIRE(!invalid.valid());
+    host_enhanced_graphics().local_lights = false;
+    b.update_local_light();
+    SLRR_REQUIRE(!b.point_light_);
+    host_enhanced_graphics().local_lights = true;
+    b.update_local_light();
+    SLRR_REQUIRE(b.point_light_);
+    scene_instances_select(&other, nullptr, false, SceneEnvironment::Interior);
+    b.update_local_light();
+    SLRR_REQUIRE(!b.point_light_ && b.local_light_[3] == 0);
+    host_enhanced_graphics() = saved;
+    b.garage_ = false;
+    gameref_remove(&neon);
+    gameref_remove(&world);
+    gameref_remove(&other);
+    scene_instances_set_resources(nullptr);
+    std::puts("PASS point-light source lifetime, invalid data, option toggle "
+              "and world isolation");
+  }
+  static void vehicle_wall(LibBgfxBackend &b) {
+    Fixture f;
+    scene_instances_set_resources(&f.packs);
+    Object root;
+    gameref_upsert(&root)->flags = kWorldTreeRoot;
+    scene_instances_select(&root, nullptr, false, SceneEnvironment::Exterior);
+    scene_sun_set_time(9 * 3600.f);
+    auto car = std::make_shared<ScxGeometry>();
+    car->info.ok = true;
+    car->info.version = 4;
+    car->position_scale = 1;
+    car->positions = {-.6f, 0, -1, .6f, 0, -1, .6f, 1.5f, -1, -.6f, 1.5f, -1,
+                      -.6f, 0, 1,  .6f, 0, 1,  .6f, 1.5f, 1,  -.6f, 1.5f, 1};
+    car->indices = {0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1,
+                    3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2};
+    car->info.bbox_min[0] = -.6f;
+    car->info.bbox_min[1] = 0;
+    car->info.bbox_min[2] = -1;
+    car->info.bbox_max[0] = .6f;
+    car->info.bbox_max[1] = 1.5f;
+    car->info.bbox_max[2] = 1;
+    car->normals.resize(car->positions.size(), 0);
+    car->uvs.resize(16, 0);
+    ScxGroup group;
+    group.index_count = uint32_t(car->indices.size());
+    car->groups.push_back(group);
+    b.cache_scene_mesh(car, nullptr, false);
+    SceneInstance caster;
+    caster.geometry = car;
+    caster.vehicle_material = true;
+    bx::mtxIdentity(caster.transform.data());
+    b.instances_ = {caster};
+    b.garage_ = false;
+    b.outdoor_lighting_ = true;
+    b.local_light_ = {};
+    b.static_shadow_active_ = false;
+    VideoOptions video;
+    video.shadows = 2;
+    const float centre[3] = {0, 0, 0};
+    b.update_car_depth(centre, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.car_depth_active_);
+    auto wall = std::make_shared<ScxGeometry>();
+    wall->info.ok = true;
+    wall->info.version = 4;
+    wall->position_scale = 1;
+    wall->positions = {-1.3f, 0, -2, -1.3f, 2, -2, -1.3f, 0, 2, -1.3f, 2, 2};
+    wall->normals = {1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0};
+    wall->uvs.resize(8, 0);
+    wall->indices = {0, 1, 2, 2, 1, 3};
+    group.index_count = 6;
+    wall->groups = {group};
+    b.cache_scene_mesh(wall, nullptr, false);
+    SceneInstance receiver;
+    receiver.geometry = wall;
+    receiver.lighting = scene_instances_light();
+    bx::mtxIdentity(receiver.transform.data());
+    constexpr uint16_t size = 128;
+    auto color = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT);
+    auto depth = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT);
+    bgfx::TextureHandle attachments[] = {color, depth};
+    auto fb = bgfx::createFrameBuffer(2, attachments, true);
+    auto readback =
+        bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::RGBA8,
+                              BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+    float identity[16];
+    bx::mtxIdentity(identity);
+    float projection[16]{};
+    projection[8] = .5f;
+    projection[5] = 1;
+    projection[13] = -1;
+    projection[14] = .5f;
+    projection[15] = 1;
+    bool point_mode = false;
+    uint16_t view = 5;
+    float receiver_view[16];
+    bx::mtxIdentity(receiver_view);
+    auto capture = [&](bool active) {
+      if (point_mode) {
+        b.car_depth_active_ = false;
+        b.static_shadow_active_ = active;
+      } else
+        b.car_depth_active_ = active;
+      bgfx::setViewFrameBuffer(view, fb);
+      bgfx::setViewRect(view, 0, 0, size, size);
+      bgfx::setViewClear(view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
+                         uint32_t(0xff), 0.f);
+      bgfx::setViewTransform(view, receiver_view, projection);
+      b.draw_instance(view, receiver, receiver.transform.data(), false, 0);
+      bgfx::TextureRegion dst, src;
+      dst.init(readback);
+      src.init(color);
+      bgfx::blit(100, dst, src);
+      bgfx::frame();
+      std::vector<uint8_t> bytes(size * size * 4);
+      auto ready = bgfx::read(dst, bytes.data());
+      for (int i = 0; i < 16; ++i)
+        if (bgfx::frame() >= ready)
+          return bytes;
+      throw std::runtime_error("wall readback timeout");
+    };
+    auto lit = capture(false), shadow = capture(true);
+    unsigned changed = 0;
+    for (size_t i = 0; i < lit.size(); i += 4)
+      if (int(lit[i]) - int(shadow[i]) > 10)
+        ++changed;
+    std::printf("Vehicle production depth -> vertical wall: %u shadow pixels\n",
+                changed);
+    SLRR_REQUIRE(changed > 100);
+    PointLight point;
+    point.owner = &root;
+    point.position = {0, 0, 0};
+    b.point_light_ = point;
+    point_mode = true;
+    b.outdoor_lighting_ = false;
+    constexpr bx::Vec3 axes[] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                 {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    for (unsigned face = 0; face < 6; ++face) {
+      const auto axis = axes[face];
+      const auto normal = bx::mul(axis, -1.f);
+      const bx::Vec3 up =
+          std::abs(normal.y) > .9f ? bx::Vec3{0, 0, 1} : bx::Vec3{0, 1, 0};
+      const auto side = bx::cross(normal, up);
+      bx::mtxIdentity(receiver.transform.data());
+      for (int row = 0; row < 3; ++row) {
+        receiver.transform[row] = (&normal.x)[row];
+        receiver.transform[4 + row] = (&up.x)[row];
+        receiver.transform[8 + row] = (&side.x)[row];
+        receiver.transform[12 + row] = 2.7f * (&axis.x)[row] - (&up.x)[row];
+      }
+      bx::mtxInverse(receiver_view, receiver.transform.data());
+      b.instances_[0].transform[12] = axis.x * 2;
+      b.instances_[0].transform[13] = axis.y * 2 - .75f;
+      b.instances_[0].transform[14] = axis.z * 2;
+      b.update_static_shadow(centre, video);
+      b.draw_previews(); // production ordering must place face/view 64 before
+                         // world 5
+      SLRR_REQUIRE(b.point_shadow_active_ && b.static_shadow_local_);
+      auto occluded = capture(true), plain = capture(false);
+      unsigned coverage = 0;
+      for (size_t i = 0; i < plain.size(); i += 4)
+        if (int(plain[i]) - int(occluded[i]) > 10)
+          ++coverage;
+      std::printf("Point light face %u: %u blocked wall pixels\n", face,
+                  coverage);
+      SLRR_REQUIRE(coverage > 100);
+      if (face == 5) {
+        view = 72;
+        auto reflection = capture(true);
+        SLRR_REQUIRE(reflection == occluded);
+        view = 5;
+      }
+      // This must be a moving occluder, not a dark atlas or an unlit wall.
+      for (int row = 0; row < 3; ++row)
+        b.instances_[0].transform[12 + row] += (&up.x)[row] * 4;
+      b.update_static_shadow(centre, video);
+      bgfx::frame();
+      auto revealed = capture(true);
+      unsigned remaining = 0;
+      for (size_t i = 0; i < plain.size(); i += 4)
+        if (int(plain[i]) - int(revealed[i]) > 10)
+          ++remaining;
+      std::printf("Point light face %u: %u pixels blocked after lateral move\n",
+                  face, remaining);
+      SLRR_REQUIRE(remaining < coverage / 20);
+      const auto revision = b.shadow_atlas_revision_;
+      b.update_static_shadow(centre, video);
+      bgfx::frame();
+      SLRR_REQUIRE(b.shadow_atlas_revision_ == revision);
+    }
+    b.point_light_->position[0] += .1f;
+    auto revision = b.shadow_atlas_revision_;
+    b.update_static_shadow(centre, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
+    revision = b.shadow_atlas_revision_;
+    b.point_light_->color = {.1f, .2f, 1.f};
+    b.point_light_->intensity = 2;
+    b.update_static_shadow(centre, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision);
+    const auto blue = capture(false);
+    const size_t pixel = (size / 2 * size + size / 2) * 4;
+    SLRR_REQUIRE(blue[pixel + 2] > blue[pixel] + 10);
+    b.point_light_->range = 1;
+    b.update_static_shadow(centre, video);
+    bgfx::frame();
+    const auto outside = capture(false);
+    SLRR_REQUIRE(std::abs(int(outside[pixel + 2]) - int(outside[pixel])) <= 1);
+    std::puts("PASS point colour/intensity, radial range cutoff and "
+              "unchanged-depth reuse");
+    b.point_light_.reset();
+    b.point_shadow_active_ = false;
+    bgfx::destroy(readback);
+    bgfx::destroy(fb);
+    gameref_remove(&root);
+    scene_instances_set_resources(nullptr);
+    b.instances_.clear();
+    b.car_depth_active_ = false;
+  }
   static void garage_geometry(LibBgfxBackend &b) {
     Fixture f;
     f.packs.set_root(fs::absolute("game").string());
@@ -57,7 +310,10 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(!realFloor->indices.empty());
     b.garage_ = true;
     b.outdoor_lighting_ = false;
-    b.local_light_ = {0, 3.3f, 0, 8};
+    b.local_light_ = {0, 3.3f, 0, 32};
+    PointLight fixture_light;
+    fixture_light.position = {0, 3.3f, 0};
+    b.point_light_ = fixture_light;
     VideoOptions video;
     video.shadows = 2;
     const float eye[3] = {0, 2, -4};
@@ -68,10 +324,15 @@ struct SceneShadowRegression {
       bx::Vec3 point{
           corner & 1 ? source.info.bbox_max[0] : source.info.bbox_min[0], 0,
           -(corner & 2 ? source.info.bbox_max[2] : source.info.bbox_min[2])};
-      const auto uv = bx::mulH(point, b.static_shadow_matrix_.data());
+      const std::array<float, 3> delta{point.x - fixture_light.position[0],
+                                       point.y - fixture_light.position[1],
+                                       point.z - fixture_light.position[2]};
+      const auto face = point_shadow_face(delta);
+      const auto uv = bx::mulH({delta[0], delta[1], delta[2]},
+                               b.point_shadow_matrices_[face].data());
       SLRR_REQUIRE(uv.x > 0 && uv.x < 1 && uv.y > 0 && uv.y < 1);
     }
-    SLRR_REQUIRE(b.static_shadow_distance_ == 0);
+    SLRR_REQUIRE(b.point_shadow_active_ && b.static_shadow_local_);
     constexpr uint16_t size = 256;
     const auto color = bgfx::createTexture2D(
         size, size, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT);
@@ -150,6 +411,7 @@ struct SceneShadowRegression {
     scene_instances_set_resources(nullptr);
     b.instances_.clear();
     b.garage_ = false;
+    b.point_light_.reset();
     b.local_light_ = {};
   }
   static void addon_bounds(LibBgfxBackend& b) {
@@ -278,11 +540,16 @@ struct SceneShadowRegression {
     mainloop_sync_section_render(b, f.sections);
     b.instances_ = scene_instances_collect();
     b.cache_scene_mesh(geometry, nullptr, false);
-    b.local_light_ = {0, 3.3f, 0, 8};
+    b.local_light_ = {0, 3.3f, 0, 32};
+    PointLight fixture_light;
+    fixture_light.position = {0, 3.3f, 0};
+    b.point_light_ = fixture_light;
     b.update_static_shadow(eye, video);
     bgfx::frame();
-    SLRR_REQUIRE(b.static_shadow_active_ && !b.static_shadow_local_);
+    SLRR_REQUIRE(b.static_shadow_active_ && b.static_shadow_local_ &&
+                 b.point_shadow_active_);
     b.garage_ = false;
+    b.point_light_.reset();
     b.local_light_ = {};
     b.instances_.clear();
     scene_instances_select(&world, &sky, true, SceneEnvironment::Exterior);
@@ -313,6 +580,7 @@ struct SceneShadowRegression {
     scene_sun_set_time(13 * 3600.f);
     b.instances_ = scene_instances_collect();
     b.garage_ = false;
+    b.point_light_.reset();
     b.local_light_ = {};
     VideoOptions video;
     video.shadows = 2;
@@ -718,6 +986,8 @@ int main() {
     SceneShadowRegression::addon_bounds(backend);
     SceneShadowRegression::scene_environment(backend);
     SceneShadowRegression::garage_geometry(backend);
+    SceneShadowRegression::vehicle_wall(backend);
+    SceneShadowRegression::point_lifetime(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

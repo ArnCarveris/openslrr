@@ -244,17 +244,16 @@ void main()
 	float sunVisibility = u_staticShadowParams.w > 0.5 ? 1.0 : visibility;
 	float localVisibility = u_staticShadowParams.w > 0.5 ? visibility : 1.0;
 	vec3 illumination = vec3(light, light, light) * sunVisibility * mix(0.55, 1.0, carVisibility);
-	if (u_sunDir.w > 0.5 && use < 0.5) {
+	if (u_sunDir.w < -0.5) illumination = u_sunAmb.rgb;
+	else if (u_sunDir.w > 0.5 && use < 0.5) {
 		float direct = max(dot(n, normalize(u_sunDir.xyz)), 0.0);
 		illumination = u_sunAmb.rgb + u_sunDiff.rgb * direct * min(sunVisibility, carVisibility);
 	}
 	if (u_localLight.w > 0.0) {
 		vec3 delta = u_localLight.xyz - v_worldPos;
 		float d2 = dot(delta, delta);
-		float fade = saturate(1.0 - d2 / (u_localLight.w * u_localLight.w));
 		float facing = max(dot(n, delta * inversesqrt(max(d2, 0.001))), 0.0);
-		illumination += vec3(1.0, 0.94, 0.80) * (fade * fade * facing * 3.0 / (1.0 + d2))
-		              * localVisibility;
+		illumination += localLightRadiance(delta,u_localLight.w,u_sunDir.w < -0.5)*facing*localVisibility;
 	}
 	vec3 shaded = tex.rgb * bake * tint * placement * illumination;
 	if (u_alphaTest.y > 1.5) {
