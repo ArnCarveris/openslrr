@@ -1,5 +1,6 @@
 // Sun uniforms, baked lightmaps, and the vehicle material pass.
 #include "bgfx_lib_backend.hpp"
+#include "shadow_cascades.hpp"
 
 #include "slrr/part_runtime.hpp"
 #include "slrr/dds_image.hpp"
@@ -115,6 +116,10 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     const float params[4] = {receive ? 1.f : 0.f,
                              receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
     bgfx::setUniform(u_static_shadow_params_, params);
+    const bool cascaded = receive && shadow_cascades_active_;
+    const float ranges[4] = {cascaded ? shadow_radii[0] : 0.f, shadow_radii[1],shadow_radii[2],shadow_radii[3]};
+    bgfx::setUniform(u_shadow_ranges_,ranges);
+    if (cascaded) bgfx::setUniform(u_shadow_cascades_,shadow_cascade_matrices_.data(),4);
     if (receive) {
       const float eye[4] = {static_shadow_eye_[0], static_shadow_eye_[1],
                             static_shadow_eye_[2], static_shadow_distance_};

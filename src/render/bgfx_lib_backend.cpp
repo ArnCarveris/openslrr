@@ -189,6 +189,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_static_shadow_mtx_ = bgfx::createUniform("u_staticShadowMtx", bgfx::UniformType::Mat4);
     u_static_shadow_params_ = bgfx::createUniform("u_staticShadowParams", bgfx::UniformType::Vec4);
     u_static_shadow_eye_ = bgfx::createUniform("u_staticShadowEye", bgfx::UniformType::Vec4);
+    u_shadow_cascades_ = bgfx::createUniform("u_shadowCascades", bgfx::UniformType::Mat4,4);
+    u_shadow_ranges_ = bgfx::createUniform("u_shadowRanges", bgfx::UniformType::Vec4);
     vehicle_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_vehicle, rt, "vs_vehicle"),
         bgfx::createEmbeddedShader(k_vehicle, rt, "fs_vehicle"));
@@ -368,9 +370,10 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     static_shadow_program_ = BGFX_INVALID_HANDLE;
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
-    static_shadow_world_ = nullptr;
+    shadow_cascades_active_ = false;
+    shadow_meshes_.clear();
     static_shadow_active_ = false;
-    for (auto* handle : {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_, &u_static_shadow_eye_}) {
+    for (auto* handle : {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_, &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -988,6 +991,7 @@ void LibBgfxBackend::cache_scene_mesh(
     }
     std::sort(previews_.begin(),previews_.end(),[](const Preview&a,const Preview&b){return a.viewport.vp_pri!=b.viewport.vp_pri?a.viewport.vp_pri<b.viewport.vp_pri:a.viewport.vp_x<b.viewport.vp_x;});
     std::unordered_map<const ScxGeometry*,bool> used;
+    for (const auto* mesh : shadow_meshes_) used[mesh] = true;
     std::unordered_map<void*, const ScxGeometry*> current_deformed;
     auto cache = [&](const std::shared_ptr<const ScxGeometry>& source, void* owner,
                      bool map_prop = false) {

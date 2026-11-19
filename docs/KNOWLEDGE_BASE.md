@@ -2243,3 +2243,17 @@ assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.
   composition, cascades, addon light discovery or complete garage behavior.
 - See RENDERING_ROADMAP.md and assets/validation/scene-shadow-foundation.txt
   for the current scope, evidence and remaining #201 work.
+
+
+### Distance cascades (#201, second increment)
+
+- `src/render/shadow_cascades.hpp:shadow_projection` builds camera-centred
+  radial projections with fixed light-space basis and texel-snapped X/Y.
+- `src/render/bgfx_shadows.cpp:LibBgfxBackend::update_static_shadow` renders
+  four outdoor atlas tiles each frame, keeping garage local shadows separate.
+  Radial splits are 32/100/320/1,000 m; off-camera scenery participates.
+- `shaders/scene_shadow.sh` selects adjacent levels and crossfades their
+  visibility. See RENDERING_ROADMAP.md for memory/CPU cost, cache retirement,
+  the separate short-range vehicle-caster path and scene-detection limits.
+- `tests/test_scene_shadow_gpu.cpp` checks distinct atlas clears/selection,
+  blends and the 1 km fade through actual shaders, plus projection stability.

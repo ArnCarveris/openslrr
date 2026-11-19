@@ -1,5 +1,6 @@
 // Real D3D11 pixels through production vehicle/scenery shaders and bindings.
 #include "../src/render/bgfx_lib_backend.hpp"
+#include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
 #include <bx/math.h>
 using namespace slrr;
@@ -63,15 +64,28 @@ struct SceneShadowRegression {
       instance.lighting.diffuse[i] = .6f;
       instance.lighting.specular[i] = 0;
     }
+    int darkTile = -1;
     auto pixel = [&](bool vehicle, bool enabled, float shadowDepth,
                      uint16_t view, bool preview = false, bool lamp = false) {
       instance.vehicle_material = vehicle;
       instance.light_flags = lamp ? 1 : 0;
       b.static_shadow_active_ = enabled;
-      bgfx::setViewFrameBuffer(0, b.static_shadow_fb_);
-      bgfx::setViewRect(0, 0, 0, size, size);
-      bgfx::setViewClear(0, BGFX_CLEAR_DEPTH, 0, shadowDepth);
-      bgfx::touch(0);
+      if (b.shadow_cascades_active_) {
+        for (size_t i = 0; i < 4; ++i) {
+          const auto id = shadow_views[i];
+          bgfx::setViewFrameBuffer(id, b.static_shadow_fb_);
+          bgfx::setViewRect(id, uint16_t(i % 2 * size), uint16_t(i / 2 * size),
+                            size, size);
+          bgfx::setViewClear(id, BGFX_CLEAR_DEPTH, uint32_t(0),
+                             int(i) == darkTile ? shadowDepth : .9f);
+          bgfx::touch(id);
+        }
+      } else {
+        bgfx::setViewFrameBuffer(0, b.static_shadow_fb_);
+        bgfx::setViewRect(0, 0, 0, size, size);
+        bgfx::setViewClear(0, BGFX_CLEAR_DEPTH, uint32_t(0), shadowDepth);
+        bgfx::touch(0);
+      }
       bgfx::setViewFrameBuffer(view, output);
       bgfx::setViewRect(view, 0, 0, size, size);
       bgfx::setViewClear(view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
@@ -129,6 +143,63 @@ struct SceneShadowRegression {
                  std::abs(preview - lit) <= 3 && lamp > lit);
     SLRR_REQUIRE(meshLit > 300 && meshShadow > 30 && meshShadow < meshLit / 2);
     SLRR_REQUIRE(std::abs(captureShadow - meshShadow) <= 3);
+    // Distinct depth in each tile detects wrong atlas selection or clears
+    // accidentally overwriting other view rectangles on D3D11.
+    bgfx::destroy(b.static_shadow_fb_);
+    const auto atlas = bgfx::createTexture2D(
+        size * 2, size * 2, false, 1, bgfx::TextureFormat::D32F,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    b.static_shadow_fb_ = bgfx::createFrameBuffer(1, &atlas, true);
+    b.static_shadow_tex_ = atlas;
+    b.static_shadow_size_ = size * 2;
+    b.shadow_cascades_active_ = true;
+    b.static_shadow_local_ = false;
+    b.local_light_ = {};
+    for (auto &matrix : b.shadow_cascade_matrices_)
+      matrix = b.static_shadow_matrix_;
+    const float distances[4] = {10, 70, 220, 700};
+    for (int i = 0; i < 4; ++i) {
+      darkTile = i;
+      b.static_shadow_eye_ = {-distances[i], 0, 0};
+      const auto dark = pixel(true, true, .2f, 5);
+      const auto light = pixel(true, true, .9f, 5);
+      const auto captured = pixel(false, true, .2f, 72);
+      std::printf("Cascade %d distance %.0fm: lit=%d shadow=%d capture=%d\n", i,
+                  distances[i], light, dark, captured);
+      SLRR_REQUIRE(light > 300 && dark > 30 && dark < light / 2 &&
+                   std::abs(captured - dark) <= 3);
+    }
+    darkTile = 0;
+    b.static_shadow_eye_ = {-27.2f, 0, 0};
+    const auto transitionStart = pixel(true, true, .2f, 5);
+    b.static_shadow_eye_ = {-29.6f, 0, 0};
+    const auto transitionMid = pixel(true, true, .2f, 5);
+    b.static_shadow_eye_ = {-32.1f, 0, 0};
+    const auto transitionEnd = pixel(true, true, .2f, 5);
+    SLRR_REQUIRE(transitionStart < transitionMid &&
+                 transitionMid < transitionEnd);
+    darkTile = 3;
+    b.static_shadow_eye_ = {-950, 0, 0};
+    const auto fade = pixel(true, true, .2f, 5);
+    b.static_shadow_eye_ = {-1001, 0, 0};
+    const auto beyond = pixel(true, true, .2f, 5);
+    SLRR_REQUIRE(fade > 100 && fade < lit && std::abs(beyond - lit) <= 3);
+    std::printf("Cascade blend=%d/%d/%d; far fade=%d beyond 1km=%d\n",
+                transitionStart, transitionMid, transitionEnd, fade, beyond);
+    const float origin[3] = {0, 0, 0}, tinyMove[3] = {.0001f, 0, 0};
+    const float direction[3] = {.3f, -.8f, .5f},
+                laterSun[3] = {.30001f, -.8f, .5f};
+    const auto initial =
+        shadow_projection(origin, direction, 32, 2048, false, false);
+    const auto moved =
+        shadow_projection(tinyMove, direction, 32, 2048, false, false);
+    const auto sunMoved =
+        shadow_projection(origin, laterSun, 32, 2048, false, false);
+    SLRR_REQUIRE(std::abs(initial.sample[12] - moved.sample[12]) < 1e-7f &&
+                 std::abs(initial.sample[13] - moved.sample[13]) < 1e-7f);
+    SLRR_REQUIRE(initial.sample != sunMoved.sample);
+    std::puts(
+        "PASS sub-texel camera stability and continuous small sun changes");
     bgfx::destroy(readback);
     bgfx::destroy(output);
   }

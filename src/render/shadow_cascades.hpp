@@ -1,0 +1,58 @@
+#pragma once
+#include <array>
+#include <bx/math.h>
+#include <cmath>
+#include <cstdint>
+namespace slrr {
+// Camera-centred distance cascades: useful also for cubemap views around the
+// car.
+inline constexpr std::array<float, 4> shadow_radii{32.f, 100.f, 320.f, 1000.f};
+inline constexpr std::array<uint16_t, 4> shadow_views{0, 2, 3, 4};
+struct ShadowProjection {
+  std::array<float, 16> view{}, projection{}, sample{};
+};
+inline ShadowProjection shadow_projection(const float eye[3],
+                                          const float direction[3],
+                                          float radius, uint16_t resolution,
+                                          bool homogeneousDepth,
+                                          bool originBottomLeft) {
+  ShadowProjection result;
+  const auto travel =
+      bx::normalize(bx::Vec3{direction[0], direction[1], direction[2]});
+  const bx::Vec3 up =
+      std::abs(travel.y) > .98f ? bx::Vec3{0, 0, 1} : bx::Vec3{0, 1, 0};
+  const float extent = radius * 1.1f, distance = extent + 768.f;
+  bx::mtxLookAt(result.view.data(), bx::mul(travel, -distance), {0, 0, 0}, up);
+  auto &view = result.view;
+  const float texel = 2.f * extent / resolution;
+  // Snap translation in a fixed light basis, not in the camera basis.
+  const float x = eye[0] * view[0] + eye[1] * view[4] + eye[2] * view[8];
+  const float y = eye[0] * view[1] + eye[1] * view[5] + eye[2] * view[9];
+  const float z = eye[0] * view[2] + eye[1] * view[6] + eye[2] * view[10];
+  view[12] -= std::round(x / texel) * texel;
+  view[13] -= std::round(y / texel) * texel;
+  view[14] -= z;
+  bx::mtxOrtho(result.projection.data(), -extent, extent, -extent, extent, 0.f,
+               2.f * distance, 0.f, homogeneousDepth);
+  float clip[16];
+  bx::mtxMul(clip, view.data(), result.projection.data());
+  const float crop[16] = {.5f,
+                          0,
+                          0,
+                          0,
+                          0,
+                          originBottomLeft ? .5f : -.5f,
+                          0,
+                          0,
+                          0,
+                          0,
+                          homogeneousDepth ? .5f : 1.f,
+                          0,
+                          .5f,
+                          .5f,
+                          homogeneousDepth ? .5f : 0.f,
+                          1};
+  bx::mtxMul(result.sample.data(), clip, crop);
+  return result;
+}
+} // namespace slrr

@@ -786,8 +786,17 @@ The field identifies its source (sun or garage lamp), so only that light's
 direct diffuse/specular contribution is occluded. Ambient/environment light
 is preserved. Vehicle previews and emissive lamp surfaces disable reception;
 the separate car-depth map is not sampled by the same car as a receiver.
-This is still the existing limited-range field, not cascaded shadows or a
-complete real-light implementation. See RENDERING_ROADMAP.md for #201 progress.
+Outdoor receivers now use four camera-centred distance cascades (32/100/320/
+1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection
+translation is snapped in light space; every frame uses the current sun rather
+than an angular cache threshold. Blend the last 15% of each inner range into
+the next and fade the final level over 900-1,000 m. Views 0/2/3/4 and vehicle
+depth view 1 precede world view 5; ordering must keep all shadow passes before world
+receivers. The garage retains its single 2048-square local-light map. These
+are radial distance cascades, not camera-frustum-fitted splits. Scenery casters
+outside the main view must be uploaded and retained for their shadow submissions.
+This is not yet a complete real-light implementation. See RENDERING_ROADMAP.md
+for #201 progress, performance cost and unvalidated scene cases.
 
 ### Mesh CPU/GPU ownership
 

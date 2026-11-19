@@ -1,5 +1,6 @@
 // Active cached map/garage shadows and vehicle depth maps.
 #include "bgfx_lib_backend.hpp"
+#include "shadow_cascades.hpp"
 #include "slrr/frame_profiler.hpp"
 
 #include <bx/math.h>
@@ -12,6 +13,8 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   perf::Scope perf_scope(perf::Zone::Shadows);
   static_shadow_active_ = false;
   static_shadow_local_ = false;
+  shadow_cascades_active_ = false;
+  shadow_meshes_.clear();
   // The garage has no sun map. The neon reuses this same view and looks down
   // on the bay, so the car and the room cast one shadow without a new pass.
   if (garage_ && local_light_[3] > 0.f && video.shadows != 0 &&
@@ -84,13 +87,11 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     }
     static_shadow_eye_ = {light.x, light.y, light.z};
     static_shadow_distance_ = 40.f;
-    static_shadow_world_ = nullptr;
     static_shadow_active_ = true;
     static_shadow_local_ = true;
     return;
   }
   if (!eye || video.shadows == 0 || !scene_instances_has_ground_props()) {
-    static_shadow_world_ = nullptr;
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
@@ -103,40 +104,20 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   if (ground == instances_.end()) return;
   const auto sun = ground->lighting;
   if (!sun.has_direction || sun.direction[1] >= 0.02f) return;
-  constexpr uint16_t size = kShadowResolution;
-  // Static buildings shade streets well beyond the range of vehicle shadows.
+  constexpr uint16_t size = kShadowResolution * 2;
   const bool conservative =
       (bgfx::getCaps()->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
-  // Close to the car, a 150 m map turns each texel into a stripe on the
-  // ground. Keep the resolution on the street around the camera.
-  const float range = std::min(conservative ? 56.f : 36.f, video.view_distance);
-  const float step = std::max(8.f, range * .15f);
-  const float half_width = range + step;
-  static_shadow_eye_ = {eye[0], eye[1], -eye[2]};
-  const std::array<float, 3> focus{eye[0], eye[1], eye[2]};
-  const float moved = std::hypot(eye[0] - static_shadow_focus_[0],
-                                 eye[1] - static_shadow_focus_[1],
-                                 eye[2] - static_shadow_focus_[2]);
-  const std::array<float, 3> direction{sun.direction[0], sun.direction[1], -sun.direction[2]};
-  const float sun_change = std::hypot(direction[0] - static_shadow_sun_[0],
-                                      direction[1] - static_shadow_sun_[1],
-                                      direction[2] - static_shadow_sun_[2]);
   if (size != static_shadow_size_ && bgfx::isValid(static_shadow_fb_)) {
     bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
   }
-  if (range == static_shadow_distance_ && static_shadow_world_ == ground->key && moved < step &&
-      sun_change < .003f && bgfx::isValid(static_shadow_fb_)) {
-    static_shadow_active_ = true;
-    return;
-  }
   if (!bgfx::isValid(static_shadow_fb_)) {
-    constexpr uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP |
-        BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT;
-    const auto depth = bgfx::createTexture2D(size, size, false, 1,
-                                            bgfx::TextureFormat::D32F, flags);
-    if (!bgfx::isValid(depth)) return;
+    const auto depth = bgfx::createTexture2D(
+        size, size, false, 1, bgfx::TextureFormat::D32F,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (!bgfx::isValid(depth))
+      return;
     static_shadow_fb_ = bgfx::createFrameBuffer(1, &depth, true);
     if (!bgfx::isValid(static_shadow_fb_)) {
       bgfx::destroy(depth);
@@ -145,70 +126,90 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     static_shadow_tex_ = depth;
     static_shadow_size_ = size;
   }
-  const auto* caps = bgfx::getCaps();
-  const bx::Vec3 target{focus[0], focus[1], -focus[2]};
-  const bx::Vec3 travel = bx::normalize(bx::Vec3{direction[0], direction[1], direction[2]});
-  const bx::Vec3 up = std::abs(travel.y) > .98f ? bx::Vec3{0.f, 0.f, 1.f}
-                                              : bx::Vec3{0.f, 1.f, 0.f};
-  float view[16], proj[16], clip[16];
-  bx::mtxLookAt(view, bx::sub(target, bx::mul(travel, 768.f)), target, up);
-  bx::mtxOrtho(proj, -half_width, half_width, -half_width, half_width, 0.f, 1024.f,
-              0.f, caps->homogeneousDepth);
-  const auto frustum = view_frustum(view, proj);
-  bx::mtxMul(clip, view, proj);
-  const float crop[16] = {
-      .5f, 0.f, 0.f, 0.f, 0.f, caps->originBottomLeft ? .5f : -.5f, 0.f, 0.f,
-      0.f, 0.f, caps->homogeneousDepth ? .5f : 1.f, 0.f, .5f, .5f,
-      caps->homogeneousDepth ? .5f : 0.f, 1.f};
-  bx::mtxMul(static_shadow_matrix_.data(), clip, crop);
-
-  bgfx::setViewFrameBuffer(kStaticShadowView, static_shadow_fb_);
-  bgfx::setViewRect(kStaticShadowView, 0, 0, size, size);
-  bgfx::setViewClear(kStaticShadowView, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
-  bgfx::setViewTransform(kStaticShadowView, view, proj);
-  bgfx::touch(kStaticShadowView);
-  for (const auto& instance : scene_instances_collect(&frustum)) {
-    // Cars have their own depth map. Skinned pedestrians move, so they would
-    // freeze into this cached map. Everything else on the map casts.
-    // Ground POLY also contains buildings, stairs and track structures.
-    // It must cast as well as receive; receiver-plane bias handles self-shadow.
-    if (!instance.geometry || instance.sky || instance.vehicle_material ||
-        instance.gpu_skin || instance.light_flags || instance.emissive_overlay)
-      continue;
-    const auto found = instance_meshes_.find(instance.geometry.get());
-    if (found == instance_meshes_.end()) continue;
-    const auto& part = found->second;
-    if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh)) continue;
-    for (const auto& group : part.geo.groups) {
-      const bool v4 = part.geo.info.version == 4;
-      const auto surface = scx_surface(part.geo.info.version, group);
-      if (surface.blend) continue;
-      const bool cutout = surface.cutout;
-      const auto slot = group.texture_index;
-      const auto tex = slot < part.tex.size() && bgfx::isValid(part.tex[slot])
-          ? part.tex[slot] : white_tex_;
-      const float threshold = !cutout ? -1.f : v4
-          ? group.alpha_reference / 255.f : .5f;
-      const float params[4] = {0.f, threshold, static_cast<float>(group.base_map.channel), 0.f};
-      bgfx::setUniform(u_static_shadow_params_, params);
-      bgfx::setTexture(0, s_tex_, tex);
-      bgfx::setTransform(instance.transform.data());
-      bgfx::setVertexBuffer(0, part.vbh);
-      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-      // Preserve narrow casters that overlap a texel without covering its centre.
-      const uint64_t coverage = conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0;
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS | coverage);
-      bgfx::submit(kStaticShadowView, static_shadow_program_);
+  const auto *caps = bgfx::getCaps();
+  const float focus[3] = {eye[0], eye[1], -eye[2]};
+  const float direction[3] = {sun.direction[0], sun.direction[1],
+                              -sun.direction[2]};
+  static_shadow_eye_ = {focus[0], focus[1], focus[2]};
+  // Refresh moving sunlight every frame; texel-snapped projections remove
+  // camera swimming without an eight-metre cache jump.
+  for (size_t cascade = 0; cascade < shadow_radii.size(); ++cascade) {
+    const auto projection = shadow_projection(
+        focus, direction, shadow_radii[cascade], kShadowResolution,
+        caps->homogeneousDepth, caps->originBottomLeft);
+    shadow_cascade_matrices_[cascade] = projection.sample;
+    const auto frustum =
+        view_frustum(projection.view.data(), projection.projection.data());
+    const auto view_id = shadow_views[cascade];
+    bgfx::setViewFrameBuffer(view_id, static_shadow_fb_);
+    bgfx::setViewRect(view_id, uint16_t(cascade % 2 * kShadowResolution),
+                      uint16_t(cascade / 2 * kShadowResolution),
+                      kShadowResolution, kShadowResolution);
+    bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
+    bgfx::setViewTransform(view_id, projection.view.data(),
+                           projection.projection.data());
+    bgfx::touch(view_id);
+    for (const auto &instance : scene_instances_collect(&frustum)) {
+      // Vehicles retain their separate nearby depth map. The scenery depth
+      // shader has no skin palette; skinned casters need their own path.
+      // Ground POLY also contains buildings, stairs and track structures.
+      // It must cast as well as receive; receiver-plane bias handles
+      // self-shadow.
+      if (!instance.geometry || instance.sky || instance.vehicle_material ||
+          instance.gpu_skin || instance.light_flags ||
+          instance.emissive_overlay)
+        continue;
+      shadow_meshes_.insert(instance.geometry.get());
+      cache_scene_mesh(instance.geometry, nullptr, false);
+      const auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end())
+        continue;
+      const auto &part = found->second;
+      if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh))
+        continue;
+      for (const auto &group : part.geo.groups) {
+        const bool v4 = part.geo.info.version == 4;
+        const auto surface = scx_surface(part.geo.info.version, group);
+        if (surface.blend)
+          continue;
+        const bool cutout = surface.cutout;
+        const auto slot = group.texture_index;
+        const auto tex = slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                             ? part.tex[slot]
+                             : white_tex_;
+        const float threshold = !cutout ? -1.f
+                                : v4    ? group.alpha_reference / 255.f
+                                        : .5f;
+        const float params[4] = {
+            0.f, threshold, static_cast<float>(group.base_map.channel), 0.f};
+        bgfx::setUniform(u_static_shadow_params_, params);
+        bgfx::setTexture(0, s_tex_, tex);
+        bgfx::setTransform(instance.transform.data());
+        bgfx::setVertexBuffer(0, part.vbh);
+        bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+        // Preserve narrow casters that overlap a texel without covering its
+        // centre.
+        const uint64_t coverage =
+            conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0;
+        bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                       coverage);
+        bgfx::submit(view_id, static_shadow_program_);
+      }
     }
+    std::vector<SceneBatch> shadow_batches;
+    scene_instances_collect_batches(&frustum, shadow_batches);
+    for (const auto &batch : shadow_batches) {
+      if (!batch.geometry)
+        continue;
+      shadow_meshes_.insert(batch.geometry.get());
+      cache_scene_mesh(batch.geometry, nullptr, true);
+    }
+    draw_prop_batches(view_id, shadow_batches, true, conservative);
   }
-  std::vector<SceneBatch> shadow_batches;
-  scene_instances_collect_batches(&frustum, shadow_batches);
-  draw_prop_batches(kStaticShadowView, shadow_batches, true, conservative);
-  static_shadow_distance_ = range;
-  static_shadow_world_ = ground->key;
-  static_shadow_focus_ = focus;
-  static_shadow_sun_ = direction;
+  static_shadow_distance_ = shadow_radii.back();
+  static_shadow_matrix_ = shadow_cascade_matrices_[0];
   static_shadow_active_ = true;
+  shadow_cascades_active_ = true;
 }
 
 void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions& video) {

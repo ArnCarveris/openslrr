@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -47,7 +48,7 @@ struct MeshVertex {
 
 class LibBgfxBackend final : public IRenderBackend {
 
-  // View 0 is the cached map shadow, followed by vehicle depth in view 1.
+  // Map cascades use views 0/2/3/4; vehicle depth uses view 1.
   // The world is view 5 or 6, depending on the FMV backdrop. Previews start at 8. The
   // interface stays on kOsdView, above those rects.
   static constexpr uint16_t kShadowResolution = 2048;
@@ -320,8 +321,6 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_static_shadow_mtx_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_static_shadow_params_ = BGFX_INVALID_HANDLE;
   std::array<float, 16> static_shadow_matrix_{};
-  std::array<float, 3> static_shadow_focus_{}, static_shadow_sun_{};
-  void* static_shadow_world_ = nullptr;
   bgfx::UniformHandle u_cloud_wind_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_cloud_sky_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fog_color_ = BGFX_INVALID_HANDLE;
@@ -356,6 +355,11 @@ class LibBgfxBackend final : public IRenderBackend {
   size_t reflection_face_ = 0;
   bool reflection_ready_ = false;
   bool reflection_scene_ = false;
+  bgfx::UniformHandle u_shadow_cascades_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_shadow_ranges_ = BGFX_INVALID_HANDLE;
+  std::array<std::array<float,16>,4> shadow_cascade_matrices_{};
+  bool shadow_cascades_active_ = false;
+  std::unordered_set<const ScxGeometry*> shadow_meshes_;
   bool static_shadow_local_ = false; // The depth field belongs to the garage lamp.
   bool static_shadow_active_ = false;
   bgfx::FrameBufferHandle car_depth_fb_ = BGFX_INVALID_HANDLE;
