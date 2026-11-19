@@ -782,7 +782,7 @@ Map shadow visibility is shared by scenery and vehicle shaders through
 `shaders/scene_shadow.sh`. Bind it at mesh stage 3 or vehicle stage 5; stage 4
 is the vehicle cubemap and must not be overwritten. Captured world meshes and
 prop batches receive the same world-space shadow field as the main view.
-The field identifies its source (sun or garage lamp), so only that light's
+The field identifies its source (directional or added local light), so only that light's
 direct diffuse/specular contribution is occluded. Ambient/environment light
 is preserved. Vehicle previews and emissive lamp surfaces disable reception;
 the separate car-depth map is not sampled by the same car as a receiver.
@@ -792,6 +792,12 @@ or ground-prop registrations, nor on a terrain mesh being visible. Select the
 root-scoped light directly. An interior may have a skydome; its presence alone
 must not enable the sun. Preview scenes opt out; callers without section metadata
 retain automatic ground-prop detection. Resource reset clears the scene intent.
+An inherited unassigned `internalScene` may be absent from the sparse host object;
+in that case a live Scene.sun parented to the current world also establishes
+exterior intent. Explicit interior metadata takes priority.
+The garage binds its authored directional neon to world shading and shadow
+attenuation, without duplicating the previous point-light approximation. Its
+single bay map excludes the terrain shell but includes ordinary furniture.
 
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection

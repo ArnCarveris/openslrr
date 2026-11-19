@@ -297,7 +297,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         bgfx::setUniform(u_sun_spec_, sun_s);
         bgfx::setUniform(u_sun_dir_, sun_r);
         const float no_light[4]{};
-        bgfx::setUniform(u_local_light_, preview ? no_light : local_light_.data());
+        bgfx::setUniform(u_local_light_, preview || garage_ ? no_light : local_light_.data());
         bgfx::setUniform(u_diffuse_,diffuse);
         const float spec[4] = {group.specular[0], group.specular[1], group.specular[2],
                                group.shininess > 0.f ? group.shininess : 1.f};
@@ -429,7 +429,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       const float sky[4] = {matrix[12], matrix[13], matrix[14],
                             graphics.volumetric_clouds ? 2.f : 1.f};
       const bool scene_light = procedural_sky ||
-          (world_mesh && outdoor_lighting_ && graphics.dynamic_lighting);
+          (world_mesh && graphics.dynamic_lighting &&
+           (outdoor_lighting_ || (garage_ && instance.lighting.set &&
+                                  instance.lighting.has_direction)));
       bind_baked_light(group, &part.tex, mix, world_mesh,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
       if (instance.emissive_overlay && group && group->emission_index != 0xffff) {
@@ -444,7 +446,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         if (mask.idx == white_tex_.idx) return;
         bgfx::setTexture(1, s_lightmap_, mask);
       }
-      if (world_mesh) bgfx::setUniform(u_local_light_, local_light_.data());
+      // The garage neon is already the authored directional source above.
+      // Do not add its old unoccluded point-light approximation a second time.
+      if (world_mesh && !garage_) bgfx::setUniform(u_local_light_, local_light_.data());
       uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA;
       if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;
       if (instance.cull_backfaces && !(flags & 0x02000000u))

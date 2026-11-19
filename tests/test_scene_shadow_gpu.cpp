@@ -66,7 +66,10 @@ struct SceneShadowRegression {
     b.instances_ = scene_instances_collect();
     b.update_static_shadow(eye, video);
     SLRR_REQUIRE(!b.static_shadow_active_);
-    section.fields["internalScene"] = Value::make_int(0);
+    // CarMarket inherits an unassigned int: the host object is sparse, but
+    // Scene.addSceneElements has created its sun. Exercise that real layout.
+    section.fields.erase("internalScene");
+    section.fields["sun"] = Value::make_obj(&light);
     mainloop_sync_section_render(b, f.sections);
     scene_sun_set_time(12 * 3600.f);
     SLRR_REQUIRE(scene_instances_outdoor());
@@ -77,6 +80,20 @@ struct SceneShadowRegression {
     bgfx::frame();
     SLRR_REQUIRE(b.static_shadow_active_ && b.shadow_cascades_active_);
     SLRR_REQUIRE(b.shadow_meshes_.contains(geometry.get()));
+    // Garage uses the authored downwards neon for direct shading/visibility,
+    // and furniture must cast too, not only vehicle_material instances.
+    section.fields["internalScene"] = Value::make_int(1);
+    section.class_name = "java.game.Garage";
+    mainloop_sync_section_render(b, f.sections);
+    b.instances_ = scene_instances_collect();
+    b.cache_scene_mesh(geometry, nullptr, false);
+    b.local_light_ = {0, 3.3f, 0, 8};
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.static_shadow_active_ && !b.static_shadow_local_);
+    b.garage_ = false;
+    b.local_light_ = {};
+    b.instances_.clear();
     scene_instances_select(&world, &sky, true, SceneEnvironment::Exterior);
     SLRR_REQUIRE(!scene_instances_outdoor());
     b.update_static_shadow(eye, video);
@@ -271,6 +288,17 @@ struct SceneShadowRegression {
     const auto meshLit = pixel(false, true, .9f, 2);
     const auto meshShadow = pixel(false, true, .2f, 2);
     const auto captureShadow = pixel(false, true, .2f, 72);
+    b.garage_ = true;
+    b.outdoor_lighting_ = false;
+    b.static_shadow_local_ = false;
+    const auto garageLit = pixel(false, true, .9f, 2);
+    const auto garageShadow = pixel(false, true, .2f, 2);
+    const auto garageCapture = pixel(false, true, .2f, 72);
+    std::printf("Garage authored light sums: lit=%d shadow=%d capture=%d\n",
+                garageLit, garageShadow, garageCapture);
+    SLRR_REQUIRE(garageShadow * 2 < garageLit && garageCapture == garageShadow);
+    b.garage_ = false;
+    b.outdoor_lighting_ = true;
     b.static_shadow_local_ = true;
     const auto unrelatedSun = pixel(true, true, .2f, 2);
     b.local_light_ = {0, 0, 3, 8};

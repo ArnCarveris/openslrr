@@ -103,6 +103,31 @@ No Java patch or resource-format change is required. This increment does not
 replace the garage's approximate neon emitter or add real interior/headlight
 emitters. Actual dealer/addon assets still need visual acceptance.
 
+## Dealer and garage follow-up after the scene-intent retest
+
+Real CarMarket inherits an unassigned `internalScene` int, absent from the sparse
+host field map. It does create `sun` through Scene.addSceneElements. The host now
+recognizes that live sun parented to the selected world when explicit interior
+metadata is absent; explicit `internalScene=1` still wins. This closes the gap
+missed by the earlier fixture which explicitly assigned zero.
+
+Garage.java deliberately disables the sun and instances a directional neon.
+The garage map was active, but its visibility only attenuated a small added
+point-light approximation; the fallback floor lighting remained unshadowed.
+Garage world meshes now use their authored directional light, and its map
+attenuates that direct source. The old duplicate point contribution is removed
+from garage world/vehicle draws. Non-terrain furniture also casts; the room shell
+stays a receiver so its ceiling does not blanket the room.
+
+This remains one approximate 10 m orthographic bay map anchored above the
+origin, not a complete real interior-emitter system. Multiple fixtures, complete
+room geometry occlusion and generic interior metadata remain outstanding.
+
+Validation now uses an isolated physical directory tree containing all resource
+packs. The older junction-based benchmark root skipped nested packs during
+open_all; its city runs were useful smoke checks but did not validate garage or
+dealer light creation. Record this limitation when interpreting old evidence.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

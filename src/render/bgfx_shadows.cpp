@@ -16,7 +16,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   shadow_cascades_active_ = false;
   shadow_meshes_.clear();
   // The garage has no sun map. The neon reuses this same view and looks down
-  // on the bay, so the car and the room cast one shadow without a new pass.
+  // on the bay, so the car and furniture cast onto the room without a new pass.
   if (garage_ && local_light_[3] > 0.f && video.shadows != 0 &&
       debug_overlay_.render_options().map_shadows &&
       bgfx::isValid(static_shadow_program_)) {
@@ -81,7 +81,8 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     // The room stays a receiver. Casting the shell from a light under the
     // ceiling would put the whole floor in shadow.
     for (const auto& instance : instances_) {
-      if (!instance.vehicle_material || instance.light_flags || !instance.geometry) continue;
+      if (instance.sky || instance.light_flags || !instance.geometry ||
+          instance.geometry->ground_polygons || instance.gpu_skin || instance.emissive_overlay) continue;
       const auto found = instance_meshes_.find(instance.geometry.get());
       if (found == instance_meshes_.end()) continue;
       cast(found->second.vbh, found->second.ibh, found->second.geo.groups,
@@ -90,7 +91,9 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     static_shadow_eye_ = {light.x, light.y, light.z};
     static_shadow_distance_ = 40.f;
     static_shadow_active_ = true;
-    static_shadow_local_ = true;
+    // The authored neon is directional. Its visibility must attenuate that
+    // direct light, not a weak extra point light over an unshadowed fallback.
+    static_shadow_local_ = false;
     return;
   }
   if (!eye || video.shadows == 0 || !scene_instances_outdoor()) {

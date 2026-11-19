@@ -229,6 +229,11 @@ void mainloop_sync_section_render(IRenderBackend& render,
     if (internal != actual->fields.end() && internal->second.tag == ValueTag::Int)
       environment = internal->second.v.i ? SceneEnvironment::Interior
                                          : SceneEnvironment::Exterior;
+    else if (const auto* sun = gameref_get(object_field("sun"));
+             sun && !sun->empty && sun->parent == world)
+      // Unassigned Java int fields may be absent from the sparse host object.
+      // Scene.addSceneElements has already materialized its exterior intent.
+      environment = SceneEnvironment::Exterior;
   }
   scene_instances_select(world, object_field("skydome"), world && world == car_preview,
                          environment);

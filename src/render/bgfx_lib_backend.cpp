@@ -1597,8 +1597,9 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         bgfx::setIndexBuffer(part.ibh, start, count);
         bgfx::setTexture(0, s_tex_,
                          bgfx::isValid(tex) ? tex : white_tex_, world_sampler());
-        bind_baked_light(group, &part.tex, BGFX_INVALID_HANDLE, true);
-        bgfx::setUniform(u_local_light_, local_light_.data());
+        const auto light = scene_instances_light();
+        bind_baked_light(group, &part.tex, BGFX_INVALID_HANDLE, true,
+                         host_enhanced_graphics().dynamic_lighting ? &light : nullptr);
         bgfx::setState(alpha_cutout ? state_cutout : state_opaque);
         bgfx::submit(view_id, program_);
       };
