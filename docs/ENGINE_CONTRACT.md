@@ -845,7 +845,12 @@ twelve 512-square tiles, one downward perspective per fitting. Reserved views
 0..139, preserving preview/inset/OSD/reflection order. Main/captured mesh and
 vehicle programs use fixture sampler 7. Unchanged projection/caster state reuses
 all tiles; position, direction, range or caster changes refresh depth, while
-colour/intensity updates only affect shading. The fallback cube atlas is inactive
+colour/intensity updates only affect shading. Fixture PCF aligns four comparisons
+with depth texel centres and evaluates each reference depth on the local receiver
+plane (derivatives taken before bounds branches). This avoids grazing-angle
+self-shadow stripes without a large constant bias, disabling vehicle occlusion,
+or increasing atlas resolution/tap count. Bilinear weights reconstruct visibility;
+the small residual depth bias is .000005. The fallback cube atlas is inactive
 when the paired fixtures are active. Close destroys the extra atlas/uniforms.
 
 Generic fixture authoring, adapters for other garages, outdoor punctual sources,

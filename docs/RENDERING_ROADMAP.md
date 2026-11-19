@@ -232,6 +232,11 @@ exact depth reuse, reflection-view equality, rooted lifetime/option gating and
 white tube pixels with lighting disabled. An isolated game capture was inspected:
 white paired tubes align with the fittings and light reaches the surrounding
 walls/floor. See [neon-fixture-placement.txt](../assets/validation/neon-fixture-placement.txt).
+A follow-up corrects grazing-angle fixture shadow acne: four texel-aligned
+comparisons use the receiver's projected plane depth rather than one shared
+reference for a hardware PCF footprint. A vehicle-panel regression goes from
+9,724 affected pixels to zero; actual object occlusion remains covered. See
+[fixture-shadow-receiver-plane.txt](../assets/validation/fixture-shadow-receiver-plane.txt).
 Other garage models still need explicit emitter metadata/adapters; this does not
 claim a generic SCX authoring format, calibrated photometry or area-light softness.
 

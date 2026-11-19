@@ -254,6 +254,35 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(std::abs(int(outside[pixel + 2]) - int(outside[pixel])) <= 1);
     std::puts("PASS point colour/intensity, radial range cutoff and "
               "unchanged-depth reuse");
+    // A lit vertical body panel is also in its own wide-cone shadow map.
+    // Grazing projection/PCF must not invent stripes across that same plane.
+    auto panel=std::make_shared<ScxGeometry>();
+    panel->info.ok=true;panel->info.version=4;panel->position_scale=1;
+    panel->positions={-1.3f,0,-2,-1.3f,3,-2,-1.3f,0,2,-1.3f,3,2};
+    panel->normals={1,0,0,1,0,0,1,0,0,1,0,0};panel->uvs.resize(8,0);
+    panel->indices={0,1,2,2,1,3};panel->groups={group};panel->groups[0].index_count=6;
+    panel->info.bbox_min[0]=panel->info.bbox_max[0]=-1.3f;
+    panel->info.bbox_min[2]=-2;panel->info.bbox_max[2]=2;panel->info.bbox_max[1]=3;
+    b.cache_scene_mesh(panel,nullptr,false);
+    receiver.geometry=panel;receiver.vehicle_material=true;
+    bx::mtxIdentity(receiver.transform.data());bx::mtxIdentity(receiver_view);
+    std::fill(std::begin(projection),std::end(projection),0.f);
+    projection[8]=.5f;projection[5]=2.f/3;projection[13]=-1;
+    projection[14]=.5f;projection[15]=1;view=5;
+    b.instances_={receiver};b.garage_=true;
+    SpotLight lamp;lamp.position={1,6.5f,0};lamp.intensity=24;
+    b.fixture_lights_={lamp};
+    PointLight ambient;ambient.intensity=0;ambient.casts_shadows=false;
+    b.point_light_=ambient;b.point_shadow_active_=false;b.car_depth_active_=false;
+    b.update_fixture_shadows(video);b.draw_previews();bgfx::frame();
+    b.fixture_shadow_active_=false;const auto clean_panel=capture(false);
+    b.fixture_shadow_active_=true;const auto shadowed_panel=capture(false);
+    unsigned acne=0;
+    for(size_t i=0;i<clean_panel.size();i+=4)
+      if(int(clean_panel[i])-int(shadowed_panel[i])>8) ++acne;
+    std::printf("NEON grazing panel self-shadow stripes=%u pixels\n",acne);
+    SLRR_REQUIRE(acne<size*size/100);
+    b.fixture_lights_.clear();b.fixture_shadow_active_=false;b.garage_=false;
     b.point_light_.reset();
     b.point_shadow_active_ = false;
     bgfx::destroy(readback);

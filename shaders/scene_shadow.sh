@@ -22,6 +22,15 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
         if(u_fixtureParams.w>0.5) {
             vec4 clip=mul(u_fixtureMatrices[i],vec4(world+toward*0.015,1.0));
             vec3 p=clip.xyz/max(clip.w,0.0001);
+            // Evaluate derivatives before the varying bounds branch. Compare
+            // each depth texel against the receiver plane at that texel, not
+            // one central depth for an entire grazing-angle PCF footprint.
+            vec3 dx=dFdx(p),dy=dFdy(p);
+            float determinant=dx.x*dy.y-dx.y*dy.x;
+            vec2 gradient=vec2(0.0,0.0);
+            float derivativeScale=max(dot(dx.xy,dx.xy),dot(dy.xy,dy.xy));
+            if(abs(determinant)>max(derivativeScale*0.00001,1e-18))
+                gradient=vec2(dy.y*dx.z-dx.y*dy.z,dx.x*dy.z-dy.x*dx.z)/determinant;
             visibility=0.0;
             if(clip.w>0.0 && all(greaterThan(p,vec3(0.0,0.0,0.0))) &&
                all(lessThan(p,vec3(1.0,1.0,1.0)))) {
@@ -30,11 +39,24 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                 vec2 uv=tile+p.xy*vec2(0.25,1.0/3.0);
                 vec2 texel=u_fixtureParams.yz;
                 uv=clamp(uv,tile+texel*1.5,tile+vec2(0.25,1.0/3.0)-texel*1.5);
-                vec2 t=texel*0.5;
-                visibility=(shadow2D(s_fixtureShadow,vec3(uv+t,p.z))+
-                            shadow2D(s_fixtureShadow,vec3(uv-t,p.z))+
-                            shadow2D(s_fixtureShadow,vec3(uv+vec2(t.x,-t.y),p.z))+
-                            shadow2D(s_fixtureShadow,vec3(uv+vec2(-t.x,t.y),p.z)))*0.25;
+                // Aligned comparison taps avoid the hardware's hidden PCF
+                // neighbours, which cannot have separate receiver depths.
+                vec2 grid=uv/texel-vec2(0.5,0.5);
+                vec2 base=(floor(grid)+vec2(0.5,0.5))*texel;
+                vec2 weight=fract(grid);
+                vec2 a=base,b=base+vec2(texel.x,0.0);
+                vec2 c=base+vec2(0.0,texel.y),d=base+texel;
+                vec2 atlasToLocal=vec2(4.0,3.0);
+                vec2 receiverUv=tile+p.xy*vec2(0.25,1.0/3.0);
+                float bias=0.000005;
+                float da=p.z+dot(gradient,(a-receiverUv)*atlasToLocal)-bias;
+                float db=p.z+dot(gradient,(b-receiverUv)*atlasToLocal)-bias;
+                float dc=p.z+dot(gradient,(c-receiverUv)*atlasToLocal)-bias;
+                float dd=p.z+dot(gradient,(d-receiverUv)*atlasToLocal)-bias;
+                visibility=mix(mix(shadow2D(s_fixtureShadow,vec3(a,da)),
+                                   shadow2D(s_fixtureShadow,vec3(b,db)),weight.x),
+                               mix(shadow2D(s_fixtureShadow,vec3(c,dc)),
+                                   shadow2D(s_fixtureShadow,vec3(d,dd)),weight.x),weight.y);
             }
         }
         vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
