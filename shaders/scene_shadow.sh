@@ -56,6 +56,8 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                 vec2 grid=uv/texel-vec2(0.5,0.5);
                 vec2 base=(floor(grid)+vec2(0.5,0.5))*texel;
                 vec2 weight=fract(grid);
+                // Sharp retains a narrow, continuous anti-aliased edge.
+                if(u_shadowFilter.x<0.5) weight=smoothstep(vec2(0.15,0.15),vec2(0.85,0.85),weight);
                 vec2 a=base,b=base+vec2(texel.x,0.0);
                 vec2 c=base+vec2(0.0,texel.y),d=base+texel;
                 vec2 atlasToLocal=vec2(4.0,3.0);
@@ -69,13 +71,16 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                                    shadow2D(s_fixtureShadow,vec3(b,db)),weight.x),
                                mix(shadow2D(s_fixtureShadow,vec3(c,dc)),
                                    shadow2D(s_fixtureShadow,vec3(d,dd)),weight.x),weight.y);
-                vec2 nearest=base+step(vec2(0.5,0.5),weight)*texel;
-                if(u_shadowFilter.x<0.5) visibility=fixtureReceiverTap(nearest,p,receiverUv,gradient);
-                else if(u_shadowFilter.x>1.5) {
+                if(u_shadowFilter.x>1.5) {
                     visibility=0.0;
-                    for(int fy=-1;fy<=1;++fy) for(int fx=-1;fx<=1;++fx) {
-                        float w=float((fx==0?2:1)*(fy==0?2:1));
-                        visibility+=w*fixtureReceiverTap(nearest+vec2(float(fx),float(fy))*texel,p,receiverUv,gradient);
+                    // Fractional tent weights move continuously across texels.
+                    for(int fy=-1;fy<=2;++fy) for(int fx=-1;fx<=2;++fx) {
+                        vec2 offset=vec2(float(fx),float(fy));
+                        vec2 tent=max(vec2(2.0,2.0)-abs(offset-weight),vec2(0.0,0.0));
+                        float w=tent.x*tent.y;
+                        vec2 tap=clamp(base+offset*texel,tile+texel*0.5,
+                                       tile+vec2(0.25,1.0/3.0)-texel*0.5);
+                        visibility+=w*fixtureReceiverTap(tap,p,receiverUv,gradient);
                     }
                     visibility*=0.0625;
                 }
@@ -113,6 +118,7 @@ float interiorSunVisibility(vec3 world)
     vec2 grid=p.xy/texel-vec2(0.5,0.5);
     vec2 base=(floor(grid)+vec2(0.5,0.5))*texel;
     vec2 weight=fract(grid);
+    if(u_shadowFilter.x<0.5) weight=smoothstep(vec2(0.15,0.15),vec2(0.85,0.85),weight);
     vec2 a=clamp(base,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*1.5,1.0-texel*1.5));
     vec2 b=a+vec2(texel,0.0),c=a+vec2(0.0,texel),d=a+vec2(texel,texel);
     // Small residual depth bias; a multi-centimetre constant offsets
@@ -124,13 +130,13 @@ float interiorSunVisibility(vec3 world)
     float dd=p.z+dot(gradient,d-p.xy)-bias;
     float result=mix(mix(shadow2D(s_interiorSun,vec3(a,da)),shadow2D(s_interiorSun,vec3(b,db)),weight.x),
                mix(shadow2D(s_interiorSun,vec3(c,dc)),shadow2D(s_interiorSun,vec3(d,dd)),weight.x),weight.y);
-    vec2 nearest=a+step(vec2(0.5,0.5),weight)*texel;
-    if(u_shadowFilter.x<0.5) result=sunReceiverTap(nearest,p,gradient);
-    else if(u_shadowFilter.x>1.5) {
+    if(u_shadowFilter.x>1.5) {
         result=0.0;
-        for(int fy=-1;fy<=1;++fy) for(int fx=-1;fx<=1;++fx) {
-            float w=float((fx==0?2:1)*(fy==0?2:1));
-            vec2 uv=clamp(nearest+vec2(float(fx),float(fy))*texel,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*0.5,1.0-texel*0.5));
+        for(int fy=-1;fy<=2;++fy) for(int fx=-1;fx<=2;++fx) {
+            vec2 offset=vec2(float(fx),float(fy));
+            vec2 tent=max(vec2(2.0,2.0)-abs(offset-weight),vec2(0.0,0.0));
+            float w=tent.x*tent.y;
+            vec2 uv=clamp(base+offset*texel,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*0.5,1.0-texel*0.5));
             result+=w*sunReceiverTap(uv,p,gradient);
         }
         result*=0.0625;

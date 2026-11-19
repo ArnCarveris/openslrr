@@ -1193,6 +1193,32 @@ struct SceneShadowRegression {
     stripeX = -1;
     b.car_depth_active_ = false;
     b.car_depth_tex_ = BGFX_INVALID_HANDLE;
+    // A depth edge moving by fractions of a shadow texel must not snap,
+    // even in Sharp. Very Soft must retain fractional phase in its wider tent.
+    const auto saved_filters=host_enhanced_graphics();
+    b.fixture_shadow_tex_=shadow;b.fixture_shadow_active_=true;b.fixture_shadow_tile_=size/4;
+    SpotLight probe;probe.position={0,0,5};probe.direction={0,0,-1};probe.intensity=2;
+    b.fixture_lights_={probe};
+    b.fixture_shadow_matrices_={};
+    auto& fixture_matrix=b.fixture_shadow_matrices_[0];
+    fixture_matrix[13]=.5f;fixture_matrix[14]=.5f;fixture_matrix[15]=1;
+    stripeX=size/8;
+    for(int filter=0;filter<3;++filter) {
+      host_enhanced_graphics().shadow_smoothing=filter;
+      std::vector<int> samples;int jump=0;
+      for(int step=0;step<=32;++step) {
+        fixture_matrix[12]=.5f+(-1.f+step/32.f)/(size/4);
+        const int value=pixel(false,false,.9f,5);
+        if(!samples.empty()) jump=std::max(jump,std::abs(value-samples.back()));
+        samples.push_back(value);
+      }
+      auto distinct=samples;std::sort(distinct.begin(),distinct.end());
+      distinct.erase(std::unique(distinct.begin(),distinct.end()),distinct.end());
+      std::printf("Fixture filter %d fractional edge: %zu levels, max step %d\n",filter,distinct.size(),jump);
+      SLRR_REQUIRE(distinct.size()>(filter==2?5:8) && jump<=8);
+    }
+    host_enhanced_graphics()=saved_filters;stripeX=-1;
+    b.fixture_lights_.clear();b.fixture_shadow_active_=false;b.fixture_shadow_tex_=BGFX_INVALID_HANDLE;
     // Distinct depth in each tile detects wrong atlas selection or clears
     // accidentally overwriting other view rectangles on D3D11.
     bgfx::destroy(b.static_shadow_fb_);

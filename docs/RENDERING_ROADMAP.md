@@ -303,3 +303,15 @@ needed for the receiver defects fixed here; the OptionsDialog patch ships the ne
 Use copies of game data/saves for diagnostic runs. Report build, pixel tests,
 manual visuals and timing separately. Do not close #201 on the strength of one
 increment or turn an unvalidated screenshot into a compatibility claim.
+
+
+## Continuous shadow edges
+
+Fixture/interior sunlight Sharp retains anti-aliasing instead of exposing one
+nearest depth texel. Very Soft now follows the fractional texel position with
+a 4x4 tent, retaining receiver-plane depth correction and atlas isolation.
+The regression previously had only two coverage values and an RGB jump of 78
+when moving an edge in 1/32-texel increments; the corrected Sharp/Soft/Very Soft
+paths have 11/14/7 values and maximum jumps 6/3/3 respectively. Contact shadows,
+vertical receivers, AO isolation and cached depths remain covered. This changes
+comparison filtering, not emitter positions or simulated volumetric beams.

@@ -981,7 +981,12 @@ Host shadow quality selects local projection tiles 256/512/1024, interior sun
 Resize invalidates the corresponding cached depths. Medium preserves the former
 resolution. Smoothing is independent: sharp, soft, very soft comparison filters;
 it does not invalidate caster depths or change lighting direction/distance.
-All comparison taps preserve receiver-plane correction where present. Options
+All comparison taps preserve receiver-plane correction where present. For fixture
+and interior sunlight, Sharp uses a narrow continuous four-tap edge (never raw
+nearest-texel visibility), Soft uses bilinear four-tap coverage, and Very Soft
+uses a fractional 4x4 tent. Do not snap the wider filter to the nearest depth
+texel: this creates square coverage jumps. Fixture taps stay inside their atlas tile.
+Options
 persist alongside host graphics; OptionsDialog native IDs 7–12 and debug UI agree.
 
 The active world renders to the swap chain. No offscreen scene-copy or HiZ depth
