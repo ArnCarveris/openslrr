@@ -786,6 +786,13 @@ The field identifies its source (sun or garage lamp), so only that light's
 direct diffuse/specular contribution is occluded. Ambient/environment light
 is preserved. Vehicle previews and emissive lamp surfaces disable reception;
 the separate car-depth map is not sampled by the same car as a receiver.
+Scene.java's `internalScene` is forwarded as scene environment metadata.
+Exterior lighting and shadow eligibility must not depend on stock ground POLY
+or ground-prop registrations, nor on a terrain mesh being visible. Select the
+root-scoped light directly. An interior may have a skydome; its presence alone
+must not enable the sun. Preview scenes opt out; callers without section metadata
+retain automatic ground-prop detection. Resource reset clears the scene intent.
+
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection
 translation is snapped in light space; every frame uses the current sun rather

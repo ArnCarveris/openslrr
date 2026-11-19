@@ -557,7 +557,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
 
     float view[16];
     float proj[16];
-    outdoor_lighting_ = world_cam && scene_instances_has_ground_props();
+    outdoor_lighting_ = world_cam && scene_instances_outdoor();
     if (world_cam) {
       const float render_eye[3] = {world_eye[0], world_eye[1], -world_eye[2]};
       refresh_distance_fog(render_eye);

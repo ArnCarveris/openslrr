@@ -62,7 +62,12 @@ struct SceneShadowDecal {
 void scene_instances_set_resources(const RpkIndex *resources);
 void scene_instances_set_envmap(uint32_t resource);
 std::string scene_instances_envmap();
-void scene_instances_select(void *world, void *skydome, bool preview_lamps);
+// Scene.java declares interior/exterior independently of the map mesh format.
+// Automatic preserves callers without section metadata (tools and old scripts).
+enum class SceneEnvironment { Automatic, Exterior, Interior };
+void scene_instances_select(void *world, void *skydome, bool preview_lamps,
+                            SceneEnvironment environment = SceneEnvironment::Automatic);
+bool scene_instances_outdoor();
 using SceneFrustum = std::array<std::array<float, 4>, 6>;
 bool scene_instances_has_ground_props();
 void* scene_instances_world();

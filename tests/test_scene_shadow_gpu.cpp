@@ -2,6 +2,7 @@
 #include "../src/render/bgfx_lib_backend.hpp"
 #include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
+#include "slrr/mainloop.hpp"
 #include <bx/math.h>
 namespace slrr {
 void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
@@ -9,6 +10,87 @@ void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void scene_environment(LibBgfxBackend &b) {
+    Fixture f;
+    scene_instances_set_resources(&f.packs);
+    Object world, sky, mesh, light, unrelated, other_light, section;
+    gameref_upsert(&world)->flags = kWorldTreeRoot;
+    gameref_upsert(&sky, GameRefKind::RenderRef);
+    gameref_set_parent(&sky, &world);
+    auto geometry = std::make_shared<ScxGeometry>();
+    geometry->info.ok = true;
+    geometry->info.version = 4;
+    geometry->position_scale = 1;
+    geometry->positions = {-1, 0, 0, 1, 0, 0, 0, 2, 0};
+    geometry->normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
+    geometry->uvs = {0, 0, 1, 0, .5f, 1};
+    geometry->indices = {0, 1, 2};
+    geometry->info.bbox_min[0] = -1;
+    geometry->info.bbox_max[0] = 1;
+    geometry->info.bbox_max[1] = 2;
+    ScxGroup group;
+    group.index_count = 3;
+    geometry->groups.push_back(group);
+    gameref_upsert(&mesh, GameRefKind::RenderRef)->line_geometry = geometry;
+    gameref_set_parent(&mesh, &world);
+    auto make_light = [](Object *key, Object *root, float red) {
+      auto *node = gameref_upsert(key, GameRefKind::RenderRef);
+      node->type_id = 1;
+      node->directional_light.set = node->directional_light.has_direction = true;
+      node->directional_light.diffuse[0] = red;
+      node->directional_light.direction[0] = .2f;
+      node->directional_light.direction[1] = -.8f;
+      node->directional_light.direction[2] = .3f;
+      gameref_set_parent(key, root);
+      gameref_make_live(key);
+      gameref_register_light(key);
+    };
+    make_light(&light, &world, .25f);
+    gameref_upsert(&unrelated)->flags = kWorldTreeRoot;
+    make_light(&other_light, &unrelated, .9f);
+    section.fields["map"] = Value::make_obj(&world);
+    section.fields["skydome"] = Value::make_obj(&sky);
+    section.fields["internalScene"] = Value::make_int(1);
+    f.sections.adopt_actual(&section);
+    mainloop_sync_section_render(b, f.sections);
+    SLRR_REQUIRE(!scene_instances_has_ground_props() && !scene_instances_outdoor());
+    scene_sun_set_time(12 * 3600.f);
+    auto indoor = scene_instances_light();
+    SLRR_REQUIRE(indoor.diffuse[0] == .25f && indoor.direction[0] == .2f);
+    scene_sun_set_time(0);
+    SLRR_REQUIRE(scene_instances_light().direction[0] == .2f);
+    // A skydome also exists in internalScene: it must not enable sunlight.
+    VideoOptions video;
+    video.shadows = 2;
+    const float eye[3] = {0, 1, 4};
+    b.instances_ = scene_instances_collect();
+    b.update_static_shadow(eye, video);
+    SLRR_REQUIRE(!b.static_shadow_active_);
+    section.fields["internalScene"] = Value::make_int(0);
+    mainloop_sync_section_render(b, f.sections);
+    scene_sun_set_time(12 * 3600.f);
+    SLRR_REQUIRE(scene_instances_outdoor());
+    SLRR_REQUIRE(scene_instances_light().direction[1] < -.8f);
+    // No main-view ground or even visible instances are needed to find the sun.
+    b.instances_.clear();
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.static_shadow_active_ && b.shadow_cascades_active_);
+    SLRR_REQUIRE(b.shadow_meshes_.contains(geometry.get()));
+    scene_instances_select(&world, &sky, true, SceneEnvironment::Exterior);
+    SLRR_REQUIRE(!scene_instances_outdoor());
+    b.update_static_shadow(eye, video);
+    SLRR_REQUIRE(!b.static_shadow_active_);
+    scene_instances_select(&world, &sky, false);
+    SLRR_REQUIRE(!scene_instances_outdoor());
+    f.sections.adopt_actual(nullptr);
+    for (Object *object : {&other_light, &unrelated, &light, &mesh, &sky, &world})
+      gameref_remove(object);
+    scene_instances_set_resources(nullptr);
+    std::puts("PASS scene intent: mesh-only exterior shadows, interior clock/sky "
+              "isolation, root-scoped lights, preview and automatic fallback");
+  }
+
   static void real_world_cache(LibBgfxBackend &b) {
     Fixture f;
     f.packs.set_root(fs::absolute("game").string());
@@ -37,9 +119,7 @@ struct SceneShadowRegression {
     b.update_static_shadow(eye, video);
     bgfx::frame();
     SLRR_REQUIRE(b.shadow_atlas_revision_ == revision);
-    for (auto &object : b.instances_)
-      if (object.geometry->ground_polygons)
-        object.lighting.direction[0] += .00001f;
+    scene_sun_set_time(scene_sun_time() + .01f);
     b.update_static_shadow(eye, video);
     bgfx::frame();
     SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
@@ -416,6 +496,7 @@ int main() {
     ShowWindow(static_cast<HWND>(backend.native_hwnd()), SW_HIDE);
     SceneShadowRegression::run(backend);
     SceneShadowRegression::real_world_cache(backend);
+    SceneShadowRegression::scene_environment(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

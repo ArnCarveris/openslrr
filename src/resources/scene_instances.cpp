@@ -34,6 +34,7 @@ SceneSizeFilter g_size_filter = nullptr;
 void* g_size_filter_user = nullptr;
 void *g_sky = nullptr;
 bool g_preview_lamps = false;
+SceneEnvironment g_environment_kind = SceneEnvironment::Automatic;
 uint32_t g_environment = 0;
 struct ShadowInfo {
   uint32_t flags = 0;
@@ -785,6 +786,7 @@ void scene_instances_set_resources(const RpkIndex *resources) {
   g_resources = resources;
   g_world = g_sky = nullptr;
   g_preview_lamps = false;
+  g_environment_kind = SceneEnvironment::Automatic;
   g_meshes.clear();
   g_shadow_info.clear();
   g_overrides.clear();
@@ -822,14 +824,23 @@ std::string scene_instances_envmap() {
   return g_resources ? g_resources->texture_path_for_id(g_environment)
                      : std::string{};
 }
-void scene_instances_select(void *world, void *skydome, bool preview_lamps) {
+void scene_instances_select(void *world, void *skydome, bool preview_lamps,
+                            SceneEnvironment environment) {
   if (g_world != world) ++g_floor_revision;
   g_world = world;
   g_sky = skydome;
   g_preview_lamps = preview_lamps;
+  g_environment_kind = environment;
   g_floor_prepared = false;
   if (auto *sky = gameref_get(skydome))
     sky->sky_render = true;
+}
+
+bool scene_instances_outdoor() {
+  if (!g_world || g_preview_lamps) return false;
+  if (g_environment_kind == SceneEnvironment::Interior) return false;
+  if (g_environment_kind == SceneEnvironment::Exterior) return true;
+  return scene_instances_has_ground_props();
 }
 
 bool chain_matrix(void *key, void *root, float *matrix, bool reflect,
@@ -1813,7 +1824,7 @@ SceneSun scene_instances_light(void* root) {
     const auto& d=node->directional_light.direction;
     for(int i=0;i<3;++i)selected.direction[i]=frame[i]*d[0]+frame[4+i]*d[1]+frame[8+i]*d[2];
   }
-  if (root == g_world && scene_instances_has_ground_props())
+  if (root == g_world && scene_instances_outdoor())
     scene_sun_apply_day_cycle(selected);
   return selected;
 }

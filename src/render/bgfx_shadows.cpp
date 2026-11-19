@@ -93,7 +93,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     static_shadow_local_ = true;
     return;
   }
-  if (!eye || video.shadows == 0 || !scene_instances_has_ground_props()) {
+  if (!eye || video.shadows == 0 || !scene_instances_outdoor()) {
     shadow_cache_valid_ = false;
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
@@ -102,10 +102,9 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   }
   if (!debug_overlay_.render_options().map_shadows || !bgfx::isValid(static_shadow_program_))
     return;
-  const auto ground = std::find_if(instances_.begin(), instances_.end(),
-      [](const SceneInstance& instance) { return instance.geometry->ground_polygons; });
-  if (ground == instances_.end()) return;
-  const auto sun = ground->lighting;
+  // The selected world's light is independent of visible terrain geometry.
+  // Dealers/addons may contain only ordinary SCX meshes, or no ground in view.
+  const auto sun = scene_instances_light();
   if (!sun.has_direction || sun.direction[1] >= 0.02f) return;
   constexpr uint16_t size = kShadowResolution * 2;
   const bool conservative =

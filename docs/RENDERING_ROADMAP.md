@@ -40,9 +40,9 @@ survive into the following frame to avoid upload churn and are released after
 leaving shadow/main-view usage (with one frame of retirement overlap). Vehicle
 casters still use the separate nearby vehicle-depth path; this increment does
 not add distant cars or skinned pedestrians to the scenery atlas. Garage local
-shadows retain their single map. Existing exterior scene-detection limitations
-for dealers/addons remain; a 1 km receiver range does not extend the main camera
-far clip or guarantee geometry streaming at that distance.
+shadows retain their single map. The later scene-intent increment removes the
+stock-ground format requirement for scripted exterior scenes. A 1 km receiver
+range does not guarantee geometry streaming at that distance.
 
 GPU tests cover distinct atlas tiles, radial selection at 10/70/220/700 m,
 blend values, final fade and sub-texel camera stability/small sun changes.
@@ -83,8 +83,25 @@ Comparison sampling also replaces raw interpolated-depth thresholding for the
 nearby vehicle shadow. Exact unchanged-state atlas reuse avoids redundant draws
 when matrices, origin and caster records agree, while any small sun/caster change
 invalidates it. Real-map and pixel/projection regressions cover these contracts.
-This targets identified defects; full temporal acceptance on the user's view
-remains open. See assets/validation/shadow-origin-stability.txt for evidence.
+The user confirmed the fix on the reported stationary view. This is not a
+complete moving-camera/asset acceptance. See
+assets/validation/shadow-origin-stability.txt for evidence.
+
+## Scene intent instead of stock terrain detection
+
+The host forwards the existing Scene.java `internalScene` field to the scene
+layer. Exterior sunlight, procedural sky and cascades no longer require a
+registered stock ground-prop package. The shadow pass reads the root-scoped scene
+light directly, so an ordinary SCX-only addon or a dealer is eligible even when
+no ground is visible in the main view. Hidden/inventory/unrelated light roots
+remain excluded by the existing light traversal.
+
+An interior remains interior even when its script creates a skydome. Car previews
+opt out of outdoor lighting. Callers with no section metadata retain the prior
+ground-prop detection fallback; resources/scene transitions reset that metadata.
+No Java patch or resource-format change is required. This increment does not
+replace the garage's approximate neon emitter or add real interior/headlight
+emitters. Actual dealer/addon assets still need visual acceptance.
 
 ## Still outstanding
 
