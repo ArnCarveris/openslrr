@@ -123,6 +123,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bool debug_was_visible_ = false;
   struct ScenePart {
     SceneMeshData geo;
+    std::vector<ScxGroup> shadow_groups;
     bool merge_groups = false;
     std::shared_ptr<const ScxGeometry> source;
     bgfx::VertexBufferHandle vbh = BGFX_INVALID_HANDLE;
@@ -153,6 +154,10 @@ class LibBgfxBackend final : public IRenderBackend {
 
   // Diffuse * baked lightmap, the way the exe draws a map. No lightmap
   // (OSD, FMV, a mesh without the slot) keeps the existing shading.
+  uint32_t world_sampler() const {
+    return host_enhanced_graphics().anisotropic_filtering
+        ? BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC : BGFX_SAMPLER_NONE;
+  }
   void bind_scene_shadow(bool receive, uint8_t stage);
   void bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex,

@@ -19,11 +19,19 @@ float shadowTapField(vec3 p, vec2 tile, float scale, float bias)
     if(edge<=texel*2.0 || p.z<=0.0 || p.z>=1.0) return 1.0;
     float depth=p.z-bias;
     vec2 uv=p.xy*scale+tile;
-    vec2 o=vec2(u_staticShadowParams.y*1.5,u_staticShadowParams.y*.5);
-    return (shadow2D(s_staticShadow,vec3(uv+vec2(-o.x,-o.y),depth))+
-            shadow2D(s_staticShadow,vec3(uv+vec2(o.y,-o.x),depth))+
-            shadow2D(s_staticShadow,vec3(uv+vec2(o.x,o.y),depth))+
-            shadow2D(s_staticShadow,vec3(uv+vec2(-o.y,o.x),depth)))*.25;
+    // Symmetric tent PCF: a smooth footprint for thin poles/cables moving
+    // across texels as sunlight changes. Hardware compare remains bilinear.
+    float t=u_staticShadowParams.y*1.5;
+    float result=shadow2D(s_staticShadow,vec3(uv,depth))*4.0;
+    result+=(shadow2D(s_staticShadow,vec3(uv+vec2(t,0.0),depth))+
+             shadow2D(s_staticShadow,vec3(uv-vec2(t,0.0),depth))+
+             shadow2D(s_staticShadow,vec3(uv+vec2(0.0,t),depth))+
+             shadow2D(s_staticShadow,vec3(uv-vec2(0.0,t),depth)))*2.0;
+    result+=shadow2D(s_staticShadow,vec3(uv+vec2(t,t),depth))+
+            shadow2D(s_staticShadow,vec3(uv+vec2(t,-t),depth))+
+            shadow2D(s_staticShadow,vec3(uv+vec2(-t,t),depth))+
+            shadow2D(s_staticShadow,vec3(uv-vec2(t,t),depth));
+    return result/16.0;
 }
 float cascadeVisibility(vec3 world, float distanceToEye)
 {

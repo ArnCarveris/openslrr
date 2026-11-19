@@ -72,7 +72,8 @@ using SceneSizeFilter = bool (*)(const float center[3], float radius, void* user
 void scene_instances_set_size_filter(SceneSizeFilter test, void* user);
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum = nullptr,
-    std::vector<std::shared_ptr<const ScxGeometry>>* resident_props = nullptr);
+    std::vector<std::shared_ptr<const ScxGeometry>>* resident_props = nullptr,
+    bool complete_character_palettes = true);
 // Repeated opaque props already grouped per cell. reflection_origin, in
 // render metres, drops placements that cover fewer than about four pixels
 // of a 256² reflection face.

@@ -48,6 +48,11 @@ int main() {
    host_game_options_load(f.vm);
    SLRR_REQUIRE(host_enhanced_graphics().msaa==mode);
  }
+ for(int value=0;value<=1;++value){
+   set_graphics(6,value);host_enhanced_graphics()={};host_game_options_load(f.vm);
+   SLRR_REQUIRE(host_enhanced_graphics().anisotropic_filtering==bool(value));
+   SLRR_REQUIRE(f.registry.invoke("java.game.OptionsDialog","getRendererOption","(I)I",nullptr,{Value::make_int(6)}).v.i==value);
+ }
  for(int key=1;key<=4;++key)set_graphics(key,0);
  set_graphics(0,3);
  host_set_framerate_mode(FramerateMode::Classic);
@@ -61,9 +66,9 @@ int main() {
  g={};host_game_options_load(f.vm);SLRR_REQUIRE(g.msaa==2 && g.dynamic_reflections);
  std::ofstream(host_file)<<"framerate_mode=classic\n";
  host_game_options_load(f.vm);SLRR_REQUIRE(g==EnhancedGraphics{});
- std::ofstream(host_file)<<"msaa=999\nlocal_lights=invalid\nvolumetric_clouds=0\n";
+ std::ofstream(host_file)<<"msaa=999\nlocal_lights=invalid\nvolumetric_clouds=0\nanisotropic_filtering=invalid\n";
  host_game_options_load(f.vm);
- SLRR_REQUIRE(g.msaa==1 && g.local_lights && !g.volumetric_clouds);
+ SLRR_REQUIRE(g.msaa==1 && g.local_lights && !g.volumetric_clouds && g.anisotropic_filtering);
  std::puts("PASS graphics disk round-trip: all MSAA modes, booleans, framerate coexistence, debug path, legacy and malformed files");
  std::puts("PASS debounce; failed saves suspend automatic retries; real changes rearm; forced retry and success clear dirty");
 }

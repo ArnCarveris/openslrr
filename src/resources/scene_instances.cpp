@@ -2212,12 +2212,13 @@ bool scene_instances_has_ground_props() {
 
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum,
-    std::vector<std::shared_ptr<const ScxGeometry>>* resident_props) {
+    std::vector<std::shared_ptr<const ScxGeometry>>* resident_props,
+    bool complete_character_palettes) {
   std::vector<SceneInstance> out;
   if (const auto& world = world_instances(out); &world != &out) out = world;
   // Walkers outside this view keep an empty palette; the renderer skips them.
   for (auto& instance : out)
-    if (instance.gpu_skin && instance.skin.empty() &&
+    if (complete_character_palettes && instance.gpu_skin && instance.skin.empty() &&
         (!frustum || character_in_view(instance, *frustum)))
       complete_skin(instance);
   if (g_ground_props.empty()) return out;

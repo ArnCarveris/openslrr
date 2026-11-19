@@ -50,6 +50,25 @@ A city smoke and captures exercise production submission. Four refreshed passes
 increase CPU submission/collection work; see the validation evidence for measured
 cost. They must not be described as a free quality/performance improvement.
 
+## Third increment: CPU work and texture filtering
+
+The cascade implementation now collects outer candidates once, skips unused
+character palette completion and filters render-space bounds for each level.
+Cached depth groups merge contiguous opaque index ranges across material
+changes; cutout settings and transparent holes retain their boundaries. None of
+these optimizations lowers the four cascade radii or their update frequency.
+
+The comparison footprint is now a symmetric nine-tap tent to reduce thin-caster
+aliasing. GPU tests include a one-texel stripe shifted across the footprint;
+this does not establish that every reported temporal shimmer is resolved.
+
+Anisotropic world-texture filtering is exposed in the patched video menu and
+debug overlay, off/hardware maximum, default on, persisted through the existing
+host options file. It is separate from shadow comparison filtering. See
+HOST_NATIVE_UTILITIES.md for index 6 and assets/validation/shadow-performance-filtering.txt
+for tests and measurements. Previous timing numbers remain historical evidence,
+not the current performance claim.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

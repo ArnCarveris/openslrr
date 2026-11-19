@@ -2257,3 +2257,23 @@ assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.
   the separate short-range vehicle-caster path and scene-detection limits.
 - `tests/test_scene_shadow_gpu.cpp` checks distinct atlas clears/selection,
   blends and the 1 km fade through actual shaders, plus projection stability.
+
+
+### Cascade CPU cost, filtering and anisotropy (#201)
+
+- The outer shadow candidates are collected once per frame; the four levels
+  cull their render-space bounds without rebuilding all scene records. Shadow
+  collection opts out of character palette completion: these passes exclude
+  skinned casters. Main/reflection character collection keeps the default.
+- `src/render/scene_mesh_data.hpp:shadow_draw_groups` caches contiguous depth
+  ranges across opaque material changes while preserving blend holes and
+  cutout texture/channel/reference boundaries. Revision uploads rebuild them.
+- Tent-weighted nine-tap bilinear comparison replaces the four-tap footprint.
+  A thin-stripe GPU regression checks fractional response, but reported moving
+  pole-shadow scintillation still needs manual validation; do not mark it fixed.
+- `OptionsDialog.get/setRendererOption` index 6 controls anisotropic filtering
+  (off/hardware maximum, default on), saved in openslrr_options and shared with
+  the debug checkbox. World colour/detail samplers opt in, comparison maps and
+  UI do not. Patched OptionsDialog source/container are shipped and installed.
+- See assets/validation/shadow-performance-filtering.txt for measured changes;
+  the previous cascade cost in scene-shadow-cascades.txt is historical.

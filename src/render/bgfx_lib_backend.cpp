@@ -532,7 +532,8 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     const uint32_t msaa[] = {BGFX_RESET_NONE, BGFX_RESET_MSAA_X2,
                              BGFX_RESET_MSAA_X4, BGFX_RESET_MSAA_X8};
     const uint32_t flags = (debug_render.vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE)
-                           | msaa[host_enhanced_graphics().msaa];
+                           | msaa[host_enhanced_graphics().msaa]
+                           | (host_enhanced_graphics().anisotropic_filtering ? BGFX_RESET_MAXANISOTROPY : 0);
     if (width_ != old_width || height_ != old_height || flags != reset_flags_) {
       bgfx::reset(flags, &sc);
       reset_flags_ = flags;
@@ -1426,6 +1427,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     const auto& source = *part.source;
     auto upload = prepare_scene_mesh(source, part.merge_groups);
     part.geo = std::move(upload.metadata);
+    part.shadow_groups = shadow_draw_groups(part.geo);
     const size_t n = source.positions.size() / 3;
     if (n == 0 || source.indices.empty()) return;
     bool reverse_tread = false;
@@ -1587,7 +1589,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         bgfx::setVertexBuffer(0, part.vbh);
         bgfx::setIndexBuffer(part.ibh, start, count);
         bgfx::setTexture(0, s_tex_,
-                         bgfx::isValid(tex) ? tex : white_tex_);
+                         bgfx::isValid(tex) ? tex : white_tex_, world_sampler());
         bind_baked_light(group, &part.tex, BGFX_INVALID_HANDLE, true);
         bgfx::setUniform(u_local_light_, local_light_.data());
         bgfx::setState(alpha_cutout ? state_cutout : state_opaque);

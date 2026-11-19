@@ -70,6 +70,7 @@ void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& o
   ImGui::Checkbox("VSync", &options.vsync);
   ImGui::Checkbox("Vehicle shadows", &options.shadows);
   ImGui::Checkbox("Map shadows", &options.map_shadows);
+  ImGui::Checkbox("Anisotropic filtering (hardware max)", &enhanced.anisotropic_filtering);
   ImGui::Checkbox("Map sunlight", &enhanced.dynamic_lighting);
   ImGui::Checkbox("Local lights", &enhanced.local_lights);
   ImGui::Checkbox("Dynamic reflections", &enhanced.dynamic_reflections);

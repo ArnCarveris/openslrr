@@ -67,6 +67,7 @@ void register_script_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           case 3: return Value::make_int(graphics.dynamic_lighting);
           case 4: return Value::make_int(graphics.local_lights);
           case 5: return Value::make_int(static_cast<int>(host_framerate_mode()));
+          case 6: return Value::make_int(graphics.anisotropic_filtering);
           default: return Value::make_int(0);
         }
       });
@@ -87,6 +88,7 @@ void register_script_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           case 5:
             host_set_framerate_mode(value ? FramerateMode::Adaptive : FramerateMode::Classic);
             return Value::make_void();
+          case 6: graphics.anisotropic_filtering = value != 0; break;
           default: return Value::make_void();
         }
         host_save_graphics_options();

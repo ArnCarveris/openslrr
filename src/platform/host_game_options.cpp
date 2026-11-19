@@ -37,7 +37,8 @@ void load_host_options(const std::string& root) {
     else if (line == "msaa=1") graphics.msaa = 1;
     else if (line == "msaa=2") graphics.msaa = 2;
     else if (line == "msaa=3") graphics.msaa = 3;
-    else for (const auto& entry : {std::pair{"dynamic_reflections", &graphics.dynamic_reflections},
+    else for (const auto& entry : {std::pair{"anisotropic_filtering", &graphics.anisotropic_filtering},
+                                  std::pair{"dynamic_reflections", &graphics.dynamic_reflections},
                                   std::pair{"volumetric_clouds", &graphics.volumetric_clouds},
                                   std::pair{"dynamic_lighting", &graphics.dynamic_lighting},
                                   std::pair{"local_lights", &graphics.local_lights}}) {
@@ -55,6 +56,7 @@ bool save_host_options() {
   out << "framerate_mode="
       << (framerate_mode == FramerateMode::Classic ? "classic" : "adaptive") << '\n'
       << "msaa=" << std::clamp(graphics.msaa, 0, 3) << '\n'
+      << "anisotropic_filtering=" << graphics.anisotropic_filtering << '\n'
       << "dynamic_reflections=" << graphics.dynamic_reflections << '\n'
       << "volumetric_clouds=" << graphics.volumetric_clouds << '\n'
       << "dynamic_lighting=" << graphics.dynamic_lighting << '\n'

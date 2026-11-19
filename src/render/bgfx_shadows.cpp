@@ -133,6 +133,22 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   static_shadow_eye_ = {focus[0], focus[1], focus[2]};
   // Refresh moving sunlight every frame; texel-snapped projections remove
   // camera swimming without an eight-metre cache jump.
+  const auto outer = shadow_projection(focus,direction,shadow_radii.back(),kShadowResolution,
+      caps->homogeneousDepth,caps->originBottomLeft);
+  const auto outer_frustum=view_frustum(outer.view.data(),outer.projection.data());
+  // One scene traversal; nested light volumes reuse these immutable draw records.
+  const auto casters=scene_instances_collect(&outer_frustum,nullptr,false);
+  std::vector<SceneBatch> outer_batches;
+  scene_instances_collect_batches(&outer_frustum,outer_batches);
+  for(const auto& instance:casters) {
+    if(!instance.geometry || instance.sky || instance.vehicle_material || instance.gpu_skin ||
+       instance.light_flags || instance.emissive_overlay) continue;
+    shadow_meshes_.insert(instance.geometry.get());
+    cache_scene_mesh(instance.geometry,nullptr,false);
+  }
+  for(const auto& batch:outer_batches) if(batch.geometry) {
+    shadow_meshes_.insert(batch.geometry.get());cache_scene_mesh(batch.geometry,nullptr,true);
+  }
   for (size_t cascade = 0; cascade < shadow_radii.size(); ++cascade) {
     const auto projection = shadow_projection(
         focus, direction, shadow_radii[cascade], kShadowResolution,
@@ -149,7 +165,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     bgfx::setViewTransform(view_id, projection.view.data(),
                            projection.projection.data());
     bgfx::touch(view_id);
-    for (const auto &instance : scene_instances_collect(&frustum)) {
+    for (const auto &instance : casters) {
       // Vehicles retain their separate nearby depth map. The scenery depth
       // shader has no skin palette; skinned casters need their own path.
       // Ground POLY also contains buildings, stairs and track structures.
@@ -159,15 +175,14 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
           instance.gpu_skin || instance.light_flags ||
           instance.emissive_overlay)
         continue;
-      shadow_meshes_.insert(instance.geometry.get());
-      cache_scene_mesh(instance.geometry, nullptr, false);
+      if(!shadow_bounds_visible(*instance.geometry,instance.transform,frustum)) continue;
       const auto found = instance_meshes_.find(instance.geometry.get());
       if (found == instance_meshes_.end())
         continue;
       const auto &part = found->second;
       if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh))
         continue;
-      for (const auto &group : part.geo.groups) {
+      for (const auto &group : part.shadow_groups) {
         const bool v4 = part.geo.info.version == 4;
         const auto surface = scx_surface(part.geo.info.version, group);
         if (surface.blend)
@@ -197,12 +212,11 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
       }
     }
     std::vector<SceneBatch> shadow_batches;
-    scene_instances_collect_batches(&frustum, shadow_batches);
-    for (const auto &batch : shadow_batches) {
-      if (!batch.geometry)
-        continue;
-      shadow_meshes_.insert(batch.geometry.get());
-      cache_scene_mesh(batch.geometry, nullptr, true);
+    for(const auto& batch:outer_batches) {
+      SceneBatch filtered;filtered.geometry=batch.geometry;filtered.lighting=batch.lighting;
+      for(const auto& instance:batch.instances)
+        if(shadow_bounds_visible(*batch.geometry,instance.transform,frustum)) filtered.instances.push_back(instance);
+      if(!filtered.instances.empty()) shadow_batches.push_back(std::move(filtered));
     }
     draw_prop_batches(view_id, shadow_batches, true, conservative);
   }

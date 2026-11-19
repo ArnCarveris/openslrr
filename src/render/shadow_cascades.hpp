@@ -1,4 +1,5 @@
 #pragma once
+#include "slrr/scene_instances.hpp"
 #include <array>
 #include <bx/math.h>
 #include <cmath>
@@ -8,6 +9,36 @@ namespace slrr {
 // car.
 inline constexpr std::array<float, 4> shadow_radii{32.f, 100.f, 320.f, 1000.f};
 inline constexpr std::array<uint16_t, 4> shadow_views{0, 2, 3, 4};
+inline bool shadow_bounds_visible(const ScxGeometry &mesh,
+                                  const std::array<float, 16> &m,
+                                  const SceneFrustum &frustum) {
+  float center[3]{}, extent[3]{};
+  if (!std::isfinite(mesh.position_scale) || mesh.position_scale <= 0)
+    return true;
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(mesh.info.bbox_min[i]) ||
+        !std::isfinite(mesh.info.bbox_max[i]) ||
+        mesh.info.bbox_max[i] < mesh.info.bbox_min[i])
+      return true;
+  for (int i = 0; i < 3; ++i) {
+    const float c = (mesh.info.bbox_min[i] + mesh.info.bbox_max[i]) * .5f *
+                    mesh.position_scale * (i == 2 ? -1.f : 1.f);
+    const float e = (mesh.info.bbox_max[i] - mesh.info.bbox_min[i]) * .5f *
+                    mesh.position_scale;
+    for (int row = 0; row < 3; ++row) {
+      center[row] += m[i * 4 + row] * c;
+      extent[row] += std::abs(m[i * 4 + row]) * e;
+    }
+  }
+  for (int i = 0; i < 3; ++i)
+    center[i] += m[12 + i];
+  for (const auto &p : frustum)
+    if (p[0] * center[0] + p[1] * center[1] + p[2] * center[2] + p[3] <
+        -(std::abs(p[0]) * extent[0] + std::abs(p[1]) * extent[1] +
+          std::abs(p[2]) * extent[2]))
+      return false;
+  return true;
+}
 struct ShadowProjection {
   std::array<float, 16> view{}, projection{}, sample{};
 };

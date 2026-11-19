@@ -795,6 +795,15 @@ depth view 1 precede world view 5; ordering must keep all shadow passes before w
 receivers. The garage retains its single 2048-square local-light map. These
 are radial distance cascades, not camera-frustum-fitted splits. Scenery casters
 outside the main view must be uploaded and retained for their shadow submissions.
+Collect outer shadow candidates once and cull their reflected-Z render bounds
+for each cascade. Skip character palette completion in that collection; do not
+change default completion for ordinary/reflection views. Depth draws may merge
+adjacent opaque material sections, but must preserve alpha-cutout and blended
+index boundaries, rebuilding their metadata with every geometry revision.
+The shared visibility uses a symmetric nine-tap tent footprint with bilinear
+comparison; this mitigates thin-caster aliasing without claiming complete
+motion stability on every asset.
+
 This is not yet a complete real-light implementation. See RENDERING_ROADMAP.md
 for #201 progress, performance cost and unvalidated scene cases.
 
@@ -895,6 +904,11 @@ size-dependent resources. Rereading an old value when a menu opens must not
 put the game back to 800×600.
 
 `EnhancedGraphics` holds the extra options shared with the menus and debug.
+Anisotropic filtering uses renderer option 6 (off/hardware maximum, default on),
+persisted beside stock options. Apply it explicitly to world colour/detail
+samplers and enable bgfx maximum anisotropy; keep UI and depth-comparison
+samplers independent. Do not claim selectable 2x/4x/8x/16x levels from a backend
+API that only exposes off/maximum.
 Every new option native must have a stable descriptor, bounded behavior, a
 defined save strategy, and documentation in the shipped patch. Do not
 announce a persistent option before testing a restart.

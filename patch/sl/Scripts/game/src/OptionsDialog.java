@@ -29,6 +29,7 @@ public class OptionsDialog extends Dialog
 	final static int CMD_RENDERER_FIRST = 500;
 	final static int CMD_ENHANCED_SHADOWS = 505;
 	final static int CMD_FRAMERATE_MODE = 506;
+	final static int CMD_ANISOTROPIC = 507;
 	final static int RENDERER_FRAMERATE_MODE = 5;
 	public static native int getRendererOption(int option);
 	public static native void setRendererOption(int option, int value);
@@ -413,6 +414,7 @@ public class OptionsDialog extends Dialog
 		m.addItem( "ANTI-ALIASING", CMD_RENDERER_FIRST, getRendererOption(0), antialiasing, null );
 		m.addItem( "REFLECTIONS", CMD_RENDERER_FIRST+1, getRendererOption(1), detailTextOO, null );
 		m.addItem( "VOLUMETRIC CLOUDS", CMD_RENDERER_FIRST+2, getRendererOption(2), detailTextOO, null );
+		m.addItem( "ANISOTROPIC FILTERING", CMD_ANISOTROPIC, getRendererOption(6), detailTextOO, "Hardware maximum for sharper road and surface textures" );
 
 		int shadowEnabled = 0;
 		if (Config.shadows > 0)
@@ -984,6 +986,9 @@ public class OptionsDialog extends Dialog
 		else
 		if (command == CMD_FRAMERATE_MODE)
 			setRendererOption(RENDERER_FRAMERATE_MODE, osd.multiValue);
+		else
+		if (command == CMD_ANISOTROPIC)
+			setRendererOption(6, osd.multiValue);
 		else
 		if (command == CMD_ENHANCED_SHADOWS)
 		{

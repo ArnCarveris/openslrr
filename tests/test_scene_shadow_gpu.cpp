@@ -65,6 +65,7 @@ struct SceneShadowRegression {
       instance.lighting.specular[i] = 0;
     }
     int darkTile = -1;
+    int stripeX = -1;
     auto pixel = [&](bool vehicle, bool enabled, float shadowDepth,
                      uint16_t view, bool preview = false, bool lamp = false) {
       instance.vehicle_material = vehicle;
@@ -85,6 +86,12 @@ struct SceneShadowRegression {
         bgfx::setViewRect(0, 0, 0, size, size);
         bgfx::setViewClear(0, BGFX_CLEAR_DEPTH, uint32_t(0), shadowDepth);
         bgfx::touch(0);
+      }
+      if (stripeX >= 0) {
+        bgfx::setViewFrameBuffer(1, b.static_shadow_fb_);
+        bgfx::setViewRect(1, uint16_t(stripeX), 0, 1, size);
+        bgfx::setViewClear(1, BGFX_CLEAR_DEPTH, uint32_t(0), .2f);
+        bgfx::touch(1);
       }
       bgfx::setViewFrameBuffer(view, output);
       bgfx::setViewRect(view, 0, 0, size, size);
@@ -186,6 +193,37 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(fade > 100 && fade < lit && std::abs(beyond - lit) <= 3);
     std::printf("Cascade blend=%d/%d/%d; far fade=%d beyond 1km=%d\n",
                 transitionStart, transitionMid, transitionEnd, fade, beyond);
+    darkTile = -1;
+    b.static_shadow_eye_ = {-10, 0, 0};
+    int thin[5]{};
+    for (int i = 0; i < 5; ++i) {
+      stripeX = 30 + i;
+      thin[i] = pixel(true, true, .9f, 5);
+    }
+    stripeX = -1;
+    std::printf("Thin shadow footprint RGB sums: %d %d %d %d %d\n", thin[0],
+                thin[1], thin[2], thin[3], thin[4]);
+    SLRR_REQUIRE(*std::min_element(thin, thin + 5) > 75 &&
+                 *std::min_element(thin, thin + 5) < 500);
+    for (int i = 1; i < 5; ++i)
+      SLRR_REQUIRE(std::abs(thin[i] - thin[i - 1]) < 230);
+    // Render-space bounds: SCX Z is reflected before the instance transform.
+    ScxGeometry bounds;
+    bounds.position_scale = 1;
+    for (int i = 0; i < 3; ++i) {
+      bounds.info.bbox_min[i] = 1;
+      bounds.info.bbox_max[i] = 2;
+    }
+    SceneFrustum positiveZ{};
+    positiveZ[0] = {0, 0, 1, 0};
+    std::array<float, 16> pose;
+    bx::mtxIdentity(pose.data());
+    SLRR_REQUIRE(!shadow_bounds_visible(bounds, pose, positiveZ));
+    pose[14] = 3;
+    SLRR_REQUIRE(shadow_bounds_visible(bounds, pose, positiveZ));
+    pose[0] = 2;
+    pose[5] = .5f;
+    SLRR_REQUIRE(shadow_bounds_visible(bounds, pose, positiveZ));
     const float origin[3] = {0, 0, 0}, tinyMove[3] = {.0001f, 0, 0};
     const float direction[3] = {.3f, -.8f, .5f},
                 laterSun[3] = {.30001f, -.8f, .5f};

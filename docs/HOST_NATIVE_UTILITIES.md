@@ -120,3 +120,22 @@ sound properties are not interpreted. Many trees request the same bird cue,
 so the transient coalescing keeps at most two copies of it playing.
 `SLRR_AMBIENCE_LOG=1` logs each random request. Loop starts and stops are
 always logged as `[ambience]`.
+
+
+## Renderer options: anisotropic filtering
+
+Existing natives `java.game.OptionsDialog.getRendererOption(I)I` and
+`setRendererOption(II)V` use option index **6** for anisotropic filtering.
+Getter returns 0/1. Setter treats zero as off and nonzero as on and saves via
+the existing host graphics persistence path. Default is on; malformed/missing
+keys retain that default. `save/game/openslrr_options` stores
+`anisotropic_filtering=0|1`; stock Config's binary layout is unchanged.
+
+The patched OptionsDialog video menu and debug Renderer checkbox share this
+value. The setting takes effect on subsequent rendered frames, enables bgfx's
+maximum anisotropy reset flag and opts world colour/detail texture samplers into
+anisotropic min/mag filtering. The actual maximum is backend/hardware-defined;
+this is not an API for selecting individual sample counts. Shadow comparison,
+cubemap and UI samplers retain their own filtering contracts. Existing texture
+mip availability still limits the result. Source and compiled TUFA container
+are both shipped in patch/sl/Scripts/game; no new native signature was added.

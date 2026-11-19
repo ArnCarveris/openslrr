@@ -178,7 +178,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     bgfx::setUniform(u_lightmap_, u);
     bgfx::setUniform(u_lightmap_uv_, xf);
     bgfx::setTexture(1, s_lightmap_, lm);
-    bgfx::setTexture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_);
+    bgfx::setTexture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_, receive_static_shadow ? world_sampler() : BGFX_SAMPLER_NONE);
     bind_scene_shadow(receive_static_shadow, 3);
     const bool receive_car = receive_static_shadow && car_depth_active_;
     const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / kShadowResolution, .0006f, 0.f};
@@ -308,7 +308,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
         if (instance.light_flags) bake_u[0] = 1.f;
         bgfx::setUniform(u_lightmap_, bake_u);
         bgfx::setUniform(u_lightmap_uv_, bake_xf);
-        bgfx::setTexture(0,s_tex_,base);bgfx::setTexture(1,s_mix_,mix);
+        bgfx::setTexture(0,s_tex_,base,world_sampler());bgfx::setTexture(1,s_mix_,mix,world_sampler());
         // Global environment textures share the image cache with OSD, but
         // material UV transforms need the scene's wrapping sampler here.
         bgfx::setTexture(2, s_env_, env, BGFX_SAMPLER_NONE);
@@ -412,7 +412,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
       if (skinned) bgfx::setUniform(u_skin_bones_, instance.skin.data(), 48);
       bgfx::setVertexBuffer(0, skinned ? part.skin_vbh : part.vbh);
       bgfx::setIndexBuffer(part.ibh,first,count);
-      bgfx::setTexture(0, s_tex_, tex, BGFX_SAMPLER_NONE);
+      bgfx::setTexture(0, s_tex_, tex, preview ? BGFX_SAMPLER_NONE : world_sampler());
       bgfx::TextureHandle mix = BGFX_INVALID_HANDLE;
       if (group && part.geo.position_scale == 1.f && group->mix_index != 0xffff) {
         const auto candidate = texture(group->mix_index);
@@ -484,7 +484,8 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
     if (found == instance_meshes_.end()) continue;
     const auto& part = found->second;
     if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh)) continue;
-    const auto& groups = part.geo.groups;
+    const auto& groups = shadow ? part.shadow_groups : part.geo.groups;
+    if(shadow && groups.empty()) continue;
     const uint32_t group_count = groups.empty() ? 1u : static_cast<uint32_t>(groups.size());
     for (size_t base = 0; base < batch.instances.size();) {
       const auto want = static_cast<uint32_t>(std::min<size_t>(128, batch.instances.size() - base));
@@ -564,7 +565,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bgfx::setTransform(identity);
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, first, index_count);
-          bgfx::setTexture(0, s_tex_, tex, BGFX_SAMPLER_NONE);
+          bgfx::setTexture(0, s_tex_, tex, world_sampler());
           bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
                            nullptr);
