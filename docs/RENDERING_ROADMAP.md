@@ -128,6 +128,22 @@ packs. The older junction-based benchmark root skipped nested packs during
 open_all; its city runs were useful smoke checks but did not validate garage or
 dealer light creation. Record this limitation when interpreting old evidence.
 
+## Addon cascade coverage: decoded ground bounds
+
+Drag Track's assembled POLY mesh had 71,008 vertices but an all-zero bounding
+box. The cascade culler treated the entire map as a point at its origin, so
+camera travel could remove it from a shadow level. This looked like a short
+shadow draw distance despite the 1 km outer radius.
+
+Compute the ground render bounds from its decoded metre-space positions once
+at loading time. This fixes the shared POLY path without changing cascade range,
+resolution or culling policy. A real Drag Track regression checks the bounds
+against every vertex and inclusion in all four volumes at the reported map's
+start region. The addon case is skipped when those optional assets are absent.
+In-game acceptance at the user's reported views remains separate from those
+asset/GPU checks. Large monolithic addon meshes can now correctly participate
+in more passes; this is a correctness fix, not a measured performance gain.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

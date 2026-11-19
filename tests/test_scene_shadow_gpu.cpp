@@ -10,6 +10,55 @@ void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void addon_bounds(LibBgfxBackend& b) {
+    if (!fs::exists("game/maps/Addon_Maps/Drag_Track.rpk")) {
+      std::puts("SKIP optional Drag Track asset regression: addon not installed");
+      return;
+    }
+    Fixture f;
+    f.packs.set_root(fs::absolute("game").string());
+    f.packs.open_all();
+    scene_instances_set_resources(&f.packs);
+    const auto id=RpkIndex::make_full_id(
+        f.packs.open_lib("maps/Addon_Maps/Drag_Track.rpk"),1);
+    Object root;
+    root.class_name="java.util.resource.GroundRef";
+    gameref_upsert(&root,GameRefKind::GroundRef)->type_id=id;
+    spawn_ground_shell(f.vm,f.packs,&root);
+    scene_instances_select(&root,nullptr,false,SceneEnvironment::Exterior);
+    scene_sun_set_time(13*3600.f);
+    b.instances_=scene_instances_collect();
+    SLRR_REQUIRE(!b.instances_.empty());
+    const auto& instance=b.instances_.front();
+    const auto& g=*instance.geometry;
+    SLRR_REQUIRE(g.ground_polygons && g.positions.size()>200000);
+    for(int axis=0;axis<3;++axis) {
+      float minimum=g.positions[axis],maximum=minimum;
+      for(size_t i=axis;i<g.positions.size();i+=3) {
+        minimum=std::min(minimum,g.positions[i]);
+        maximum=std::max(maximum,g.positions[i]);
+      }
+      SLRR_REQUIRE(g.info.bbox_min[axis]==minimum && g.info.bbox_max[axis]==maximum);
+    }
+    const float eye[3]={27,2,-36};
+    const auto light=scene_instances_light();
+    const float focus[3]={eye[0],eye[1],-eye[2]};
+    const float dir[3]={light.direction[0],light.direction[1],-light.direction[2]};
+    for(float radius:shadow_radii) {
+      const auto p=shadow_projection(focus,dir,radius,2048,false,false);
+      const auto fr=b.view_frustum(p.view.data(),p.projection.data());
+      SLRR_REQUIRE(shadow_bounds_visible(g,instance.transform,fr));
+    }
+    VideoOptions video;video.shadows=2;
+    b.garage_=false;b.local_light_={};
+    b.update_static_shadow(eye,video);bgfx::frame();
+    SLRR_REQUIRE(b.static_shadow_active_ && b.shadow_meshes_.contains(&g));
+    const auto children=gameref_get(&root)->children;
+    for(auto child:children)gameref_remove(child);
+    gameref_remove(&root);
+    scene_instances_set_resources(nullptr);b.instances_.clear();
+    std::puts("PASS real Drag Track: decoded bounds match vertices and retain map in all four shadow levels");
+  }
   static void scene_environment(LibBgfxBackend &b) {
     Fixture f;
     scene_instances_set_resources(&f.packs);
@@ -524,6 +573,7 @@ int main() {
     ShowWindow(static_cast<HWND>(backend.native_hwnd()), SW_HIDE);
     SceneShadowRegression::run(backend);
     SceneShadowRegression::real_world_cache(backend);
+    SceneShadowRegression::addon_bounds(backend);
     SceneShadowRegression::scene_environment(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "

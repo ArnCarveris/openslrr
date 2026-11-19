@@ -2521,6 +2521,16 @@ GroundMapData scene_instances_ground_map(const RpkIndex &rpk, uint32_t ground_id
   geo->info.groups = static_cast<int32_t>(geo->groups.size());
   if (geo->indices.empty())
     return map;
+  // POLY positions are already in script metres. The SCY is only a material
+  // table, so no SCX decoder supplies bounds for this assembled map mesh.
+  // Shadow cascades must cull the geometry, not a zero-size box at its origin.
+  for (int axis = 0; axis < 3; ++axis) {
+    geo->info.bbox_min[axis] = geo->info.bbox_max[axis] = geo->positions[axis];
+    for (size_t i = 3 + axis; i < geo->positions.size(); i += 3) {
+      geo->info.bbox_min[axis] = std::min(geo->info.bbox_min[axis], geo->positions[i]);
+      geo->info.bbox_max[axis] = std::max(geo->info.bbox_max[axis], geo->positions[i]);
+    }
+  }
   jobs_printf("[scene] ground poly 0x%x tris=%d materials=%zu\n", map.render_id,
               geo->info.triangles, mats.size());
   map.poly = std::move(geo);
