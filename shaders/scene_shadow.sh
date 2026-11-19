@@ -3,6 +3,7 @@
 uniform vec4 u_staticShadowParams;
 uniform vec4 u_staticShadowEye;
 uniform mat4 u_shadowCascades[4];
+uniform vec4 u_shadowOrigin;
 uniform vec4 u_shadowRanges; // x=0 selects single/local field, otherwise radial splits.
 float receiverBias(vec3 p,float bias,float texel)
 {
@@ -36,7 +37,7 @@ float shadowTapField(vec3 p, vec2 tile, float scale, float bias)
 float cascadeVisibility(vec3 world, float distanceToEye)
 {
     // Evaluate coordinates outside distance branches to keep their derivatives coherent.
-    vec4 w=vec4(world,1.0);
+    vec4 w=vec4(world-u_shadowOrigin.xyz,1.0);
     vec3 p0=mul(u_shadowCascades[0],w).xyz;
     vec3 p1=mul(u_shadowCascades[1],w).xyz;
     vec3 p2=mul(u_shadowCascades[2],w).xyz;

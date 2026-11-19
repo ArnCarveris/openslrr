@@ -117,6 +117,8 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
                              receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
     bgfx::setUniform(u_static_shadow_params_, params);
     const bool cascaded = receive && shadow_cascades_active_;
+    const float origin[4]={shadow_origin_[0],shadow_origin_[1],shadow_origin_[2],0.f};
+    bgfx::setUniform(u_shadow_origin_,origin);
     const float ranges[4] = {cascaded ? shadow_radii[0] : 0.f, shadow_radii[1],shadow_radii[2],shadow_radii[3]};
     bgfx::setUniform(u_shadow_ranges_,ranges);
     if (cascaded) bgfx::setUniform(u_shadow_cascades_,shadow_cascade_matrices_.data(),4);
@@ -184,7 +186,8 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
     const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / kShadowResolution, .0006f, 0.f};
     bgfx::setUniform(u_car_depth_params_, car_params);
     if (receive_car) bgfx::setUniform(u_car_depth_mtx_, car_depth_matrix_.data());
-    bgfx::setTexture(4, s_car_depth_, receive_car ? car_depth_tex_ : white_tex_);
+    bgfx::setTexture(4, s_car_depth_, receive_car ? car_depth_tex_ : depth_white_,
+        BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
     const float fog_color[4] = {fog_color_[0], fog_color_[1], fog_color_[2],
                                 fog_enabled_ ? 1.f : 0.f};
     const float fog_range[4] = {fog_near_, fog_far_, 0.f, 0.f};
@@ -498,6 +501,8 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
       for (uint32_t i = 0; i < count; ++i) {
         const auto& src = batch.instances[base + i];
         std::memcpy(dst[i].matrix, src.transform.data(), sizeof(dst[i].matrix));
+        if(shadow && !static_shadow_local_)
+          for(int axis=0;axis<3;++axis) dst[i].matrix[12+axis]-=shadow_origin_[axis];
         dst[i].color[0] = ((src.color >> 16) & 255) / 255.f;
         dst[i].color[1] = ((src.color >> 8) & 255) / 255.f;
         dst[i].color[2] = (src.color & 255) / 255.f;

@@ -3,9 +3,75 @@
 #include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
 #include <bx/math.h>
+namespace slrr {
+void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
+}
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void real_world_cache(LibBgfxBackend &b) {
+    Fixture f;
+    f.packs.set_root(fs::absolute("game").string());
+    f.packs.open_all();
+    scene_instances_set_resources(&f.packs);
+    const auto id =
+        RpkIndex::make_full_id(f.packs.open_lib("maps/test_track.rpk"), 1);
+    auto *root = f.vm.new_object("java.util.resource.GroundRef");
+    gameref_upsert(root, GameRefKind::GroundRef)->type_id = id;
+    spawn_ground_shell(f.vm, f.packs, root);
+    scene_instances_select(root, nullptr, false);
+    scene_sun_set_time(13 * 3600.f);
+    b.instances_ = scene_instances_collect();
+    b.garage_ = false;
+    b.local_light_ = {};
+    VideoOptions video;
+    video.shadows = 2;
+    const float eye[3] = {1000, 5, -2000};
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.static_shadow_active_);
+    // One stable redraw establishes the caster snapshot after moving light.
+    b.update_static_shadow(eye,video);bgfx::frame();
+    SLRR_REQUIRE(b.shadow_cache_valid_);
+    auto revision = b.shadow_atlas_revision_;
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision);
+    for (auto &object : b.instances_)
+      if (object.geometry->ground_polygons)
+        object.lighting.direction[0] += .00001f;
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
+    revision = b.shadow_atlas_revision_;
+    const auto children = gameref_get(root)->children;
+    SLRR_REQUIRE(!children.empty());
+    auto *shell = gameref_get(children.front());
+    shell->local_matrix[12] += .25f;
+    shell->matrix_override = true;
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
+    revision = b.shadow_atlas_revision_;
+    for (auto &object : b.instances_)
+      if (object.geometry->ground_polygons) {
+        // The fixture's scene cache owns mutable geometry behind this const
+        // view.
+        ++std::const_pointer_cast<ScxGeometry>(object.geometry)->revision;
+        break;
+      }
+    b.update_static_shadow(eye, video);
+    bgfx::frame();
+    SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
+    for (auto child : children)
+      gameref_remove(child);
+    gameref_remove(root);
+    scene_instances_set_resources(nullptr);
+    b.instances_.clear();
+    std::puts("PASS real map: unchanged atlas reused, small sun/caster motion "
+              "invalidates");
+  }
+
   static void run(LibBgfxBackend &b) {
     constexpr uint16_t size = 64;
     const auto color = bgfx::createTexture2D(
@@ -150,6 +216,29 @@ struct SceneShadowRegression {
                  std::abs(preview - lit) <= 3 && lamp > lit);
     SLRR_REQUIRE(meshLit > 300 && meshShadow > 30 && meshShadow < meshLit / 2);
     SLRR_REQUIRE(std::abs(captureShadow - meshShadow) <= 3);
+    // PCF compares depths before interpolation. Sampling interpolated depth
+    // and then step() produced binary popping at sub-texel car-shadow edges.
+    b.static_shadow_local_ = false;
+    b.local_light_ = {};
+    b.car_depth_active_ = true;
+    b.car_depth_tex_ = shadow;
+    b.car_depth_matrix_ = b.static_shadow_matrix_;
+    stripeX = 32;
+    std::vector<int> carEdge;
+    for (int i = 0; i < 12; ++i) {
+      b.car_depth_matrix_[12] = .5f + float(i) * .08f / size;
+      carEdge.push_back(pixel(false, false, .9f, 5));
+    }
+    auto uniqueCarEdge = carEdge;
+    std::sort(uniqueCarEdge.begin(), uniqueCarEdge.end());
+    uniqueCarEdge.erase(std::unique(uniqueCarEdge.begin(), uniqueCarEdge.end()),
+                        uniqueCarEdge.end());
+    std::printf("Car shadow sub-texel edge: %zu distinct coverage values\n",
+                uniqueCarEdge.size());
+    SLRR_REQUIRE(uniqueCarEdge.size() > 6);
+    stripeX = -1;
+    b.car_depth_active_ = false;
+    b.car_depth_tex_ = BGFX_INVALID_HANDLE;
     // Distinct depth in each tile detects wrong atlas selection or clears
     // accidentally overwriting other view rectangles on D3D11.
     bgfx::destroy(b.static_shadow_fb_);
@@ -207,6 +296,19 @@ struct SceneShadowRegression {
                  *std::min_element(thin, thin + 5) < 500);
     for (int i = 1; i < 5; ++i)
       SLRR_REQUIRE(std::abs(thin[i] - thin[i - 1]) < 230);
+    // The receiver must subtract the same nonzero origin as caster passes.
+    darkTile = 0;
+    b.static_shadow_eye_ = {-10, 0, 0};
+    b.shadow_origin_ = {100, 0, 100};
+    const auto absoluteMatrices = b.shadow_cascade_matrices_;
+    for (auto &matrix : b.shadow_cascade_matrices_) {
+      matrix[12] += 10;
+      matrix[14] += 100;
+    }
+    const auto rebasedPixel = pixel(true, true, .2f, 5);
+    SLRR_REQUIRE(std::abs(rebasedPixel - shaded) <= 3);
+    b.shadow_cascade_matrices_ = absoluteMatrices;
+    b.shadow_origin_ = {};
     // Render-space bounds: SCX Z is reflected before the instance transform.
     ScxGeometry bounds;
     bounds.position_scale = 1;
@@ -235,6 +337,68 @@ struct SceneShadowRegression {
         shadow_projection(origin, laterSun, 32, 2048, false, false);
     SLRR_REQUIRE(std::abs(initial.sample[12] - moved.sample[12]) < 1e-7f &&
                  std::abs(initial.sample[13] - moved.sample[13]) < 1e-7f);
+    // Stationary receiver/camera far from the map origin; only sun angle
+    // varies.
+    const float farEye[3] = {5000, 20, -7000}, localEye[3] = {0, 0, 0},
+                localPoint[3] = {8, -2, 3};
+    float oldPrevious[2]{}, newPrevious[2]{};
+    double oldJump = 0, newJump = 0;
+    for (int frame = 0; frame < 400; ++frame) {
+      const float sun[3] = {.3f + frame * .000001f, -.8f, .5f};
+      const auto oldGrid =
+          shadow_projection(farEye, sun, 32, 2048, false, false);
+      const auto localGrid =
+          shadow_projection(localEye, sun, 32, 2048, false, false);
+      for (int row = 0; row < 2; ++row) {
+        float oldUV = oldGrid.sample[12 + row],
+              newUV = localGrid.sample[12 + row];
+        for (int axis = 0; axis < 3; ++axis) {
+          oldUV += oldGrid.sample[axis * 4 + row] *
+                   (farEye[axis] + localPoint[axis]);
+          newUV += localGrid.sample[axis * 4 + row] * localPoint[axis];
+        }
+        if (frame) {
+          oldJump = std::max(oldJump,
+                             double(std::abs(oldUV - oldPrevious[row]) * 2048));
+          newJump = std::max(newJump,
+                             double(std::abs(newUV - newPrevious[row]) * 2048));
+        }
+        oldPrevious[row] = oldUV;
+        newPrevious[row] = newUV;
+      }
+    }
+    std::printf("Stationary moving-sun lattice max pixel jump: global=%.5f "
+                "local=%.5f\n",
+                oldJump, newJump);
+    SLRR_REQUIRE(oldJump > .5 && newJump < .01);
+    std::array<float, 3> anchor{0, 0, 0};
+    const float longDrive[3] = {500, 3, -200};
+    shadow_rebase_origin(anchor, longDrive, direction);
+    SLRR_REQUIRE(std::hypot(anchor[0] - longDrive[0], anchor[1] - longDrive[1],
+                            anchor[2] - longDrive[2]) < 10);
+    float maximumRebaseJump = 0;
+    const float relativeDrive[3] = {longDrive[0] - anchor[0],
+                                    longDrive[1] - anchor[1],
+                                    longDrive[2] - anchor[2]};
+    for (float radius : shadow_radii) {
+      const auto beforeRebase =
+          shadow_projection(longDrive, direction, radius, 2048, false, false);
+      const auto afterRebase = shadow_projection(relativeDrive, direction,
+                                                 radius, 2048, false, false);
+      for (int row = 0; row < 2; ++row) {
+        float before = beforeRebase.sample[12 + row],
+              after = afterRebase.sample[12 + row];
+        for (int axis = 0; axis < 3; ++axis) {
+          before += beforeRebase.sample[axis * 4 + row] * longDrive[axis];
+          after += afterRebase.sample[axis * 4 + row] * relativeDrive[axis];
+        }
+        maximumRebaseJump =
+            std::max(maximumRebaseJump, std::abs(before - after) * 2048);
+      }
+    }
+    std::printf("All-cascade rebase phase error: %.5f texels\n",
+                maximumRebaseJump);
+    SLRR_REQUIRE(maximumRebaseJump < .1f);
     SLRR_REQUIRE(initial.sample != sunMoved.sample);
     std::puts(
         "PASS sub-texel camera stability and continuous small sun changes");
@@ -251,6 +415,7 @@ int main() {
     SLRR_REQUIRE(bgfx::getRendererType() == bgfx::RendererType::Direct3D11);
     ShowWindow(static_cast<HWND>(backend.native_hwnd()), SW_HIDE);
     SceneShadowRegression::run(backend);
+    SceneShadowRegression::real_world_cache(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

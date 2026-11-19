@@ -804,6 +804,17 @@ The shared visibility uses a symmetric nine-tap tent footprint with bilinear
 comparison; this mitigates thin-caster aliasing without claiming complete
 motion stability on every asset.
 
+Sun rotation is evaluated around a nearby shared floating origin. Rebase
+caster model translations and receiver positions together; depth vertices must
+apply model and view-projection separately, avoiding a precombined large-world
+MVP cancellation. A long-drive origin shift must preserve every cascade's grid
+phase. Frustum culling remains in absolute render space.
+An unchanged atlas may be reused only with identical matrices, origin and
+caster identity/revision/buffer/transform records. Never skip a changed sun or
+caster through a time/angular threshold. The nearby car-depth receiver uses a
+comparison sampler so depth is compared before bilinear filtering, matching
+PCF rather than interpolating depth and thresholding afterwards.
+
 This is not yet a complete real-light implementation. See RENDERING_ROADMAP.md
 for #201 progress, performance cost and unvalidated scene cases.
 

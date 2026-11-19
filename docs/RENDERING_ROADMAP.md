@@ -69,6 +69,23 @@ HOST_NATIVE_UTILITIES.md for index 6 and assets/validation/shadow-performance-fi
 for tests and measurements. Previous timing numbers remain historical evidence,
 not the current performance claim.
 
+## Stationary moving-sun edge follow-up
+
+The user confirmed that stopping the clock stops the remaining shimmer. A
+stationary far-origin numeric sequence reproduced almost a one-texel grid jump
+from tiny sun changes. A nearby floating origin reduces that discontinuity;
+caster model transforms and receiver coordinates now use the same origin. A
+separate depth vertex shader avoids combined-MVP cancellation of large world
+positions. Camera travel can rebase the origin on a common multiple of all
+cascade texel sizes, preserving grid phase.
+
+Comparison sampling also replaces raw interpolated-depth thresholding for the
+nearby vehicle shadow. Exact unchanged-state atlas reuse avoids redundant draws
+when matrices, origin and caster records agree, while any small sun/caster change
+invalidates it. Real-map and pixel/projection regressions cover these contracts.
+This targets identified defects; full temporal acceptance on the user's view
+remains open. See assets/validation/shadow-origin-stability.txt for evidence.
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

@@ -2277,3 +2277,23 @@ assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.
   UI do not. Patched OptionsDialog source/container are shipped and installed.
 - See assets/validation/shadow-performance-filtering.txt for measured changes;
   the previous cascade cost in scene-shadow-cascades.txt is historical.
+
+
+### Stationary moving-sun shimmer follow-up (#201)
+
+- User reports edge shimmer stopping when clock speed is zero. The numeric
+  regression reproduces global-origin light-lattice jumps with a stationary
+  receiver: see `tests/test_scene_shadow_gpu.cpp`. World-space UV thresholds
+  and a wider PCF kernel alone did not address that projection defect.
+- Cascades now rotate around a nearby shared origin, with caster model
+  translations and receiver coordinates rebased consistently. The depth vertex
+  shader separates model and view-projection transforms to avoid large-coordinate
+  cancellation after rotation. Long-drive origin shifts align to all tile grids.
+- An atlas is reused only when the sample matrices, origin and ordered caster
+  stamps (geometry identity/revision, buffer handles, transforms) match exactly.
+  Small sun changes and changed/moved casters invalidate it; no angular gate.
+- Car shadows use comparison sampling before interpolation, not interpolation
+  of raw depths followed by a binary step. GPU tests cover fractional edges,
+  nonzero origin reception, origin rebase phase and real-map reuse/invalidation.
+  See assets/validation/shadow-origin-stability.txt; manual user validation of
+  the reported camera remains outstanding.

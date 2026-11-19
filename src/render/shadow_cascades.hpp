@@ -39,6 +39,23 @@ inline bool shadow_bounds_visible(const ScxGeometry &mesh,
       return false;
   return true;
 }
+inline void shadow_rebase_origin(std::array<float,3>& origin,const float focus[3],const float direction[3], uint16_t resolution = 2048) {
+  const float delta[3]={focus[0]-origin[0],focus[1]-origin[1],focus[2]-origin[2]};
+  if(std::hypot(delta[0],delta[1],delta[2])<256.f) return;
+  const auto travel=bx::normalize(bx::Vec3{direction[0],direction[1],direction[2]});
+  const bx::Vec3 up=std::abs(travel.y)>.98f?bx::Vec3{0,0,1}:bx::Vec3{0,1,0};
+  float basis[16];bx::mtxLookAt(basis,bx::mul(travel,-1.f),{0,0,0},up);
+  float local[3]{};
+  // Common multiple of every cascade texel size: do not change lattice phase
+  // when rebasing after a long drive. LCM(32,100,320,1000) is 8000.
+  const float common_step=2.2f*8000.f/resolution;
+  for(int row=0;row<3;++row) {
+    for(int axis=0;axis<3;++axis) local[row]+=delta[axis]*basis[axis*4+row];
+    if(row<2) local[row]=std::round(local[row]/common_step)*common_step;
+  }
+  for(int axis=0;axis<3;++axis) for(int row=0;row<3;++row)
+    origin[axis]+=basis[axis*4+row]*local[row];
+}
 struct ShadowProjection {
   std::array<float, 16> view{}, projection{}, sample{};
 };

@@ -20,6 +20,8 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   if (garage_ && local_light_[3] > 0.f && video.shadows != 0 &&
       debug_overlay_.render_options().map_shadows &&
       bgfx::isValid(static_shadow_program_)) {
+    shadow_cache_valid_ = false;
+    shadow_origin_world_ = nullptr;
     constexpr uint16_t size = kShadowResolution;
     if (!bgfx::isValid(static_shadow_fb_) || size != static_shadow_size_) {
       if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
@@ -92,6 +94,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     return;
   }
   if (!eye || video.shadows == 0 || !scene_instances_has_ground_props()) {
+    shadow_cache_valid_ = false;
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
@@ -108,6 +111,7 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   const bool conservative =
       (bgfx::getCaps()->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
   if (size != static_shadow_size_ && bgfx::isValid(static_shadow_fb_)) {
+    shadow_cache_valid_ = false;
     bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
@@ -133,9 +137,19 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   static_shadow_eye_ = {focus[0], focus[1], focus[2]};
   // Refresh moving sunlight every frame; texel-snapped projections remove
   // camera swimming without an eight-metre cache jump.
-  const auto outer = shadow_projection(focus,direction,shadow_radii.back(),kShadowResolution,
+  if(shadow_origin_world_!=scene_instances_world()) {
+    shadow_cache_valid_=false;
+    shadow_origin_world_=scene_instances_world();
+    shadow_origin_={focus[0],focus[1],focus[2]};
+  }
+  shadow_rebase_origin(shadow_origin_,focus,direction,kShadowResolution);
+  const float relative_focus[3]={focus[0]-shadow_origin_[0],focus[1]-shadow_origin_[1],focus[2]-shadow_origin_[2]};
+  const auto outer = shadow_projection(relative_focus,direction,shadow_radii.back(),kShadowResolution,
       caps->homogeneousDepth,caps->originBottomLeft);
-  const auto outer_frustum=view_frustum(outer.view.data(),outer.projection.data());
+  auto outer_world_view=outer.view;
+  for(int row=0;row<3;++row) for(int axis=0;axis<3;++axis)
+    outer_world_view[12+row]-=outer.view[axis*4+row]*shadow_origin_[axis];
+  const auto outer_frustum=view_frustum(outer_world_view.data(),outer.projection.data());
   // One scene traversal; nested light volumes reuse these immutable draw records.
   const auto casters=scene_instances_collect(&outer_frustum,nullptr,false);
   std::vector<SceneBatch> outer_batches;
@@ -149,13 +163,38 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
   for(const auto& batch:outer_batches) if(batch.geometry) {
     shadow_meshes_.insert(batch.geometry.get());cache_scene_mesh(batch.geometry,nullptr,true);
   }
+  std::array<ShadowProjection,4> projections;
+  bool same_projection=shadow_cached_origin_==shadow_origin_;
+  for(size_t i=0;i<4;++i) {
+    projections[i]=shadow_projection(relative_focus,direction,shadow_radii[i],kShadowResolution,
+        caps->homogeneousDepth,caps->originBottomLeft);
+    same_projection=same_projection && projections[i].sample==shadow_cascade_matrices_[i];
+  }
+  // Moving sunlight cannot reuse the atlas: avoid building a costly snapshot
+  // on that path. Once it stops, one redraw establishes an exact caster snapshot.
+  std::vector<ShadowCasterStamp> stamps;
+  if(same_projection) {
+    auto stamp=[&](const auto& geo,const auto& matrix) {
+      const auto& part=instance_meshes_.at(geo.get());
+      stamps.push_back({geo.get(),geo->revision,part.vbh.idx,part.ibh.idx,matrix});
+    };
+    for(const auto& instance:casters)
+      if(instance.geometry && !instance.sky && !instance.vehicle_material && !instance.gpu_skin &&
+         !instance.light_flags && !instance.emissive_overlay) stamp(instance.geometry,instance.transform);
+    for(const auto& batch:outer_batches)
+      for(const auto& instance:batch.instances) stamp(batch.geometry,instance.transform);
+  }
+  const bool unchanged=shadow_cache_valid_ && same_projection && stamps==shadow_cached_casters_;
+  if(unchanged) {
+    static_shadow_active_=true;shadow_cascades_active_=true;return;
+  }
   for (size_t cascade = 0; cascade < shadow_radii.size(); ++cascade) {
-    const auto projection = shadow_projection(
-        focus, direction, shadow_radii[cascade], kShadowResolution,
-        caps->homogeneousDepth, caps->originBottomLeft);
+    const auto& projection=projections[cascade];
     shadow_cascade_matrices_[cascade] = projection.sample;
-    const auto frustum =
-        view_frustum(projection.view.data(), projection.projection.data());
+    auto world_view=projection.view;
+    for(int row=0;row<3;++row) for(int axis=0;axis<3;++axis)
+      world_view[12+row]-=projection.view[axis*4+row]*shadow_origin_[axis];
+    const auto frustum=view_frustum(world_view.data(),projection.projection.data());
     const auto view_id = shadow_views[cascade];
     bgfx::setViewFrameBuffer(view_id, static_shadow_fb_);
     bgfx::setViewRect(view_id, uint16_t(cascade % 2 * kShadowResolution),
@@ -199,7 +238,9 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
             0.f, threshold, static_cast<float>(group.base_map.channel), 0.f};
         bgfx::setUniform(u_static_shadow_params_, params);
         bgfx::setTexture(0, s_tex_, tex);
-        bgfx::setTransform(instance.transform.data());
+        auto relative=instance.transform;
+        for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
+        bgfx::setTransform(relative.data());
         bgfx::setVertexBuffer(0, part.vbh);
         bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
         // Preserve narrow casters that overlap a texel without covering its
@@ -220,6 +261,9 @@ void LibBgfxBackend::update_static_shadow(const float* eye, const VideoOptions& 
     }
     draw_prop_batches(view_id, shadow_batches, true, conservative);
   }
+  ++shadow_atlas_revision_;
+  shadow_cached_casters_=std::move(stamps);
+  shadow_cached_origin_=shadow_origin_;shadow_cache_valid_=same_projection;
   static_shadow_distance_ = shadow_radii.back();
   static_shadow_matrix_ = shadow_cascade_matrices_[0];
   static_shadow_active_ = true;

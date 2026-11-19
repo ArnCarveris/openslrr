@@ -6,7 +6,7 @@ SAMPLER2D(s_texColor, 0);
 SAMPLER2D(s_lightmap, 1);
 SAMPLER2D(s_meshMix, 2);
 SAMPLER2DSHADOW(s_staticShadow, 3);
-SAMPLER2D(s_carDepth, 4);
+SAMPLER2DSHADOW(s_carDepth, 4);
 uniform mat4 u_carDepthMtx;
 uniform vec4 u_carDepthParams;
 #include "scene_shadow.sh"
@@ -234,10 +234,10 @@ void main()
 		if (edge > u_carDepthParams.y && p.z > 0.0 && p.z < 1.0) {
 			vec2 offset = vec2(u_carDepthParams.y, 0.0);
 			float depth = p.z - u_carDepthParams.z;
-			float samples = step(depth, texture2D(s_carDepth, p.xy + offset.xy).r)
-			              + step(depth, texture2D(s_carDepth, p.xy - offset.xy).r)
-			              + step(depth, texture2D(s_carDepth, p.xy + offset.yx).r)
-			              + step(depth, texture2D(s_carDepth, p.xy - offset.yx).r);
+			float samples = shadow2D(s_carDepth, vec3(p.xy + offset.xy, depth))
+			              + shadow2D(s_carDepth, vec3(p.xy - offset.xy, depth))
+			              + shadow2D(s_carDepth, vec3(p.xy + offset.yx, depth))
+			              + shadow2D(s_carDepth, vec3(p.xy - offset.yx, depth));
 			carVisibility -= (1.0 - samples * 0.25) * smoothstep(0.005, 0.06, edge);
 		}
 	}

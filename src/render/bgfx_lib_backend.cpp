@@ -70,6 +70,8 @@
 #include "dxbc/fs_vehicle.sc.bin.h"
 #include "glsl/vs_vehicle.sc.bin.h"
 #include "glsl/fs_vehicle.sc.bin.h"
+#include "dxbc/vs_shadow.sc.bin.h"
+#include "glsl/vs_shadow.sc.bin.h"
 #include "dxbc/fs_static_shadow.sc.bin.h"
 #include "glsl/fs_static_shadow.sc.bin.h"
 
@@ -85,6 +87,7 @@ static const bgfx::EmbeddedShader k_text[] = {
 static const bgfx::EmbeddedShader k_vs[] = {
     BGFX_EMBEDDED_SHADER(vs_mesh),
     BGFX_EMBEDDED_SHADER(vs_mesh_inst),
+    BGFX_EMBEDDED_SHADER(vs_shadow),
     BGFX_EMBEDDED_SHADER_END()};
 static const bgfx::EmbeddedShader k_skin[] = {
     BGFX_EMBEDDED_SHADER(vs_skin),
@@ -177,7 +180,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
         bgfx::createEmbeddedShader(k_fs, rt, "fs_mesh"));
     u_skin_bones_ = bgfx::createUniform("u_skinBones", bgfx::UniformType::Mat4, 48);
     static_shadow_program_ = create_owned_program(
-        bgfx::createEmbeddedShader(k_vs, rt, "vs_mesh"),
+        bgfx::createEmbeddedShader(k_vs, rt, "vs_shadow"),
         bgfx::createEmbeddedShader(k_fs, rt, "fs_static_shadow"));
     inst_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_vs, rt, "vs_mesh_inst"),
@@ -190,6 +193,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_static_shadow_params_ = bgfx::createUniform("u_staticShadowParams", bgfx::UniformType::Vec4);
     u_static_shadow_eye_ = bgfx::createUniform("u_staticShadowEye", bgfx::UniformType::Vec4);
     u_shadow_cascades_ = bgfx::createUniform("u_shadowCascades", bgfx::UniformType::Mat4,4);
+    u_shadow_origin_ = bgfx::createUniform("u_shadowOrigin", bgfx::UniformType::Vec4);
     u_shadow_ranges_ = bgfx::createUniform("u_shadowRanges", bgfx::UniformType::Vec4);
     vehicle_program_ = create_owned_program(
         bgfx::createEmbeddedShader(k_vehicle, rt, "vs_vehicle"),
@@ -371,9 +375,12 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
     shadow_cascades_active_ = false;
+    shadow_origin_world_ = nullptr;
+    shadow_cache_valid_ = false;
+    shadow_cached_casters_.clear();
     shadow_meshes_.clear();
     static_shadow_active_ = false;
-    for (auto* handle : {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_, &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_}) {
+    for (auto* handle : {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_, &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_, &u_shadow_origin_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }

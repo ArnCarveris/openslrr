@@ -361,8 +361,22 @@ class LibBgfxBackend final : public IRenderBackend {
   bool reflection_ready_ = false;
   bool reflection_scene_ = false;
   bgfx::UniformHandle u_shadow_cascades_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_shadow_origin_ = BGFX_INVALID_HANDLE;
+  std::array<float,3> shadow_origin_{};
+  void* shadow_origin_world_ = nullptr;
   bgfx::UniformHandle u_shadow_ranges_ = BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,4> shadow_cascade_matrices_{};
+  struct ShadowCasterStamp {
+    const ScxGeometry* source = nullptr;
+    uint32_t revision = 0;
+    uint16_t vertex = UINT16_MAX, index = UINT16_MAX;
+    std::array<float,16> transform{};
+    bool operator==(const ShadowCasterStamp&) const = default;
+  };
+  std::vector<ShadowCasterStamp> shadow_cached_casters_;
+  std::array<float,3> shadow_cached_origin_{};
+  bool shadow_cache_valid_ = false;
+  uint64_t shadow_atlas_revision_ = 0;
   bool shadow_cascades_active_ = false;
   std::unordered_set<const ScxGeometry*> shadow_meshes_;
   bool static_shadow_local_ = false; // The depth field belongs to the garage lamp.
