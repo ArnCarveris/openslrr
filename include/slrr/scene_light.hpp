@@ -29,7 +29,7 @@ struct PointLight {
 struct SpotLight {
   void *owner = nullptr;
   std::array<float, 3> position{}, direction{0, -1, 0}, color{1, 1, 1};
-  float intensity = 12.f, range = 20.f;
+  float intensity = 24.f, range = 20.f;
   float outer_cos =
       .173648f; // Fixed 65-degree inner / default 80-degree outer half-angle
   bool valid() const {

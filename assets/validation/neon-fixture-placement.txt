@@ -47,3 +47,6 @@ Limits:
   Intensity is not lumens; no GI, bounce light, HDR, PBR or calibrated exposure.
 - 512-square wide-cone shadows and existing exclusions (skinned casters) remain.
 - No matched FPS claim; user visual/performance acceptance is still required.
+
+Brightness tuning: fixture intensity increased from 12 to 24 engine units
+following user feedback. Positions/range/cones and white tube texture unchanged.

@@ -806,7 +806,7 @@ rest of the fitting/material stays normally lit. This is runtime material
 metadata, not a new serialized SCX version or arbitrary bright-pixel detection.
 
 The live rooted neon owner scopes up to twelve `SpotLight` records: neutral white,
-intensity 12 (engine units, not calibrated lumens), range 20 m, a downward hood
+intensity 24 (engine units, not calibrated lumens), range 20 m, a downward hood
 with a 65-degree inner and 80-degree outer half-angle. Captured scenery and
 vehicle diffuse/specular use the same inverse-square, radial/cone falloff and
 per-source shadow visibility. These are broad punctual approximations to the
