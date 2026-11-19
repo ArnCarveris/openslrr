@@ -343,6 +343,22 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_local_light_ = BGFX_INVALID_HANDLE;
   std::array<float, 4> local_light_{};
   void update_local_light();
+  static constexpr size_t kFixtureLights=12;
+  std::vector<SpotLight> fixture_lights_;
+  void update_fixture_shadows(const VideoOptions& video);
+  void bind_fixture_lights(bool enabled);
+  bgfx::FrameBufferHandle fixture_shadow_fb_=BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle fixture_shadow_tex_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_fixture_shadow_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_fixture_params_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_fixture_positions_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_fixture_colors_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_fixture_directions_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_fixture_matrices_=BGFX_INVALID_HANDLE;
+  std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
+  bool fixture_shadow_active_=false;
+  uint64_t fixture_shadow_revision_=0;
+
   bool bind_point_light(bool enabled);
   std::optional<PointLight> point_light_, cached_point_light_;
   bgfx::UniformHandle u_point_light_color_ = BGFX_INVALID_HANDLE;
@@ -402,6 +418,7 @@ class LibBgfxBackend final : public IRenderBackend {
     std::array<float,16> transform{};
     bool operator==(const ShadowCasterStamp&) const = default;
   };
+  std::vector<ShadowCasterStamp> fixture_shadow_casters_;
   std::vector<ShadowCasterStamp> interior_sun_casters_;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};

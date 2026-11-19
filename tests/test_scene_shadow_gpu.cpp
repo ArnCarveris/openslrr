@@ -360,14 +360,15 @@ struct SceneShadowRegression {
     projection[6] = .01f;
     projection[14] = .5f;
     projection[15] = 1;
+    uint16_t capture_view=5;
     auto capture = [&](bool enabled) {
       b.static_shadow_active_ = enabled;
-      bgfx::setViewFrameBuffer(5, fb);
-      bgfx::setViewRect(5, 0, 0, size, size);
-      bgfx::setViewClear(5, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, uint32_t(0xff),
+      bgfx::setViewFrameBuffer(capture_view, fb);
+      bgfx::setViewRect(capture_view, 0, 0, size, size);
+      bgfx::setViewClear(capture_view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, uint32_t(0xff),
                          0.f);
-      bgfx::setViewTransform(5, identity, projection);
-      b.draw_instance(5, receiver, identity, false, 0);
+      bgfx::setViewTransform(capture_view, identity, projection);
+      b.draw_instance(capture_view, receiver, identity, false, 0);
       bgfx::TextureRegion dst, src;
       dst.init(readback);
       src.init(color);
@@ -511,6 +512,99 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(!b.interior_sun_active_);
     scene_sun_set_time(old_time);
     b.interior_sun_active_=false;
+    Object neon;
+    auto* neon_node=gameref_upsert(&neon,GameRefKind::RenderRef);
+    neon_node->type_id=RpkIndex::make_full_id(pack,0x1d);
+    neon_node->directional_light.set=neon_node->directional_light.has_direction=true;
+    gameref_set_parent(&neon,&root);gameref_make_live(&neon);gameref_register_light(&neon);
+    const auto graphics=host_enhanced_graphics();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    b.update_local_light();
+    std::printf("NEON actual fixture count=%zu\n",b.fixture_lights_.size());
+    SLRR_REQUIRE(b.fixture_lights_.size()==9);
+    SLRR_REQUIRE(b.point_light_ && b.point_light_->intensity==0 && !b.point_light_->casts_shadows);
+    for(const auto& light:b.fixture_lights_) {
+      SLRR_REQUIRE(light.valid() && light.position[1]>6.4f && light.position[1]<6.5f);
+      SLRR_REQUIRE(light.owner==&neon && light.direction[1]<-.99f);
+    }
+    b.update_static_shadow(eye,video);b.update_fixture_shadows(video);
+    SLRR_REQUIRE(b.fixture_shadow_active_);
+    b.draw_previews();bgfx::frame();
+    const auto fixtures=b.fixture_lights_;
+    const auto fixture_image=capture(false);
+    capture_view=72;
+    SLRR_REQUIRE(capture(false)==fixture_image);
+    capture_view=5;
+    b.fixture_lights_.clear();
+    const auto ambient_image=capture(false);
+    unsigned neon_pixels=0;
+    for(size_t i=0;i<fixture_image.size();i+=4) if(int(fixture_image[i])-int(ambient_image[i])>10) ++neon_pixels;
+    std::printf("NEON real-floor illuminated pixels=%u\n",neon_pixels);
+    SLRR_REQUIRE(neon_pixels>100);
+    b.fixture_lights_=fixtures;
+    auto revision=b.fixture_shadow_revision_;
+    b.update_fixture_shadows(video);
+    SLRR_REQUIRE(b.fixture_shadow_revision_==revision);
+    // Each atlas tile/source must contribute independently, including > 6.
+    for(size_t lamp=0;lamp<fixtures.size();++lamp) {
+      b.fixture_lights_=fixtures;
+      for(size_t j=0;j<fixtures.size();++j) if(j!=lamp) b.fixture_lights_[j].intensity=0;
+      const auto image=capture(false);unsigned pixels=0;
+      for(size_t i=0;i<image.size();i+=4) if(int(image[i])-int(ambient_image[i])>3) ++pixels;
+      std::printf("NEON source %zu contributes %u pixels\n",lamp,pixels);
+      SLRR_REQUIRE(pixels>10);
+      b.update_fixture_shadows(video);SLRR_REQUIRE(b.fixture_shadow_revision_==revision);
+    }
+    b.fixture_lights_=fixtures;
+    b.fixture_shadow_active_=false;
+    const auto unshadowed=capture(false);
+    unsigned blocked=0;
+    for(size_t i=0;i<fixture_image.size();i+=4) if(int(unshadowed[i])-int(fixture_image[i])>5) ++blocked;
+    std::printf("NEON occluded pixels=%u\n",blocked);SLRR_REQUIRE(blocked>10);
+    b.update_fixture_shadows(video);b.draw_previews();bgfx::frame();
+    revision=b.fixture_shadow_revision_;
+    b.fixture_lights_[0].position[0]+=1.f;
+    b.update_fixture_shadows(video);SLRR_REQUIRE(b.fixture_shadow_revision_==revision+1);
+    b.draw_previews();bgfx::frame();
+    const auto shifted=capture(false);unsigned moving_neon=0;
+    for(size_t i=0;i<shifted.size();i+=4) if(std::abs(int(shifted[i])-int(fixture_image[i]))>5) ++moving_neon;
+    SLRR_REQUIRE(moving_neon>10);
+    // The luminous tube faces keep their original white atlas sample and do
+    // not depend on ambient, punctual shadows or the sunlight enable state.
+    auto tubes=std::make_shared<ScxGeometry>();
+    for(const auto& obj:b.instances_) if(!obj.geometry->ceiling_light_anchors.empty()) {
+      *tubes=*obj.geometry;tubes->indices.clear();tubes->groups.clear();
+      for(auto group:obj.geometry->groups) if(group.self_illuminated) {
+        auto first=group.index_start;group.index_start=uint32_t(tubes->indices.size());
+        tubes->indices.insert(tubes->indices.end(),obj.geometry->indices.begin()+first,
+            obj.geometry->indices.begin()+first+group.index_count);tubes->groups.push_back(group);
+      }
+      break;
+    }
+    SLRR_REQUIRE(tubes->indices.size()==432*3);
+    b.cache_scene_mesh(tubes,nullptr,false);
+    receiver.geometry=tubes;
+    const auto tubes_on=capture(false);
+    b.fixture_lights_.clear();b.point_light_.reset();
+    const auto tubes_off=capture(false);
+    SLRR_REQUIRE(tubes_on==tubes_off);
+    unsigned white=0;
+    for(size_t i=0;i<tubes_off.size();i+=4) if(tubes_off[i]>180 && tubes_off[i+1]>180 && tubes_off[i+2]>180) ++white;
+    std::printf("NEON white tube pixels retained without lights=%u\n",white);SLRR_REQUIRE(white>10);
+    for(auto& object:b.instances_) if(object.key==&stuff) object.transform[12]+=2.f;
+    b.update_local_light();
+    SLRR_REQUIRE(b.fixture_lights_.size()==fixtures.size());
+    for(size_t i=0;i<fixtures.size();++i)
+      SLRR_REQUIRE(std::abs(b.fixture_lights_[i].position[0]-fixtures[i].position[0]-2.f)<.001f);
+    for(auto& object:b.instances_) if(object.key==&stuff) object.transform[12]-=2.f;
+    scene_instances_select(nullptr,nullptr,false,SceneEnvironment::Interior);
+    b.update_local_light();SLRR_REQUIRE(b.fixture_lights_.empty());
+    scene_instances_select(&root,nullptr,false,SceneEnvironment::Interior);
+    host_enhanced_graphics().local_lights=false;b.update_local_light();
+    SLRR_REQUIRE(b.fixture_lights_.empty());
+    host_enhanced_graphics()=graphics;
+    b.fixture_shadow_active_=false;
+    gameref_remove(&neon);
     bgfx::destroy(readback);
     bgfx::destroy(fb);
     auto children = gameref_get(&root)->children;

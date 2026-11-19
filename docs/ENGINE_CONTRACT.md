@@ -795,15 +795,30 @@ retain automatic ground-prop detection. Resource reset clears the scene intent.
 An inherited unassigned `internalScene` may be absent from the sparse host object;
 in that case a live Scene.sun parented to the current world also establishes
 exterior intent. Explicit interior metadata takes priority.
-The garage's enhanced path now adapts its legacy neon into a `PointLight`
-(`include/slrr/scene_light.hpp`): render-space metres, colour, engine intensity,
-radial range, ambient fill, owner and shadow flag. This is a positional source,
-not a second directional contribution. The adapter retains the neon owner/colour,
-places an explicit local 3.3 m anchor through its owner transform, uses intensity
-18 and range 32 m, and reduces the authored ambient to 15%. These are documented
-compatibility defaults, not recovered fixture positions or calibrated lumens.
-The record is cleared/reselected each frame; inventory/hidden/other-world owners
-are rejected by the scene transform traversal. Local/dynamic-light options gate it.
+The stock g1 garage now derives nine paired ceiling emitters from its actual
+SCX tube geometry. `legacy_neon.hpp` is an explicit asset adapter: the `texturak`
+section of `garazs1.dds` samples a known white swatch. Connected metre-scale tube
+components are paired into fittings; local anchors sit 8 cm below the tube's
+lowest face and follow the instance's transform. The loader splits only tube
+triangles into `self_illuminated` groups, preserving their original texture/UVs.
+These opaque surfaces remain white without dynamic light or sky ambient; the
+rest of the fitting/material stays normally lit. This is runtime material
+metadata, not a new serialized SCX version or arbitrary bright-pixel detection.
+
+The live rooted neon owner scopes up to twelve `SpotLight` records: neutral white,
+intensity 12 (engine units, not calibrated lumens), range 20 m, a downward hood
+with a 65-degree inner and 80-degree outer half-angle. Captured scenery and
+vehicle diffuse/specular use the same inverse-square, radial/cone falloff and
+per-source shadow visibility. These are broad punctual approximations to the
+fittings, not area lights. Local/dynamic-light options and world transitions
+clear/reselect the records. The 15% legacy ambient remains an explicit fill;
+when fixtures are present the point compatibility record supplies ambient only
+(zero direct intensity), suppressing the old directional neon contribution.
+
+For unadapted interiors, the previous `PointLight` fallback remains: a local
+3.3 m anchor through the owner transform, intensity 18 and range 32 m, preserving
+its owner/colour. Missing fixtures must not invent nine lights in other garages.
+These fallback settings are compatibility defaults, not recovered positions.
 
 One point-shadow atlas contains six 512-square D32F faces in a 1536x1024 2D
 texture (6 MiB depth payload). Face views 0/1/2/3/4/64 precede the world;
@@ -824,10 +839,18 @@ Exact unchanged caster/projection state reuses the atlas; light position/range o
 caster identity/revision/buffer/transform changes invalidate it. Colour/intensity
 updates change shading without redrawing depth.
 
-This first implementation budgets one interior point source. There is no authored
-multi-fixture placement system, spot/projector headlight path, outdoor point-light
-registry yet. PBR, HDR/tonemapping,
-area lights and removal of baked detail in diffuse textures are separate work.
+The fixture path instead allocates a 2048x1536 D32F atlas (12 MiB), at most
+twelve 512-square tiles, one downward perspective per fitting. Reserved views
+128..139 are ordered before world 5/6 and the sun view 65; reset the full order
+0..139, preserving preview/inset/OSD/reflection order. Main/captured mesh and
+vehicle programs use fixture sampler 7. Unchanged projection/caster state reuses
+all tiles; position, direction, range or caster changes refresh depth, while
+colour/intensity updates only affect shading. The fallback cube atlas is inactive
+when the paired fixtures are active. Close destroys the extra atlas/uniforms.
+
+Generic fixture authoring, adapters for other garages, outdoor punctual sources,
+projector headlights, PBR, HDR/tonemapping, area lights and removal of baked
+detail in diffuse textures are still separate work.
 
 Interior daylight uses a separate 1024-square D32F directional shadow map
 (4 MiB), on reserved view 65 ordered before world 5/6, alongside the point atlas.
@@ -853,8 +876,8 @@ Interior flare artwork resolves through the active root's skydome resource; all
 rays/ghosts use camera-to-sun shadow visibility, including window alpha and frames.
 It draws as a lens overlay only when that visibility permits it. Preview/emission
 passes disable daylight reception, and backend close destroys the extra resources.
-Actual fixture placement/multiple neon sources and white fixture emission remain
-separate work; this increment preserves the existing point adapter.
+Stock g1 fixture placement and white tube emission are implemented above;
+other interiors retain the point fallback until they have fixture metadata.
 
 Outdoor receivers now use four camera-centred distance cascades (32/100/320/
 1,000 m) in a 4096-square depth atlas, with 2048-square tiles. Projection

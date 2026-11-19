@@ -123,6 +123,28 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   bgfx::submit(view_id, program_);
 }
 
+void LibBgfxBackend::bind_fixture_lights(bool enabled) {
+  const auto count=enabled?std::min(fixture_lights_.size(),kFixtureLights):size_t(0);
+  const bool shadows=count && fixture_shadow_active_;
+  const float params[4]={float(count),1.f/2048.f,1.f/1536.f,shadows?1.f:0.f};
+  bgfx::setUniform(u_fixture_params_,params);
+  if(count) {
+    std::array<std::array<float,4>,kFixtureLights> positions{},colors{},directions{};
+    for(size_t i=0;i<count;++i) {
+      const auto& light=fixture_lights_[i];
+      positions[i]={light.position[0],light.position[1],light.position[2],light.range};
+      colors[i]={light.color[0],light.color[1],light.color[2],light.intensity};
+      directions[i]={light.direction[0],light.direction[1],light.direction[2],light.outer_cos};
+    }
+    bgfx::setUniform(u_fixture_positions_,positions.data(),uint16_t(count));
+    bgfx::setUniform(u_fixture_colors_,colors.data(),uint16_t(count));
+    bgfx::setUniform(u_fixture_directions_,directions.data(),uint16_t(count));
+    bgfx::setUniform(u_fixture_matrices_,fixture_shadow_matrices_.data(),uint16_t(count));
+  }
+  bgfx::setTexture(7,s_fixture_shadow_,shadows?fixture_shadow_tex_:depth_white_,
+      BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
+}
+
 void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
   const bool active = enabled && interior_sun_active_;
   const float direction[4] = {-interior_sun_.direction[0], -interior_sun_.direction[1],
@@ -138,6 +160,7 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
 
   void LibBgfxBackend::bind_scene_shadow(bool enabled, uint8_t stage)
 {
+    bind_fixture_lights(enabled);
     bind_interior_sun(enabled, stage == 5 ? 6 : 5);
     const bool receive = enabled && static_shadow_active_ &&
                          debug_overlay_.render_options().map_shadows;
@@ -177,7 +200,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
   if (point) {
     const auto &light = *point_light_;
     const float position[4] = {light.position[0], light.position[1],
-                               light.position[2], light.range};
+                               light.position[2], light.intensity>0.f?light.range:0.f};
     const float color[4] = {light.color[0], light.color[1], light.color[2],
                             light.intensity};
     bgfx::setUniform(u_local_light_, position);
@@ -455,7 +478,8 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
           (reset_flags_ & BGFX_RESET_MSAA_MASK) &&
           (flags & 0x02000000u) != 0;
       const bool vertex_mix = group && group->mix_vertex_color;
-      const float settings[4] = {alpha_test, instance.emissive_overlay ? 2.f : instance.sky || blend || vertex_mix ? 1.f : preview ? .5f : 0.f,
+      const bool fixture_emitter=group && group->self_illuminated;
+      const float settings[4] = {alpha_test, instance.emissive_overlay ? 2.f : instance.sky || blend || vertex_mix || fixture_emitter ? 1.f : preview ? .5f : 0.f,
                                  foliage_coverage ? 2.f : blend ? 1.f : 0.f, material_mix ? -2.f : vertex_mix ? -1.f :
                                  outdoor_lighting_ && !preview && part.geo.ground_polygons ? -3.f :
                                  !blend && preview && tex.idx != white_tex_.idx ? 1.f : 0.f};
@@ -489,7 +513,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         const auto candidate = texture(group->mix_index);
         if (candidate.idx != white_tex_.idx) mix = candidate;
       }
-      const bool world_mesh = !preview && !instance.sky && !blend;
+      const bool world_mesh = !preview && !instance.sky && !blend && !fixture_emitter;
       // Reflection faces are 256² copies of the city. They keep the sun
       // and skip the shadow taps.
       const auto& graphics = host_enhanced_graphics();

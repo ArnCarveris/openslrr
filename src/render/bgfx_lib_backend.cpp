@@ -241,6 +241,13 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_aperture_uv_ = bgfx::createUniform("u_apertureUv", bgfx::UniformType::Vec4, 32);
     u_aperture_edge_ = bgfx::createUniform("u_apertureEdge", bgfx::UniformType::Vec4, 32);
     s_aperture_ = bgfx::createUniform("s_aperture", bgfx::UniformType::Sampler);
+    s_fixture_shadow_=bgfx::createUniform("s_fixtureShadow",bgfx::UniformType::Sampler);
+    u_fixture_params_=bgfx::createUniform("u_fixtureParams",bgfx::UniformType::Vec4);
+    u_fixture_positions_=bgfx::createUniform("u_fixturePositions",bgfx::UniformType::Vec4,12);
+    u_fixture_colors_=bgfx::createUniform("u_fixtureColors",bgfx::UniformType::Vec4,12);
+    u_fixture_directions_=bgfx::createUniform("u_fixtureDirections",bgfx::UniformType::Vec4,12);
+    u_fixture_matrices_=bgfx::createUniform("u_fixtureMatrices",bgfx::UniformType::Mat4,12);
+
 
     // bgfx returns an invalid program, without a message in Release, when the
     // fragment $input list differs from the vertex $output list. The features
@@ -396,6 +403,10 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     interior_sun_fb_ = BGFX_INVALID_HANDLE;
     interior_sun_tex_ = BGFX_INVALID_HANDLE;
     interior_sun_active_ = false;
+    if(bgfx::isValid(fixture_shadow_fb_)) bgfx::destroy(fixture_shadow_fb_);
+    fixture_shadow_fb_=BGFX_INVALID_HANDLE;fixture_shadow_tex_=BGFX_INVALID_HANDLE;
+    fixture_lights_.clear();fixture_shadow_casters_.clear();fixture_shadow_active_=false;
+    fixture_shadow_revision_=0;
     interior_sun_casters_.clear();
     point_light_.reset();
     cached_point_light_.reset();
@@ -410,7 +421,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
           &u_point_shadow_params_, &s_interior_sun_, &u_interior_sun_mtx_,
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
-          &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_}) {
+          &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
+          &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
+          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -720,6 +733,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     if (!covered) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
+      update_fixture_shadows(video);
       update_interior_sun(video);
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
@@ -1085,6 +1099,7 @@ void LibBgfxBackend::cache_scene_mesh(
 void LibBgfxBackend::update_local_light() {
     local_light_ = {};
     point_light_.reset();
+    fixture_lights_.clear();
     if (!garage_ || !host_enhanced_graphics().local_lights ||
         !host_enhanced_graphics().dynamic_lighting)
       return;
@@ -1108,6 +1123,25 @@ void LibBgfxBackend::update_local_light() {
       }
       if (!light.valid())
         continue;
+      for(const auto& instance:instances_) {
+        if(!instance.geometry || instance.sky || instance.vehicle_material || instance.emissive_overlay) continue;
+        for(const auto& anchor:instance.geometry->ceiling_light_anchors) {
+          if(fixture_lights_.size()>=kFixtureLights) break;
+          SpotLight fixture;
+          fixture.owner=node->key;
+          const auto p=bx::mul({anchor[0],anchor[1],-anchor[2]},instance.transform.data());
+          const auto direction=bx::normalize(bx::Vec3{-instance.transform[4],-instance.transform[5],-instance.transform[6]});
+          fixture.position={p.x,p.y,p.z};fixture.direction={direction.x,direction.y,direction.z};
+          // Neutral-white fluorescent tubes; the legacy neon's blue tint is
+          // not a recovered spectrum. Keep the owner for scope/lifetime only.
+          if(fixture.valid()) fixture_lights_.push_back(fixture);
+        }
+      }
+      if(!fixture_lights_.empty()) {
+        // Ambient-only compatibility record keeps the legacy directional fill
+        // suppressed. Fixture shading has its own sources and shadow atlas.
+        light.intensity=0;light.casts_shadows=false;
+      }
       point_light_ = light;
       local_light_ = {light.position[0], light.position[1], light.position[2],
                       light.range};
@@ -1357,10 +1391,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 66> base_order{};
+    std::array<uint16_t, 140> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
       if (i == kWorldView) {
+        for(uint16_t f=128;f<140;++f) base_order[base_slot++]=f;
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
       }
@@ -1368,6 +1403,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     }
     if (!point_shadow_active_)
       base_order[base_slot++] = 64;
+    for(uint16_t f=66;f<128;++f) base_order[base_slot++]=f;
     bgfx::setViewOrder(0, uint16_t(base_order.size()), base_order.data());
     const auto* main_camera = fullscreen_script_camera();
     const auto* main_vp = main_camera ? gameref_get(main_camera->viewport) : nullptr;
@@ -1379,9 +1415,10 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 66> order{};
+      std::array<uint16_t, 140> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
+      for(uint16_t f=128;f<140;++f) order[slot++]=f;
       if (point_shadow_active_) order[slot++] = 64;
       order[slot++] = 65;
       order[slot++] = kFmvLayer;
@@ -1390,6 +1427,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       for (uint16_t i = kPreview0 + uint16_t(views.size() - 1); i < 64; ++i) order[slot++] = i;
       if (!point_shadow_active_)
         order[slot++] = 64;
+      for(uint16_t f=66;f<128;++f) order[slot++]=f;
       bgfx::setViewOrder(0, uint16_t(order.size()), order.data());
     }
     uint16_t id = kPreview0;

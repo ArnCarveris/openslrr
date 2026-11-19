@@ -1,5 +1,6 @@
 #include "slrr/gc_roots.hpp"
 #include "slrr/scene_instances.hpp"
+#include "slrr/legacy_neon.hpp"
 #include "slrr/scene_collision.hpp"
 #include <limits>
 #include "slrr/gameref.hpp"
@@ -424,6 +425,7 @@ std::shared_ptr<const ScxGeometry> load_geometry(const RpkIndex& resources, uint
         }
         mesh->textures = std::move(model.textures);
         scx_resolve_baked_lightmaps(*mesh);
+        adapt_legacy_neon_fixtures(*mesh);
         result = std::move(mesh);
         jobs_printf("[scene] resource=0x%x source=%s vertices=%d\n", id,
                     path.string().c_str(), result->info.vertices);

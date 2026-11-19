@@ -215,7 +215,25 @@ changes; replacing window alpha with an opaque mask blocks the corresponding
 light. Flare ghosts/rays use camera-to-sun visibility from the same field; tests
 cover visible glass versus blocked roof/frame. See
 [interior-directional-sun.txt](../assets/validation/interior-directional-sun.txt).
-Fixture placement, multiple neons and their explicit white emission remain open.
+Stock g1 fixture placement and explicit white tube emission are implemented below.
+
+## Stock garage ceiling fixtures
+
+The g1 garage's nine paired fittings now drive nine neutral-white broad downward
+sources. Positions are recovered from connected tube geometry, transformed with
+the instance, rather than a central guessed anchor. Only the white tube faces
+become self-illuminated; the existing texture and UVs stay intact. A bounded
+12-tile, 12 MiB atlas uses one projection per fitting, cached while geometry and
+sources are unchanged. Direct light/specular and captured scenery share the
+same fixture visibility. Daylight remains a separate source/field.
+
+Real-asset GPU tests cover all nine sources individually, occlusion, moved source,
+exact depth reuse, reflection-view equality, rooted lifetime/option gating and
+white tube pixels with lighting disabled. An isolated game capture was inspected:
+white paired tubes align with the fittings and light reaches the surrounding
+walls/floor. See [neon-fixture-placement.txt](../assets/validation/neon-fixture-placement.txt).
+Other garage models still need explicit emitter metadata/adapters; this does not
+claim a generic SCX authoring format, calibrated photometry or area-light softness.
 
 ## Still outstanding
 
@@ -224,9 +242,9 @@ Fixture placement, multiple neons and their explicit white emission remain open.
 - Broader cascade motion/quality validation: alpha foliage, moving casters,
   sunset/low angles, split transitions and bias on actual assets; reduce CPU
   collection/submission cost without reintroducing visible temporal jumps.
-- Point/spot authoring and submission, multiple interior emitters and real
-  headlight/street lights, including controls, damage, allocation and GPU budgets;
-  the first owner-scoped interior point adapter is implemented above.
+- Generic point/spot authoring and real headlight/street lights, including
+  controls, damage and budgets; the stock g1 fixture adapter and bounded
+  multi-emitter submission are implemented above. Other garage assets need adapters.
 - Linear-light PBR material representation, legacy SCX adaptation, clearcoat,
   roughness filtering and a specified optional material-format extension.
 - Sky geometry independence, continuous Scene.java inputs and cloud quality.

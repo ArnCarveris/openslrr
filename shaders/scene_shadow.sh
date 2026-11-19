@@ -1,3 +1,53 @@
+// Bounded ceiling emitters share one downward projection each, not six cube
+// faces per tube. The housing limits the direct source to its lower hemisphere.
+uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
+uniform vec4 u_fixturePositions[12];
+uniform vec4 u_fixtureColors[12];
+uniform vec4 u_fixtureDirections[12];
+uniform mat4 u_fixtureMatrices[12];
+void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specular,
+                     out vec3 diffuse,out vec3 highlight)
+{
+    diffuse=vec3(0.0,0.0,0.0);highlight=vec3(0.0,0.0,0.0);
+    for(int i=0;i<12;++i) {
+        if(float(i)>=u_fixtureParams.x) break;
+        vec3 delta=u_fixturePositions[i].xyz-world;
+        float d2=max(dot(delta,delta),0.001);
+        vec3 toward=delta*inversesqrt(d2);
+        float cone=smoothstep(u_fixtureDirections[i].w,0.422618,
+                             dot(-toward,u_fixtureDirections[i].xyz));
+        float range=u_fixturePositions[i].w;
+        float window=saturate(1.0-pow(d2/(range*range),2.0));
+        float visibility=1.0;
+        if(u_fixtureParams.w>0.5) {
+            vec4 clip=mul(u_fixtureMatrices[i],vec4(world+toward*0.015,1.0));
+            vec3 p=clip.xyz/max(clip.w,0.0001);
+            visibility=0.0;
+            if(clip.w>0.0 && all(greaterThan(p,vec3(0.0,0.0,0.0))) &&
+               all(lessThan(p,vec3(1.0,1.0,1.0)))) {
+                float row=floor(float(i)*0.25);
+                vec2 tile=vec2((float(i)-row*4.0)*0.25,row/3.0);
+                vec2 uv=tile+p.xy*vec2(0.25,1.0/3.0);
+                vec2 texel=u_fixtureParams.yz;
+                uv=clamp(uv,tile+texel*1.5,tile+vec2(0.25,1.0/3.0)-texel*1.5);
+                vec2 t=texel*0.5;
+                visibility=(shadow2D(s_fixtureShadow,vec3(uv+t,p.z))+
+                            shadow2D(s_fixtureShadow,vec3(uv-t,p.z))+
+                            shadow2D(s_fixtureShadow,vec3(uv+vec2(t.x,-t.y),p.z))+
+                            shadow2D(s_fixtureShadow,vec3(uv+vec2(-t.x,t.y),p.z)))*0.25;
+            }
+        }
+        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
+                        max(d2,0.25))*cone*visibility;
+        float facing=max(dot(n,toward),0.0);
+        diffuse+=radiance*facing;
+        if(specular) {
+            vec3 h=toward+viewDirection;h*=inversesqrt(max(dot(h,h),0.000001));
+            highlight+=radiance*facing*pow(max(dot(n,h),0.0),power);
+        }
+    }
+}
+
 // Independent interior daylight field; ambient is never multiplied by it.
 uniform mat4 u_interiorSunMtx;
 uniform vec4 u_interiorSunDir; // toward sun, atlas texel size

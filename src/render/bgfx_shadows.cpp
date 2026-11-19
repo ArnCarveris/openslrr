@@ -10,6 +10,121 @@
 
 namespace slrr {
 
+void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
+  const bool was_active = fixture_shadow_active_;
+  fixture_shadow_active_ = false;
+  if (fixture_lights_.empty() || !garage_ || video.shadows == 0 ||
+      !debug_overlay_.render_options().map_shadows) {
+    fixture_shadow_casters_.clear();
+    return;
+  }
+  constexpr uint16_t tile = 512, width = tile * 4, height = tile * 3;
+  if (!bgfx::isValid(fixture_shadow_fb_)) {
+    const auto depth = bgfx::createTexture2D(
+        width, height, false, 1, bgfx::TextureFormat::D32F,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (!bgfx::isValid(depth))
+      return;
+    fixture_shadow_fb_ = bgfx::createFrameBuffer(1, &depth, true);
+    if (!bgfx::isValid(fixture_shadow_fb_)) {
+      bgfx::destroy(depth);
+      return;
+    }
+    fixture_shadow_tex_ = depth;
+  }
+  std::array<std::array<float, 16>, kFixtureLights> views{}, projections{};
+  fixture_shadow_matrices_ = {};
+  const auto *caps = bgfx::getCaps();
+  const float crop[16] = {.5f,
+                          0,
+                          0,
+                          0,
+                          0,
+                          caps->originBottomLeft ? .5f : -.5f,
+                          0,
+                          0,
+                          0,
+                          0,
+                          caps->homogeneousDepth ? .5f : 1.f,
+                          0,
+                          .5f,
+                          .5f,
+                          caps->homogeneousDepth ? .5f : 0.f,
+                          1};
+  for (size_t i = 0; i < fixture_lights_.size(); ++i) {
+    const auto &light = fixture_lights_[i];
+    const bx::Vec3 position{light.position[0], light.position[1],
+                            light.position[2]};
+    const bx::Vec3 direction{light.direction[0], light.direction[1],
+                             light.direction[2]};
+    const bx::Vec3 up =
+        std::abs(direction.y) > .98f ? bx::Vec3{0, 0, 1} : bx::Vec3{0, 1, 0};
+    bx::mtxLookAt(views[i].data(), position, bx::add(position, direction), up);
+    bx::mtxProj(projections[i].data(),
+                2.f * std::acos(light.outer_cos) * 57.2957795f, 1.f, .05f,
+                light.range, caps->homogeneousDepth);
+    float clip[16];
+    bx::mtxMul(clip, views[i].data(), projections[i].data());
+    bx::mtxMul(fixture_shadow_matrices_[i].data(), clip, crop);
+  }
+  std::vector<ShadowCasterStamp> stamps;
+  for (const auto &instance : instances_) {
+    if (!instance.geometry || instance.sky || instance.light_flags ||
+        instance.emissive_overlay || instance.gpu_skin ||
+        (instance.vehicle_material && !debug_overlay_.render_options().shadows))
+      continue;
+    cache_scene_mesh(instance.geometry, instance.key, false);
+    const auto &part = instance_meshes_.at(instance.geometry.get());
+    stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                      part.vbh.idx, part.ibh.idx, instance.transform});
+  }
+  fixture_shadow_active_ = true;
+  if (was_active && fixture_cached_matrices_ == fixture_shadow_matrices_ &&
+      stamps == fixture_shadow_casters_)
+    return;
+  const float no_apertures[4]{};
+  bgfx::setUniform(u_aperture_params_, no_apertures);
+  for (size_t i = 0; i < fixture_lights_.size(); ++i) {
+    const uint16_t view = uint16_t(128 + i);
+    bgfx::setViewFrameBuffer(view, fixture_shadow_fb_);
+    bgfx::setViewRect(view, uint16_t(i % 4 * tile), uint16_t(i / 4 * tile),
+                      tile, tile);
+    bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, 0, 1.f);
+    bgfx::setViewTransform(view, views[i].data(), projections[i].data());
+    bgfx::touch(view);
+    const auto frustum = view_frustum(views[i].data(), projections[i].data());
+    for (const auto &stamp : stamps) {
+      const auto &part = instance_meshes_.at(stamp.source);
+      if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh) ||
+          !shadow_bounds_visible(*stamp.source, stamp.transform, frustum))
+        continue;
+      for (const auto &group : part.shadow_groups) {
+        const auto surface = scx_surface(part.geo.info.version, group);
+        const float threshold = !surface.cutout ? -1.f
+                                : part.geo.info.version == 4
+                                    ? group.alpha_reference / 255.f
+                                    : .5f;
+        const float params[4] = {0, threshold, float(group.base_map.channel),
+                                 0};
+        const auto slot = group.texture_index;
+        bgfx::setUniform(u_static_shadow_params_, params);
+        bgfx::setTexture(0, s_tex_,
+                         slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                             ? part.tex[slot]
+                             : white_tex_);
+        bgfx::setVertexBuffer(0, part.vbh);
+        bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+        bgfx::setTransform(stamp.transform.data());
+        bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+        bgfx::submit(view, static_shadow_program_);
+      }
+    }
+  }
+  fixture_shadow_casters_ = std::move(stamps);
+  fixture_cached_matrices_ = fixture_shadow_matrices_;
+  ++fixture_shadow_revision_;
+}
+
 // A separate directional field: punctual shadow visibility must never occlude
 // sunlight, nor may the sky's ambient term replace the direct source.
 void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {

@@ -10,6 +10,7 @@ SAMPLER2DSHADOW(s_carDepth, 4);
 uniform mat4 u_carDepthMtx;
 uniform vec4 u_carDepthParams;
 SAMPLER2DSHADOW(s_interiorSun, 5);
+SAMPLER2DSHADOW(s_fixtureShadow, 7);
 #include "scene_shadow.sh"
 uniform vec4 u_sunAmb;
 uniform vec4 u_sunDiff;
@@ -256,6 +257,9 @@ void main()
 		float facing = max(dot(n, delta * inversesqrt(max(d2, 0.001))), 0.0);
 		illumination += localLightRadiance(delta,u_localLight.w,u_sunDir.w < -0.5)*facing*localVisibility;
 	}
+    vec3 fixtureDiffuse,fixtureHighlight;
+    fixtureLighting(n,vec3(0.0,1.0,0.0),v_worldPos,1.0,false,fixtureDiffuse,fixtureHighlight);
+    illumination+=fixtureDiffuse;
 	illumination += interiorSunDiffuse(n,v_worldPos);
 	vec3 shaded = tex.rgb * bake * tint * placement * illumination;
 	if (u_alphaTest.y > 1.5) {
