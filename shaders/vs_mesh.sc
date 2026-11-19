@@ -24,11 +24,11 @@ void main()
 		overlay.xyz += v_normal * (0.002 / sqrt(surfaceNormalLength));
 		gl_Position = mul(u_viewProj, overlay);
 	}
+    v_worldPos = world.xyz; // Physical position for local light and reflection sampling.
 	// Pull the receiver out of its own surface. A few centimetres stops the
 	// cornice and the wall from shadowing themselves in stripes.
 	float nl = dot(v_normal, v_normal);
 	if (nl > 1e-8)
 		world.xyz += v_normal * (0.05 / sqrt(nl));
 	v_staticShadow = mul(u_staticShadowMtx, world).xyz;
-	v_worldPos = world.xyz;
 }

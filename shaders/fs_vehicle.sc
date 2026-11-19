@@ -8,6 +8,7 @@ SAMPLERCUBE(s_sceneReflection, 4);
 SAMPLER2DSHADOW(s_staticShadow, 5);
 SAMPLER2DSHADOW(s_interiorSun, 6);
 SAMPLER2DSHADOW(s_fixtureShadow, 7);
+SAMPLER2D(s_sunAperture, 8);
 #include "scene_shadow.sh"
 uniform vec4 u_dynamicReflection; // x: reflection mode, y: two-sided material
 uniform vec4 u_reflectionProbe;

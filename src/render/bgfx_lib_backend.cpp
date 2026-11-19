@@ -76,6 +76,7 @@
 #include "glsl/fs_static_shadow.sc.bin.h"
 
 #include "bgfx_lib_backend.hpp"
+#include "reflection_capture.hpp"
 #include "bgfx_program.hpp"
 
 namespace slrr {
@@ -233,6 +234,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_point_shadow_params_ =
         bgfx::createUniform("u_pointShadowParams", bgfx::UniformType::Vec4);
     s_interior_sun_ = bgfx::createUniform("s_interiorSun", bgfx::UniformType::Sampler);
+    s_sun_aperture_ = bgfx::createUniform("s_sunAperture", bgfx::UniformType::Sampler);
     u_interior_sun_mtx_ = bgfx::createUniform("u_interiorSunMtx", bgfx::UniformType::Mat4);
     u_interior_sun_dir_ = bgfx::createUniform("u_interiorSunDir", bgfx::UniformType::Vec4);
     u_interior_sun_color_ = bgfx::createUniform("u_interiorSunColor", bgfx::UniformType::Vec4);
@@ -400,6 +402,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     shadow_cascades_active_ = false;
     point_shadow_active_ = false;
     if (bgfx::isValid(interior_sun_fb_)) bgfx::destroy(interior_sun_fb_);
+    if(bgfx::isValid(interior_aperture_fb_)) bgfx::destroy(interior_aperture_fb_);
+    interior_aperture_fb_=BGFX_INVALID_HANDLE;
+    interior_aperture_tex_=BGFX_INVALID_HANDLE;
     interior_sun_fb_ = BGFX_INVALID_HANDLE;
     interior_sun_tex_ = BGFX_INVALID_HANDLE;
     interior_sun_active_ = false;
@@ -419,7 +424,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
          {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_,
           &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_,
           &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
-          &u_point_shadow_params_, &s_interior_sun_, &u_interior_sun_mtx_,
+          &u_point_shadow_params_, &s_interior_sun_, &s_sun_aperture_, &u_interior_sun_mtx_,
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
           &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
@@ -1277,7 +1282,7 @@ void LibBgfxBackend::update_reflections(const float* eye) {
       const float origin_y = reflection_origin_[1];
       const float origin_z = reflection_origin_[2];
       for (const auto& object : objects) {
-        if (object.sky || object.vehicle_material ||
+        if (!reflection_capture_visible(object) ||
             (object.gpu_skin && object.skin.empty()) ||
             !instance_meshes_.contains(object.geometry.get()))
           continue;
@@ -1332,6 +1337,7 @@ void LibBgfxBackend::draw_sky(uint16_t view_id, const float* view, const float* 
     const float sky[4] = {camera[12], camera[13], camera[14],
                           host_enhanced_graphics().volumetric_clouds ? 2.f : 1.f};
     bind_baked_light(nullptr, nullptr, BGFX_INVALID_HANDLE, false, &sun, sky);
+    const float sky_mode[4]={0,1,0,0};bgfx::setUniform(u_alpha_test_,sky_mode);
     bgfx::setTransform(identity);
     bgfx::setVertexBuffer(0, &vertices);
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA);
@@ -1398,12 +1404,13 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         for(uint16_t f=128;f<140;++f) base_order[base_slot++]=f;
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
+        base_order[base_slot++] = 66;
       }
       base_order[base_slot++] = i;
     }
     if (!point_shadow_active_)
       base_order[base_slot++] = 64;
-    for(uint16_t f=66;f<128;++f) base_order[base_slot++]=f;
+    for(uint16_t f=67;f<128;++f) base_order[base_slot++]=f;
     bgfx::setViewOrder(0, uint16_t(base_order.size()), base_order.data());
     const auto* main_camera = fullscreen_script_camera();
     const auto* main_vp = main_camera ? gameref_get(main_camera->viewport) : nullptr;
@@ -1421,13 +1428,14 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       for(uint16_t f=128;f<140;++f) order[slot++]=f;
       if (point_shadow_active_) order[slot++] = 64;
       order[slot++] = 65;
+      order[slot++] = 66;
       order[slot++] = kFmvLayer;
       order[slot++] = kOsdUnder;
       for (const auto& entry : views) order[slot++] = entry.second;
       for (uint16_t i = kPreview0 + uint16_t(views.size() - 1); i < 64; ++i) order[slot++] = i;
       if (!point_shadow_active_)
         order[slot++] = 64;
-      for(uint16_t f=66;f<128;++f) order[slot++]=f;
+      for(uint16_t f=67;f<128;++f) order[slot++]=f;
       bgfx::setViewOrder(0, uint16_t(order.size()), order.data());
     }
     uint16_t id = kPreview0;

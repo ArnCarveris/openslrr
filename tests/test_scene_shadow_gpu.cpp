@@ -1,5 +1,6 @@
 // Real D3D11 pixels through production vehicle/scenery shaders and bindings.
 #include "../src/render/bgfx_lib_backend.hpp"
+#include "../src/render/reflection_capture.hpp"
 #include "../src/render/point_shadows.hpp"
 #include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
@@ -12,6 +13,21 @@ void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 using namespace slrr;
 namespace slrr {
 struct SceneShadowRegression {
+  static void reflection_occupants() {
+    Fixture f;Object car,seat,person,pedestrian,world;
+    auto* c=gameref_upsert(&car);c->vehicle_material=true;
+    gameref_upsert(&seat);gameref_upsert(&person);gameref_upsert(&pedestrian);gameref_upsert(&world);
+    gameref_set_parent(&person,&seat);gameref_set_parent(&seat,&car);
+    gameref_set_parent(&pedestrian,&world);
+    SceneInstance occupant;occupant.key=&person;
+    SLRR_REQUIRE(!reflection_capture_visible(occupant));
+    occupant.key=&pedestrian;SLRR_REQUIRE(reflection_capture_visible(occupant));
+    gameref_set_parent(&person,&world);occupant.key=&person;
+    SLRR_REQUIRE(reflection_capture_visible(occupant));
+    for(auto* key:{&person,&pedestrian,&seat,&car,&world}) gameref_remove(key);
+    std::puts("PASS reflection excludes seated subtree but preserves independent pedestrians");
+  }
+
   static void point_lifetime(LibBgfxBackend &b) {
     Fixture f;
     scene_instances_set_resources(&f.packs);
@@ -282,6 +298,25 @@ struct SceneShadowRegression {
       if(int(clean_panel[i])-int(shadowed_panel[i])>8) ++acne;
     std::printf("NEON grazing panel self-shadow stripes=%u pixels\n",acne);
     SLRR_REQUIRE(acne<size*size/100);
+    // Put a vehicle 20 cm from the wall: its shadow must climb onto the
+    // actual vertical receiver, not merely appear on a horizontal floor.
+    receiver.vehicle_material=false;
+    bx::mtxIdentity(caster.transform.data());caster.transform[12]=-.5f;
+    b.instances_={receiver,caster};b.update_fixture_shadows(video);
+    b.draw_previews();bgfx::frame();
+    b.fixture_shadow_active_=false;const auto bare_wall=capture(false);
+    b.fixture_shadow_active_=true;const auto car_wall=capture(false);
+    unsigned wall_pixels=0;
+    for(size_t i=0;i<bare_wall.size();i+=4)
+      if(int(bare_wall[i])-int(car_wall[i])>8) ++wall_pixels;
+    std::printf("NEON vehicle shadow on vertical wall=%u pixels\n",wall_pixels);
+    SLRR_REQUIRE(wall_pixels>100);
+    caster.transform[14]=5; b.instances_={receiver,caster};
+    b.update_fixture_shadows(video);b.draw_previews();bgfx::frame();
+    const auto cleared_wall=capture(false);unsigned remaining_wall=0;
+    for(size_t i=0;i<bare_wall.size();i+=4)
+      if(int(bare_wall[i])-int(cleared_wall[i])>8) ++remaining_wall;
+    SLRR_REQUIRE(remaining_wall<wall_pixels/10);
     b.fixture_lights_.clear();b.fixture_shadow_active_=false;b.garage_=false;
     b.point_light_.reset();
     b.point_shadow_active_ = false;
@@ -481,6 +516,11 @@ struct SceneShadowRegression {
     std::printf("GARAGE opaque window alpha blocks %u sunlight pixels\n",
                 masked_pixels);
     SLRR_REQUIRE(masked_pixels > 20);
+    unsigned leaked_sun=0;
+    for(size_t i=0;i<sealed.size();i+=4)
+      if(int(sealed[i])-int(neon_only[i])>1) ++leaked_sun;
+    std::printf("GARAGE sealed-aperture sunlight leaks=%u pixels\n",leaked_sun);
+    SLRR_REQUIRE(leaked_sun==0);
     b.osd_tex_[mask_path] = original_mask;
     bgfx::destroy(opaque_mask);
     const auto afternoon_matrix = b.interior_sun_matrix_;
@@ -1217,6 +1257,7 @@ int main() {
     SceneShadowRegression::real_world_cache(backend);
     SceneShadowRegression::addon_bounds(backend);
     SceneShadowRegression::scene_environment(backend);
+    SceneShadowRegression::reflection_occupants();
     SceneShadowRegression::garage_geometry(backend);
     SceneShadowRegression::vehicle_wall(backend);
     SceneShadowRegression::point_lifetime(backend);

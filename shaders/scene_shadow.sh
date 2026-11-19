@@ -1,3 +1,14 @@
+// Projected depth slope on the actual receiver surface. Keep derivatives
+// outside varying bounds branches (uniform light enable/count branches are OK).
+vec2 shadowReceiverGradient(vec3 p)
+{
+    vec3 dx=dFdx(p),dy=dFdy(p);
+    float determinant=dx.x*dy.y-dx.y*dy.x;
+    float scale=max(dot(dx.xy,dx.xy),dot(dy.xy,dy.xy));
+    if(abs(determinant)>max(scale*0.00001,1e-18))
+        return vec2(dy.y*dx.z-dx.y*dy.z,dx.x*dy.z-dy.x*dx.z)/determinant;
+    return vec2(0.0,0.0);
+}
 // Bounded ceiling emitters share one downward projection each, not six cube
 // faces per tube. The housing limits the direct source to its lower hemisphere.
 uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
@@ -25,12 +36,7 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
             // Evaluate derivatives before the varying bounds branch. Compare
             // each depth texel against the receiver plane at that texel, not
             // one central depth for an entire grazing-angle PCF footprint.
-            vec3 dx=dFdx(p),dy=dFdy(p);
-            float determinant=dx.x*dy.y-dx.y*dy.x;
-            vec2 gradient=vec2(0.0,0.0);
-            float derivativeScale=max(dot(dx.xy,dx.xy),dot(dy.xy,dy.xy));
-            if(abs(determinant)>max(derivativeScale*0.00001,1e-18))
-                gradient=vec2(dy.y*dx.z-dx.y*dy.z,dx.x*dy.z-dy.x*dx.z)/determinant;
+            vec2 gradient=shadowReceiverGradient(p);
             visibility=0.0;
             if(clip.w>0.0 && all(greaterThan(p,vec3(0.0,0.0,0.0))) &&
                all(lessThan(p,vec3(1.0,1.0,1.0)))) {
@@ -78,13 +84,25 @@ float interiorSunVisibility(vec3 world)
 {
     if(u_interiorSunColor.w<0.5) return 0.0;
     vec3 p=mul(u_interiorSunMtx,vec4(world,1.0)).xyz;
+    vec2 gradient=shadowReceiverGradient(p);
     if(any(lessThanEqual(p,vec3(0.0,0.0,0.0))) || any(greaterThanEqual(p,vec3(1.0,1.0,1.0)))) return 0.0;
-    float bias=0.000015;
-    float t=u_interiorSunDir.w*0.5;
-    return (shadow2D(s_interiorSun,vec3(p.xy+vec2(t,t),p.z-bias))+
-            shadow2D(s_interiorSun,vec3(p.xy+vec2(-t,t),p.z-bias))+
-            shadow2D(s_interiorSun,vec3(p.xy+vec2(t,-t),p.z-bias))+
-            shadow2D(s_interiorSun,vec3(p.xy-vec2(t,t),p.z-bias)))*0.25;
+    vec2 aperture=texture2D(s_sunAperture,p.xy).rg;
+    if(aperture.y<=0.0 || p.z<aperture.x-0.0000005) return 0.0;
+    float texel=u_interiorSunDir.w;
+    vec2 grid=p.xy/texel-vec2(0.5,0.5);
+    vec2 base=(floor(grid)+vec2(0.5,0.5))*texel;
+    vec2 weight=fract(grid);
+    vec2 a=clamp(base,vec2(texel*0.5,texel*0.5),vec2(1.0-texel*1.5,1.0-texel*1.5));
+    vec2 b=a+vec2(texel,0.0),c=a+vec2(0.0,texel),d=a+vec2(texel,texel);
+    // Sub-millimetre residual bias; a multi-centimetre constant offsets
+    // receivers across the paper-thin ceiling/wall junction and leaks sunlight.
+    float bias=0.0000005;
+    float da=p.z+dot(gradient,a-p.xy)-bias;
+    float db=p.z+dot(gradient,b-p.xy)-bias;
+    float dc=p.z+dot(gradient,c-p.xy)-bias;
+    float dd=p.z+dot(gradient,d-p.xy)-bias;
+    return aperture.y*mix(mix(shadow2D(s_interiorSun,vec3(a,da)),shadow2D(s_interiorSun,vec3(b,db)),weight.x),
+               mix(shadow2D(s_interiorSun,vec3(c,dc)),shadow2D(s_interiorSun,vec3(d,dd)),weight.x),weight.y);
 }
 vec3 interiorSunDiffuse(vec3 normal,vec3 world)
 {

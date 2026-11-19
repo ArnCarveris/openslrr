@@ -240,6 +240,24 @@ reference for a hardware PCF footprint. A vehicle-panel regression goes from
 Other garage models still need explicit emitter metadata/adapters; this does not
 claim a generic SCX authoring format, calibrated photometry or area-light softness.
 
+## Interior seams, wall reception and probe occupants
+
+Interior sunlight now requires projected alpha-window coverage as well as depth
+visibility. The aperture field stores window depth/transmission, rejecting
+windows behind a receiver and preventing shell seams from admitting sunlight.
+The sun also uses aligned receiver-plane comparisons with a small residual bias.
+Physical world positions are separate from the legacy normal-offset shadow
+coordinates. Isolated captures confirm the highlighted corner/roof lines disappear
+with direct window light and neon lighting retained.
+
+Environment captures exclude vehicle-owned/attached subtrees, including seated
+occupants, while independent pedestrians remain eligible. The main-view occupant
+is preserved. A dedicated fixture-light test projects a vehicle shadow onto a
+vertical wall and removes it by moving the blocker away. With high ceiling lamps,
+a car farther from a wall may physically cast only onto the floor; no global
+wall decal is substituted. See
+[interior-seams-occupants.txt](../assets/validation/interior-seams-occupants.txt).
+
 ## Still outstanding
 
 - Matched baseline scenes and diagnostic views for lighting, normals, shadow

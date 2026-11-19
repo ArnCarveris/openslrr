@@ -16,9 +16,9 @@ void main()
 	v_texcoord2 = a_texcoord2;
 	v_color0 = a_color0;
 	v_tint = i_data4;
+	v_worldPos = position.xyz; // Unbiased physical position for lighting.
 	float nl = dot(v_normal, v_normal);
 	if (nl > 1e-8)
 		position.xyz += v_normal * (0.05 / sqrt(nl));
 	v_staticShadow = mul(u_staticShadowMtx, position).xyz;
-	v_worldPos = position.xyz;
 }

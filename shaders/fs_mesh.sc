@@ -11,6 +11,7 @@ uniform mat4 u_carDepthMtx;
 uniform vec4 u_carDepthParams;
 SAMPLER2DSHADOW(s_interiorSun, 5);
 SAMPLER2DSHADOW(s_fixtureShadow, 7);
+SAMPLER2D(s_sunAperture, 8);
 #include "scene_shadow.sh"
 uniform vec4 u_sunAmb;
 uniform vec4 u_sunDiff;
@@ -173,6 +174,11 @@ void main()
 		gl_FragColor = vec4(renderSky(normalize(v_worldPos - u_cloudSky.xyz), gl_FragCoord.xy), 1.0);
 		return;
 	}
+    if(u_alphaTest.y>3.5) {
+        vec2 uv=mapUv(uvSet(u_lightmap.y,v_texcoord0,v_texcoord1,v_texcoord2),u_meshBaseUv);
+        gl_FragColor=vec4(gl_FragCoord.z,1.0-texture2D(s_texColor,uv).a,0.0,1.0);
+        return;
+    }
 	vec3 n = normalize(v_normal);
 	float ndl = max(abs(dot(n, normalize(vec3(0.35, 0.85, 0.45)))), 0.22);
 	vec4 tex = texture2D(s_texColor, mapUv(uvSet(u_lightmap.y, v_texcoord0, v_texcoord1, v_texcoord2), u_meshBaseUv));

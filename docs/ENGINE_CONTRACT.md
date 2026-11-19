@@ -767,6 +767,12 @@ distinct lifetimes. Check the six orientations, the frame, world transitions,
 the uniforms, and probe validity. Do not read a texture at the same time it
 is the destination of its own capture.
 
+Environment capture excludes vehicle/Part-owned subtrees, including seated
+characters. Filtering only `vehicle_material` lets a seated actor be captured
+from the probe inside the excluded car and reflected onto its external panels.
+Use the render owner and bounded GameRef ancestry; independent pedestrians remain
+visible in reflections. This does not hide occupants in the main camera.
+
 Every world camera is a reflection scene: the garage, the dealers and the
 city all use the cubemap. The garage probe sits on the car body and its box
 is the garage bounds. Without a followed car, a world camera captures from
@@ -873,7 +879,19 @@ objects remain casters. Unsupported masks/triangles do not open extra shell.
 This is a legacy asset adapter, not automatic transmission for all blended glass.
 Texture alpha controls binary coverage, not physical coloured-glass transmission.
 
-An unchanged projection/mask handle/caster stamp reuses the daylight field.
+A separate 1024-square RG32F aperture field stores window light-space depth and
+transmission, with its own D32F depth attachment (12 MiB together). View 66 is
+ordered after the sun field and before world 5/6, including inset views. Mesh and
+vehicle sampler 8 reads it: only projected alpha windows in front of a receiver
+admit direct interior sunlight. This prevents thin wall/roof seams from becoming
+unintended openings. Opaque-frame/object occlusion still comes from the sun depth
+field. Four texel-aligned, receiver-plane comparisons use a .0000005 residual
+sun depth bias; physical lighting/reflection coordinates must stay unbiased.
+The old 5 cm normal offset is confined to the legacy shadow varying, not
+`v_worldPos`, in mesh, instanced and vehicle shaders. Sky draws explicitly reset
+material mode; aperture capture mode cannot leak into the visible sky.
+
+An unchanged projection/mask handle/caster stamp reuses both daylight fields.
 Clock, geometry and caster motion update it; night, missing apertures or disabled
 map shadows/dynamic lighting disable interior daylight safely. Skinned casters
 remain excluded. The source and sky share time, but are distinct contributions.

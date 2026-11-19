@@ -227,6 +227,20 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
     }
     interior_sun_tex_ = depth;
   }
+  if(!bgfx::isValid(interior_aperture_fb_)) {
+    const auto transmission=bgfx::createTexture2D(size,size,false,1,bgfx::TextureFormat::RG32F,
+        BGFX_TEXTURE_RT|BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
+    const auto depth=bgfx::createTexture2D(size,size,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    if(!bgfx::isValid(transmission) || !bgfx::isValid(depth)) {
+      if(bgfx::isValid(transmission)) bgfx::destroy(transmission);
+      if(bgfx::isValid(depth)) bgfx::destroy(depth);
+      return;
+    }
+    const bgfx::TextureHandle attachments[]={transmission,depth};
+    interior_aperture_fb_=bgfx::createFrameBuffer(2,attachments,true);
+    if(!bgfx::isValid(interior_aperture_fb_)) {bgfx::destroy(transmission);bgfx::destroy(depth);return;}
+    interior_aperture_tex_=transmission;
+  }
   float center[3]{};
   float radius = 1;
   for (const auto &instance : instances_) {
@@ -337,6 +351,35 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   }
   const float none[4]{};
   bgfx::setUniform(u_aperture_params_, none);
+  // Only authored apertures may admit direct sunlight into this interior.
+  // Store their light-space depth as well as transmission, so a window
+  // behind the receiver cannot illuminate it. The regular depth field still
+  // supplies occlusion by frames, roof, walls, vehicles and furniture.
+  bgfx::setViewFrameBuffer(66,interior_aperture_fb_);
+  bgfx::setViewRect(66,0,0,size,size);
+  bgfx::setViewClear(66,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0),1.f);
+  bgfx::setViewTransform(66,projection.view.data(),projection.projection.data());
+  bgfx::touch(66);
+  for(const auto& stamp:stamps) {
+    const auto& part=instance_meshes_.at(stamp.source);
+    for(const auto& group:part.geo.groups) {
+      if(group.name!="ablak" || !scx_surface(part.geo.info.version,group).blend ||
+         group.texture_index>=part.geo.textures.size() ||
+         tex_for_osd_icon(part.geo.textures[group.texture_index]).idx!=window_texture.idx) continue;
+      bind_baked_light(&group,nullptr);
+      const float mode[4]={0,4,0,0};
+      const auto& uv=group.base_map;
+      const float transform[4]={uv.scale_u,uv.scale_v,uv.offset_u,uv.offset_v};
+      bgfx::setUniform(u_alpha_test_,mode);
+      bgfx::setUniform(u_mesh_base_uv_,transform);
+      bgfx::setTexture(0,s_tex_,window_texture);
+      bgfx::setTransform(stamp.transform.data());
+      bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
+      bgfx::setState(BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
+      bgfx::submit(66,program_);
+    }
+  }
+  const float reset_mode[4]{};bgfx::setUniform(u_alpha_test_,reset_mode);
   interior_sun_mask_ = window_texture.idx;
   interior_sun_casters_ = std::move(stamps);
   interior_sun_cached_matrix_ = interior_sun_matrix_;

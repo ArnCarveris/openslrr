@@ -370,6 +370,9 @@ class LibBgfxBackend final : public IRenderBackend {
   void bind_interior_sun(bool enabled, uint8_t stage);
   bgfx::FrameBufferHandle interior_sun_fb_ = BGFX_INVALID_HANDLE;
   bgfx::TextureHandle interior_sun_tex_ = BGFX_INVALID_HANDLE;
+  bgfx::FrameBufferHandle interior_aperture_fb_ = BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle interior_aperture_tex_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_sun_aperture_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle s_interior_sun_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_interior_sun_mtx_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_interior_sun_dir_ = BGFX_INVALID_HANDLE;

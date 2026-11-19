@@ -154,6 +154,8 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
   bgfx::setUniform(u_interior_sun_dir_, direction);
   bgfx::setUniform(u_interior_sun_color_, color);
   bgfx::setUniform(u_interior_sun_mtx_, interior_sun_matrix_.data());
+  bgfx::setTexture(8,s_sun_aperture_,active?interior_aperture_tex_:white_tex_,
+      BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
   bgfx::setTexture(stage, s_interior_sun_, active ? interior_sun_tex_ : depth_white_,
       BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
 }
