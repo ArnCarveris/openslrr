@@ -8,8 +8,23 @@
 #include <bx/math.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace slrr {
+namespace {
+// Characters cast into the sun cascades up to this distance from the camera.
+// Past it a pedestrian covers about one texel of the 320 m cascade.
+constexpr float kSkinnedShadowRange = 100.f;
+uint32_t skin_palette_hash(const std::vector<float> &palette) {
+  uint32_t hash = 2166136261u;
+  for (const float value : palette) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    hash = (hash ^ bits) * 16777619u;
+  }
+  return hash;
+}
+} // namespace
 
 void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
   bool was_active = fixture_shadow_active_;
@@ -594,6 +609,25 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   for(const auto& batch:outer_batches) if(batch.geometry) {
     shadow_meshes_.insert(batch.geometry.get());cache_scene_mesh(batch.geometry,nullptr,true);
   }
+  // Skinned pedestrians/drivers cast from the main-view records, whose bone
+  // palettes are already complete. The outer collection deliberately skips
+  // palette completion; recomputing it for off-camera characters would bring
+  // back that CPU cost, so off-screen characters do not cast.
+  std::vector<const SceneInstance*> skinned_casters;
+  std::vector<float> skinned_distance;
+  for(const auto& instance:instances_) {
+    if(!instance.geometry || !instance.gpu_skin || instance.skin.size()<48u*16u ||
+       instance.light_flags || instance.emissive_overlay || instance.opacity<.99f) continue;
+    const float dx=instance.transform[12]-focus[0],dy=instance.transform[13]-focus[1],
+                dz=instance.transform[14]-focus[2];
+    const float distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+    if(distance>kSkinnedShadowRange) continue;
+    const auto found=instance_meshes_.find(instance.geometry.get());
+    if(found==instance_meshes_.end() || !bgfx::isValid(found->second.skin_vbh) ||
+       !bgfx::isValid(found->second.ibh)) continue;
+    skinned_casters.push_back(&instance);
+    skinned_distance.push_back(distance);
+  }
   std::array<ShadowProjection,4> projections;
   bool same_projection=shadow_cached_origin_==shadow_origin_;
   for(size_t i=0;i<4;++i) {
@@ -614,6 +648,11 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
          !instance.light_flags && !instance.emissive_overlay) stamp(instance.geometry,instance.transform);
     for(const auto& batch:outer_batches)
       for(const auto& instance:batch.instances) stamp(batch.geometry,instance.transform);
+    // A pose change must redraw the atlas even when the root does not move.
+    for(const auto* instance:skinned_casters) {
+      stamp(instance->geometry,instance->transform);
+      stamps.back().revision^=skin_palette_hash(instance->skin);
+    }
   }
   const bool unchanged=shadow_cache_valid_ && same_projection && stamps==shadow_cached_casters_;
   if(unchanged) {
@@ -691,6 +730,34 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
       if(!filtered.instances.empty()) shadow_batches.push_back(std::move(filtered));
     }
     draw_prop_batches(view_id, shadow_batches, true, conservative);
+    if(bgfx::isValid(ao_skin_depth_program_))
+      for(size_t i=0;i<skinned_casters.size();++i) {
+        // Skinned bounds describe the rest pose, not the animated limbs. Cull
+        // by the camera-centred cascade radius instead (plus a body margin).
+        if(skinned_distance[i]>shadow_radii[cascade]+3.f) continue;
+        const auto* instance=skinned_casters[i];
+        const auto& part=instance_meshes_.at(instance->geometry.get());
+        auto relative=instance->transform;
+        for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
+        for(const auto& group:part.shadow_groups) {
+          const auto surface=scx_surface(part.geo.info.version,group);
+          if(surface.blend) continue;
+          const float threshold=!surface.cutout ? -1.f
+                                : part.geo.info.version==4 ? group.alpha_reference/255.f : .5f;
+          const float params[4]={0.f,threshold,static_cast<float>(group.base_map.channel),0.f};
+          bgfx::setUniform(u_static_shadow_params_,params);
+          const auto slot=group.texture_index;
+          bgfx::setTexture(0,s_tex_,slot<part.tex.size() && bgfx::isValid(part.tex[slot])
+                                        ? part.tex[slot] : white_tex_);
+          bgfx::setTransform(relative.data());
+          bgfx::setUniform(u_skin_bones_,instance->skin.data(),48);
+          bgfx::setVertexBuffer(0,part.skin_vbh);
+          bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
+          bgfx::setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS|
+                         (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
+          bgfx::submit(view_id,ao_skin_depth_program_);
+        }
+      }
   }
   ++shadow_atlas_revision_;
   shadow_cached_casters_=std::move(stamps);

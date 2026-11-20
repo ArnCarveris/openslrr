@@ -2497,3 +2497,30 @@ views in game and confirmed the streaks are gone. A numerical model of a box
 on a plane with ideal normals had not reproduced them, so in-game checks are
 the reliable test for this kind of pattern artifact. Pedestrians cast no sun shadow at all (#230); the
 contact darkening under them comes only from AO.
+
+### Pedestrian sun shadows (#230)
+
+Every shadow pass skipped `gpu_skin` instances: the scenery depth program has
+no bone palette, and the outer cascade collection calls
+`scene_instances_collect` with palette completion off to save CPU. Pedestrians
+therefore cast nothing; only AO darkened the ground under them.
+
+`src/render/bgfx_shadows.cpp:update_static_shadow` now takes skinned casters
+from the main-view `instances_`, which are already palette-complete, within
+`kSkinnedShadowRange` (100 m). It draws them in each cascade whose radius
+covers them, with the skinned depth program the AO prepass already uses
+(`vs_skin` + `fs_static_shadow`), and XORs a palette hash into their caster
+stamp so animation invalidates the cached atlas
+(`src/render/bgfx_shadows.cpp:skin_palette_hash`).
+
+Pitfalls: rest-pose bounds of skinned meshes do not cover animated limbs, so
+cull by distance, not `shadow_bounds_visible`. `u_skinBones` reads 48 matrices;
+only pass a palette of at least 48x16 floats, as the main draw does.
+Off-screen characters, point lights, interior daylight and the car-depth map
+still ignore skinned casters.
+
+Validated in game by the user together with the AO tile fix: pedestrians cast
+sun shadows in ValoCity and no AO streaks appear around them or the car. A
+build without the AO fix showed the streaks again, which is a quick way to tell
+the two problems apart. No skinned-caster GPU regression or `--perf-log`
+measurement exists yet.
