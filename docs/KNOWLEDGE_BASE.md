@@ -2949,3 +2949,33 @@ city at night.
   caching off, HBAO, one road and one car): world 0.13 ms, AO 0.10 ms
   (pass 1 0.07), six lamp tiles 0.014 ms, car tiles 0.005 ms. The harness
   scene is tiny; real costs need the menu in game.
+
+### Per-view light uniforms (#246)
+
+- bgfx uniform semantics (checked in the vendored source,
+  `build/_deps/bgfx-src/src/bgfx.cpp` `Encoder::submit` and
+  `rendererUpdateUniforms`): `setUniform` calls between two submits form a
+  range attached to the next draw only. The renderer replays each draw's range
+  into a value cache that persists across draws, views and frames, in render
+  order. Render order equals submit order only in a `ViewMode::Sequential`
+  view; sorted views reorder draws, so a value set on one draw can be missing
+  on a draw rendered before it.
+- Hence `src/render/bgfx_lighting.cpp:bind_scene_shadow` uploads the
+  view-invariant arrays (fixtures, lamps, lamp and car-tile shadow matrices and
+  tiles, sun cascades, point faces) only when
+  `LibBgfxBackend::light_arrays_current` is false: the draw's view (set by
+  `draw_instance` and `draw_prop_batches`) is marked Sequential through
+  `set_view_sequential`, and the view, frame (`frames_`) and light revision
+  (bumped by the `update_*` light/shadow functions) match the last upload.
+  Per-draw counts and flags (`u_lampParams`, `u_lampShadowParams`,
+  `u_fixtureParams`, shadow params) and textures are still set per draw, so
+  unlit draws (previews, lamp glass) read no lamp. Draws from other paths (sky,
+  terrain parts, OSD) and views not marked Sequential upload every time.
+- Measured (`scene_shadow_gpu` case `per_view_light_uniforms`, 2,000 lit draws
+  in one view): main-thread submission 1.45 → 1.08 ms, bgfx render thread
+  unchanged (≈3.7 ms). The D3D11 renderer re-uploads the program's whole
+  fragment constant buffer whenever any uniform of a draw changed, and every
+  draw still sets per-draw material uniforms; the fragment cbuffer of
+  `fs_mesh` is about 600 vec4 (64-lamp arrays, 24 lamp-shadow and 24
+  car-tile matrices, fixtures, cascades). Cutting render-thread and GPU upload
+  cost needs a smaller cbuffer, e.g. lamp and shadow arrays in a texture.
