@@ -272,6 +272,15 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_fixture_colors_=bgfx::createUniform("u_fixtureColors",bgfx::UniformType::Vec4,12);
     u_fixture_directions_=bgfx::createUniform("u_fixtureDirections",bgfx::UniformType::Vec4,12);
     u_fixture_matrices_=bgfx::createUniform("u_fixtureMatrices",bgfx::UniformType::Mat4,12);
+    u_lamp_params_=bgfx::createUniform("u_lampParams",bgfx::UniformType::Vec4);
+    u_lamp_positions_=bgfx::createUniform("u_lampPositions",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_shadow_params_=bgfx::createUniform("u_lampShadowParams",bgfx::UniformType::Vec4);
+    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
+    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
+    u_lamp_car_matrices_=bgfx::createUniform("u_lampCarMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
+    u_lamp_car_tiles_=bgfx::createUniform("u_lampCarTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -464,7 +473,10 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
           &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
-          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_}) {
+          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_,
+          &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_,
+          &u_lamp_shadow_params_, &u_lamp_shadow_matrices_, &u_lamp_shadow_tiles_,
+          &u_lamp_car_matrices_, &u_lamp_car_tiles_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -778,14 +790,26 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
       update_fixture_shadows(video);
-      update_interior_sun(video);
-      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
-      else destroy_ao_targets();
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
       float car_matrix[16];
       const auto* position = car && scene_instances_render_matrix(car->key, car_matrix)
           ? car_matrix + 12 : world_cam ? world_eye : nullptr;
+      // Street lamp shadows are chosen around the followed car (#237), so
+      // turning the camera does not move its shadows. Without a following
+      // script camera (free or scripted views) the controlled car is used.
+      {
+        const auto* player = car ? car : gameref_find_live(part_controlled_vehicle());
+        float player_matrix[16];
+        if (player && scene_instances_render_matrix(player->key, player_matrix))
+          set_lamp_shadow_focus(player_matrix + 12);
+        else
+          set_lamp_shadow_focus(nullptr);
+      }
+      update_lamp_shadows(video);
+      update_interior_sun(video);
+      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
+      else destroy_ao_targets();
       update_car_depth(garage_ ? nullptr : position, video);
       // Every world camera reflects its scene. The car dealers have a map and a
       // script camera but neither the garage flag nor a followed car, so their
@@ -1091,6 +1115,11 @@ void LibBgfxBackend::cache_scene_mesh(
     std::sort(previews_.begin(),previews_.end(),[](const Preview&a,const Preview&b){return a.viewport.vp_pri!=b.viewport.vp_pri?a.viewport.vp_pri<b.viewport.vp_pri:a.viewport.vp_x<b.viewport.vp_x;});
     std::unordered_map<const ScxGeometry*,bool> used;
     for (const auto* mesh : shadow_meshes_) used[mesh] = true;
+    // Cached street-lamp shadow casters (#237) stay resident with their slot.
+    for (const auto& slot : lamp_shadow_slots_) {
+      for (const auto& caster : slot.statics) used[caster.geometry.get()] = true;
+      for (const auto& batch : slot.static_batches) used[batch.geometry.get()] = true;
+    }
     std::unordered_map<void*, const ScxGeometry*> current_deformed;
     auto cache = [&](const std::shared_ptr<const ScxGeometry>& source, void* owner,
                      bool map_prop = false) {
@@ -1146,10 +1175,15 @@ void LibBgfxBackend::update_local_light() {
     local_light_ = {};
     point_light_.reset();
     fixture_lights_.clear();
+    scenery_lamps_.clear();
     // Local lights are their own option (4). Map sunlight (option 3) only
     // controls scenery sunlight; it must not switch the garage lamps off.
-    if (!garage_ || !host_enhanced_graphics().local_lights)
+    if (!host_enhanced_graphics().local_lights)
       return;
+    if (!garage_) {
+      update_scenery_lights();
+      return;
+    }
     // Script lights (java.render.LightSource, #235) come first. Position and
     // direction are in the parent's local script space; S*M*S with S = diag
     // (1,1,-1) is the instance transform, so render space is S*(M*local).
@@ -1254,6 +1288,37 @@ void LibBgfxBackend::update_local_light() {
       point_light_ = script_point;
       local_light_ = {script_point->position[0], script_point->position[1],
                       script_point->position[2], script_point->range};
+    }
+}
+
+// Street lamps and other scenery lights (#237) outside garages. The city
+// group (cfg `flags 4`) is on at night only; fake* lights never light the
+// scene. Up to kSceneryLamps lamps whose light sphere meets the camera
+// frustum get their own unshadowed lamp array (garage fixtures untouched);
+// scenery_lights_select fades lamps near the cut so the set changes without
+// pops.
+void LibBgfxBackend::update_scenery_lights() {
+    const uint32_t groups = scene_sun_is_night() ? kLightGroupCity : 0u;
+    if (!groups || !scenery_lights_count())
+      return;
+    // cull_eye_ is script space (sync_instances); the lights are render space,
+    // like the frustum planes of the culled view.
+    const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
+    const auto frustum = view_frustum(cull_view_, cull_proj_);
+    // Leave room for shadowed lamps outside this set (update_lamp_shadows).
+    const auto picks = scenery_lights_select(eye, kSceneryLamps - kLampSpecial, groups,
+        [](void* parent, float* matrix) {
+          return scene_instances_render_matrix(parent, matrix);
+        }, &frustum);
+    for (const auto& pick : picks) {
+      LampLight lamp;
+      lamp.position = pick.position;
+      lamp.color = pick.color;
+      lamp.attenuation = pick.attenuation;
+      lamp.intensity = pick.intensity;
+      lamp.range = pick.range;
+      lamp.source = pick.source;
+      if (lamp.valid()) scenery_lamps_.push_back(lamp);
     }
 }
 

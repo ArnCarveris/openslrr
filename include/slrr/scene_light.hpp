@@ -24,6 +24,22 @@ struct PointLight {
   }
   bool operator==(const PointLight &) const = default;
 };
+// Unshadowed omnidirectional scenery lamp (#237): street lamps outside
+// garages. Stock D3D falloff 1/(c + l*d + q*d*d) inside a range window.
+struct LampLight {
+  std::array<float, 3> position{}, color{1, 1, 1}, attenuation{1, 0, 0};
+  float intensity = 1.f, range = 45.f;
+  const void *source = nullptr; // stable identity (the registry entry)
+  bool valid() const {
+    for (int i = 0; i < 3; ++i)
+      if (!std::isfinite(position[i]) || !std::isfinite(color[i]) ||
+          color[i] < 0 || !std::isfinite(attenuation[i]) || attenuation[i] < 0)
+        return false;
+    return attenuation[0] + attenuation[1] + attenuation[2] > 0 &&
+           std::isfinite(intensity) && intensity >= 0 &&
+           std::isfinite(range) && range > .1f;
+  }
+};
 // Broad fixture source with an explicit hood/cone, separate from point
 // fallback.
 struct SpotLight {

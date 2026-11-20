@@ -30,6 +30,8 @@ Object* part_add_dynamic_native(const PartConfig& config,
 bool part_install(Object *child, Object *root, int own_slot = 0,
                   int parent_slot = 0, const float *hint = nullptr);
 bool part_destroy(Object *part);
+// GameRef id of the chassis the player controls (0 when none).
+int32_t part_controlled_vehicle();
 bool part_command(Object *part, const std::string &command);
 // Car setMatrix: loaded springs, contacts on the given point, body asleep.
 // shift is false for reset, which tucks the springs and does not move the body.

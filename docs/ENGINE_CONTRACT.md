@@ -1195,7 +1195,8 @@ reset (`gameref_clear`, or a new VM registering the natives). Lights are not
 saved.
 
 Rendering. `LibBgfxBackend::update_local_light` reads the registry every frame,
-still only in the garage with Local lights (option 4) on. The parent's drawn
+only in the garage with Local lights (option 4) on (scenery lights outside
+garages are described under "Scenery lights (#237)"). The parent's drawn
 script matrix M gives the render-space position S·M·p (S flips Z), the same
 convention as the instance transform S·M·S applied to mesh vertices. Spot and
 rect lights become fixture `SpotLight`s, at most 12, in creation order; the
@@ -1211,6 +1212,45 @@ The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 1
 and 12 lights, intensity 30, range 26 m, set per garage in its fixture tables);
 the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
+
+### Scenery lights (#237)
+
+Map objects place stock light resources as `render <id> <pos> [<ypr>]`
+children followed by `flags <group>`. A resource is a light when its RPK entry
+has typeof 13 (`RESTYPE_RENDER_LIGHT`); never infer it from names or
+keywords. `parse_light_resource` reads the type-13 text payload. Point and
+spot light the scene; `fakepoint`/`fake point`/`fakespot` are glow only and
+never add scene lighting.
+
+Each ground shell owns the light children of its map's placements in its local
+script space (`scenery_lights_attach`). They leave the registry with the shell
+(`gameref_remove`) or on a world reset, have no Java object and are not saved.
+
+Outside garages, with Local lights (option 4) on, lights of the city group
+(bit 4) light the scene at night (`scene_sun_is_night`); other groups stay
+off. The renderer keeps lamps whose capped light sphere meets the view
+frustum, the nearest 64 within 500 m, and fades each to zero before the cut,
+so no lamp appears or disappears with power. They have their own unshadowed
+lamp array (64 entries, separate from the 12 garage fixtures) with the stock
+D3D attenuation 1/(c + l·d + q·d²), range capped at 45 m and intensity 0.8 ×
+diffuse, evaluated in the mesh and vehicle shaders. Scenery spots are drawn as
+omni lights, and flares are not drawn. Garages keep the fixture path of #235
+unchanged.
+
+With shadows on, the 6 lamps nearest the followed car (else the camera),
+whatever the camera direction, cast shadows: one downward
+150-degree perspective tile each in the fixture atlas (free outside garages),
+sized by Shadow quality and filtered like the fixtures, faded out at the tile
+rim. Static scenery casts from a list collected when the lamp gets its slot
+(not the ground POLY, not the lamp's own housing); vehicles and characters
+cast every frame, and a tile is redrawn only when its casters change. A lamp
+keeps its shadow slot until a clearly nearer lamp (75 % of its distance and
+4 m nearer) has waited 1 s; shadow strength fades in and out over 0.8 s, so
+turning the camera never moves a car's shadows and no shadow pops. In
+addition, every lamp whose light reaches the player car (up to 16) casts the
+car's shadow from a small car-only tile holding just the vehicles within 6 m
+of it, so the car always has a shadow from each lamp that lights it; that
+shadow fades in over 10 m where the lamp's light on the car is near zero. The intensity values above were accepted in game by the user.
 
 ## 13. Interface, input, and options
 

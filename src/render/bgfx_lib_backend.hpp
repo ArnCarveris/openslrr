@@ -356,6 +356,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_local_light_ = BGFX_INVALID_HANDLE;
   std::array<float, 4> local_light_{};
   void update_local_light();
+  void update_scenery_lights();
   void update_ambient_occlusion(const float* view,const float* projection,uint16_t width,uint16_t height,uint16_t world_view);
   void bind_ambient_occlusion(bool enabled);
   void destroy_ao_targets();
@@ -372,6 +373,7 @@ class LibBgfxBackend final : public IRenderBackend {
   static constexpr size_t kFixtureLights=12;
   std::vector<SpotLight> fixture_lights_;
   void update_fixture_shadows(const VideoOptions& video);
+  void update_lamp_shadows(const VideoOptions& video);
   void bind_fixture_lights(bool enabled);
   bgfx::FrameBufferHandle fixture_shadow_fb_=BGFX_INVALID_HANDLE;
   bgfx::TextureHandle fixture_shadow_tex_=BGFX_INVALID_HANDLE;
@@ -381,6 +383,14 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_fixture_colors_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fixture_directions_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fixture_matrices_=BGFX_INVALID_HANDLE;
+  // Scenery lamps (#237), outside garages. kSceneryLamps matches the arrays
+  // in shaders/scene_shadow.sh (3 x 64 vec4 of the fragment constants).
+  static constexpr size_t kSceneryLamps=64;
+  std::vector<LampLight> scenery_lamps_;
+  bgfx::UniformHandle u_lamp_params_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_positions_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_colors_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_attenuation_=BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
   bool fixture_shadow_active_=false;
   uint16_t fixture_shadow_tile_=512;
@@ -452,6 +462,74 @@ class LibBgfxBackend final : public IRenderBackend {
   };
   std::vector<ShadowCasterStamp> fixture_shadow_casters_;
   std::vector<ShadowCasterStamp> interior_sun_casters_;
+  // Street lamp shadows (#237): the nearest kLampShadows lamps each get one
+  // downward 150-degree perspective tile in the fixture atlas (free outside
+  // garages). Static scenery is collected once per assignment; the tile is
+  // redrawn only when its lamp or a dynamic caster (vehicle, character)
+  // changes. Weights fade in/out so reassignment does not pop.
+  // kLampShadows lamps are wanted at once; the extra slots let a new lamp
+  // fade in while the one it replaces fades out.
+  static constexpr size_t kLampShadows=6, kLampShadowSlots=8;
+  static constexpr float kLampShadowFov=150.f, kLampShadowNear=.3f, kLampShadowFade=.8f;
+  // Selection around the focus (car, else camera): lamps within the light
+  // range plus 10 m; a held lamp is replaced only by one at most 75 % as far
+  // and at least 4 m nearer, after holding its slot for 1 s.
+  static constexpr float kLampShadowReach=55.f, kLampShadowSwitchRatio=.75f,
+                         kLampShadowSwitchMargin=4.f, kLampShadowHold=1.f;
+  struct LampShadowSlot {
+    const void* source=nullptr;
+    std::array<float,3> position{};
+    float range=0.f, weight=0.f, distance=0.f, hold=0.f;
+    LampLight lamp{};  // lit even when outside the frustum-selected set
+    bool wanted=false, valid=false;
+    std::vector<SceneInstance> statics;
+    std::vector<SceneBatch> static_batches;
+    std::vector<ShadowCasterStamp> stamps;
+    std::array<float,16> sample{};
+  };
+  std::array<LampShadowSlot,kLampShadowSlots> lamp_shadow_slots_{};
+  // Car shadows (#237): every lamp whose light reaches the followed car gets
+  // a car-only tile (up to kCarShadowTiles), a narrow perspective from the
+  // lamp onto a kCarShadowCover sphere around the car, holding only the
+  // vehicles inside it. The 16 tiles are the half-size quarters of atlas
+  // tiles 8-11, drawn in one view with per-draw clip remapping and scissor.
+  // Scenery tiles then skip vehicles inside that sphere.
+  static constexpr size_t kCarShadowTiles=16, kLampSpecial=kLampShadowSlots+kCarShadowTiles;
+  static constexpr float kCarShadowCover=6.f, kCarShadowFade=10.f;
+  static constexpr uint16_t kCarShadowView=136;
+  struct CarShadowTile {
+    const void* source=nullptr;
+    std::array<float,16> view{}, proj{}, sample{};
+    float strength=0.f;
+    LampLight lamp{};
+  };
+  std::vector<CarShadowTile> car_shadow_tiles_;
+  std::vector<ShadowCasterStamp> car_shadow_stamps_;
+  bool car_shadow_valid_=false;
+  uint64_t car_shadow_redraws_=0;
+  std::array<std::array<float,16>,kLampSpecial> lamp_car_matrices_{};
+  std::array<std::array<float,4>,kLampSpecial> lamp_car_tiles_{};
+  bgfx::UniformHandle u_lamp_car_matrices_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_car_tiles_=BGFX_INVALID_HANDLE;
+  size_t lamp_shadow_count_=0;  // shadowed lamps at the front of scenery_lamps_
+  bool lamp_shadow_atlas_bound_=false;
+  uint64_t lamp_shadow_redraws_=0;  // tiles drawn, for tests
+  uint64_t lamp_shadow_assignments_=0;  // lamps given a slot, for tests
+  // Script-space point the shadowed lamps are ranked around: the followed
+  // car, else the camera. Set each frame before update_lamp_shadows.
+  bool lamp_focus_valid_=false;
+  std::array<float,3> lamp_focus_{};
+  void set_lamp_shadow_focus(const float* script) {
+    lamp_focus_valid_=script!=nullptr;
+    if(script) lamp_focus_={script[0],script[1],script[2]};
+  }
+  float lamp_shadow_dt_override_=-1.f;  // tests: fixed fade step in seconds
+  double lamp_shadow_clock_=-1.0;
+  std::array<std::array<float,16>,kLampSpecial> lamp_shadow_matrices_{};
+  std::array<std::array<float,4>,kLampSpecial> lamp_shadow_tiles_{};
+  bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_shadow_matrices_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_shadow_tiles_=BGFX_INVALID_HANDLE;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
   bool shadow_cache_valid_ = false;

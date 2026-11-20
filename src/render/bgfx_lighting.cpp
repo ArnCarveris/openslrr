@@ -127,6 +127,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
 void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   const auto count=enabled?std::min(fixture_lights_.size(),kFixtureLights):size_t(0);
   const bool shadows=count && fixture_shadow_active_;
+  // Street lamp shadows (#237) use the same atlas outside garages.
+  const size_t lamp_shadows=enabled && lamp_shadow_atlas_bound_
+      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampSpecial}) : size_t(0);
   const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
   bgfx::setUniform(u_fixture_params_,params);
   if(count) {
@@ -142,8 +145,34 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
     bgfx::setUniform(u_fixture_directions_,directions.data(),uint16_t(count));
     bgfx::setUniform(u_fixture_matrices_,fixture_shadow_matrices_.data(),uint16_t(count));
   }
-  bgfx::setTexture(7,s_fixture_shadow_,shadows?fixture_shadow_tex_:depth_white_,
+  bgfx::setTexture(7,s_fixture_shadow_,shadows||lamp_shadows?fixture_shadow_tex_:depth_white_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
+  const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
+                                     1.f/(fixture_shadow_tile_*3),0.f};
+  bgfx::setUniform(u_lamp_shadow_params_,lamp_shadow_params);
+  if(lamp_shadows) {
+    bgfx::setUniform(u_lamp_shadow_matrices_,lamp_shadow_matrices_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_shadow_tiles_,lamp_shadow_tiles_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_car_matrices_,lamp_car_matrices_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_car_tiles_,lamp_car_tiles_.data(),uint16_t(lamp_shadows));
+  }
+  // Scenery lamps (#237) follow the same enable as the fixtures: previews and
+  // emissive lamp glass receive none.
+  const auto lamps=enabled?std::min(scenery_lamps_.size(),kSceneryLamps):size_t(0);
+  const float lamp_params[4]={float(lamps),0.f,0.f,0.f};
+  bgfx::setUniform(u_lamp_params_,lamp_params);
+  if(lamps) {
+    std::array<std::array<float,4>,kSceneryLamps> positions{},colors{},attenuation{};
+    for(size_t i=0;i<lamps;++i) {
+      const auto& lamp=scenery_lamps_[i];
+      positions[i]={lamp.position[0],lamp.position[1],lamp.position[2],lamp.range};
+      colors[i]={lamp.color[0]*lamp.intensity,lamp.color[1]*lamp.intensity,lamp.color[2]*lamp.intensity,0.f};
+      attenuation[i]={lamp.attenuation[0],lamp.attenuation[1],lamp.attenuation[2],0.f};
+    }
+    bgfx::setUniform(u_lamp_positions_,positions.data(),uint16_t(lamps));
+    bgfx::setUniform(u_lamp_colors_,colors.data(),uint16_t(lamps));
+    bgfx::setUniform(u_lamp_attenuation_,attenuation.data(),uint16_t(lamps));
+  }
 }
 
 void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {

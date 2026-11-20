@@ -9,6 +9,35 @@ namespace slrr {
 // car.
 inline constexpr std::array<float, 4> shadow_radii{32.f, 100.f, 320.f, 1000.f};
 inline constexpr std::array<uint16_t, 4> shadow_views{0, 2, 3, 4};
+// World-space box of a mesh under an instance transform (same convention as
+// shadow_bounds_visible). False when the bounds are unusable.
+inline bool shadow_bounds_box(const ScxGeometry &mesh,
+                              const std::array<float, 16> &m, float lower[3],
+                              float upper[3]) {
+  if (!std::isfinite(mesh.position_scale) || mesh.position_scale <= 0)
+    return false;
+  float center[3]{}, extent[3]{};
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(mesh.info.bbox_min[i]) ||
+        !std::isfinite(mesh.info.bbox_max[i]) ||
+        mesh.info.bbox_max[i] < mesh.info.bbox_min[i])
+      return false;
+    const float c = (mesh.info.bbox_min[i] + mesh.info.bbox_max[i]) * .5f *
+                    mesh.position_scale * (i == 2 ? -1.f : 1.f);
+    const float e = (mesh.info.bbox_max[i] - mesh.info.bbox_min[i]) * .5f *
+                    mesh.position_scale;
+    for (int row = 0; row < 3; ++row) {
+      center[row] += m[i * 4 + row] * c;
+      extent[row] += std::abs(m[i * 4 + row]) * e;
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    lower[i] = center[i] + m[12 + i] - extent[i];
+    upper[i] = center[i] + m[12 + i] + extent[i];
+  }
+  return true;
+}
+
 inline bool shadow_bounds_visible(const ScxGeometry &mesh,
                                   const std::array<float, 16> &m,
                                   const SceneFrustum &frustum) {
