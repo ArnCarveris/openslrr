@@ -337,64 +337,70 @@ public class Garage extends Scene implements GameState
 	// The ROC garage (index 3) is open-air and has no fittings.
 	void createFixtures( int index )
 	{
+		// Per-garage brightness: intensity in engine units, range in metres.
+		// 24 / 20 m was the first version; it lit the floor too weakly.
+		float intensity = 48.0, range = 26.0;
 		if( index == 0 )
 		{
 			// garazs_01_targyak.scx, group texturak: 9 fittings
+			intensity = 48.0; range = 26.0;
 			fixtures = new SpotLight[9];
-			fixtures[0] = createFixture( -14.05739, 6.43138,   5.03007 );
-			fixtures[1] = createFixture(  -8.68388, 6.43138,   5.03007 );
-			fixtures[2] = createFixture(  -3.03047, 6.43138,   5.03007 );
-			fixtures[3] = createFixture(   2.63350, 6.43138,   5.03007 );
-			fixtures[4] = createFixture(   8.82223, 6.43138,   5.03007 );
-			fixtures[5] = createFixture(   5.77201, 6.43138,  -4.00419 );
-			fixtures[6] = createFixture(  -5.88736, 6.43138,  -4.00419 );
-			fixtures[7] = createFixture(  12.71575, 6.43138,   1.23414 );
-			fixtures[8] = createFixture(  12.71575, 6.43138,  -5.19158 );
+			fixtures[0] = createFixture( -14.05739, 6.43138,   5.03007, intensity, range );
+			fixtures[1] = createFixture(  -8.68388, 6.43138,   5.03007, intensity, range );
+			fixtures[2] = createFixture(  -3.03047, 6.43138,   5.03007, intensity, range );
+			fixtures[3] = createFixture(   2.63350, 6.43138,   5.03007, intensity, range );
+			fixtures[4] = createFixture(   8.82223, 6.43138,   5.03007, intensity, range );
+			fixtures[5] = createFixture(   5.77201, 6.43138,  -4.00419, intensity, range );
+			fixtures[6] = createFixture(  -5.88736, 6.43138,  -4.00419, intensity, range );
+			fixtures[7] = createFixture(  12.71575, 6.43138,   1.23414, intensity, range );
+			fixtures[8] = createFixture(  12.71575, 6.43138,  -5.19158, intensity, range );
 		}
 		else
 		if( index == 1 )
 		{
 			// garazs2_targyak.scx, group neon: 10 fittings
+			intensity = 48.0; range = 26.0;
 			fixtures = new SpotLight[10];
-			fixtures[0] = createFixture(  -7.04596, 5.42426,  -3.26745 );
-			fixtures[1] = createFixture(  -7.04596, 5.42426,   4.32187 );
-			fixtures[2] = createFixture(   0.02651, 5.42426,   4.32187 );
-			fixtures[3] = createFixture(   0.02651, 5.42426,  -3.26745 );
-			fixtures[4] = createFixture(   7.12191, 5.42426,   4.32187 );
-			fixtures[5] = createFixture(   7.12191, 5.42426,  -3.26745 );
-			fixtures[6] = createFixture(  14.09471, 5.42426,  -3.26745 );
-			fixtures[7] = createFixture(  14.09471, 5.42426,   4.32187 );
-			fixtures[8] = createFixture( -13.63311, 5.42426,  -3.26745 );
-			fixtures[9] = createFixture( -13.63311, 5.42426,   4.32187 );
+			fixtures[0] = createFixture(  -7.04596, 5.42426,  -3.26745, intensity, range );
+			fixtures[1] = createFixture(  -7.04596, 5.42426,   4.32187, intensity, range );
+			fixtures[2] = createFixture(   0.02651, 5.42426,   4.32187, intensity, range );
+			fixtures[3] = createFixture(   0.02651, 5.42426,  -3.26745, intensity, range );
+			fixtures[4] = createFixture(   7.12191, 5.42426,   4.32187, intensity, range );
+			fixtures[5] = createFixture(   7.12191, 5.42426,  -3.26745, intensity, range );
+			fixtures[6] = createFixture(  14.09471, 5.42426,  -3.26745, intensity, range );
+			fixtures[7] = createFixture(  14.09471, 5.42426,   4.32187, intensity, range );
+			fixtures[8] = createFixture( -13.63311, 5.42426,  -3.26745, intensity, range );
+			fixtures[9] = createFixture( -13.63311, 5.42426,   4.32187, intensity, range );
 		}
 		else
 		if( index == 2 )
 		{
 			// garazs3targyak.scx, group Material #11345: 12 fittings
+			intensity = 48.0; range = 26.0;
 			fixtures = new SpotLight[12];
-			fixtures[0] = createFixture( -12.53611, 5.69371,  -0.75343 );
-			fixtures[1] = createFixture(  20.72244, 5.52448,   6.01213 );
-			fixtures[2] = createFixture(  -6.72907, 6.41467,   9.38976 );
-			fixtures[3] = createFixture(  20.72244, 5.53801,  10.85484 );
-			fixtures[4] = createFixture( -12.53611, 5.69371,  -6.80128 );
-			fixtures[5] = createFixture(  -0.08248, 6.43135,  -3.24062 );
-			fixtures[6] = createFixture(  -0.08248, 6.43135,   1.71936 );
-			fixtures[7] = createFixture(   3.34185, 6.41467,   9.38976 );
-			fixtures[8] = createFixture(   9.71543, 6.43135,  -6.30282 );
-			fixtures[9] = createFixture(   9.71543, 6.43135,  -1.04061 );
-			fixtures[10] = createFixture(  13.13120, 6.41467,   9.38976 );
-			fixtures[11] = createFixture(  20.72244, 5.55018,   1.16555 );
+			fixtures[0] = createFixture( -12.53611, 5.69371,  -0.75343, intensity, range );
+			fixtures[1] = createFixture(  20.72244, 5.52448,   6.01213, intensity, range );
+			fixtures[2] = createFixture(  -6.72907, 6.41467,   9.38976, intensity, range );
+			fixtures[3] = createFixture(  20.72244, 5.53801,  10.85484, intensity, range );
+			fixtures[4] = createFixture( -12.53611, 5.69371,  -6.80128, intensity, range );
+			fixtures[5] = createFixture(  -0.08248, 6.43135,  -3.24062, intensity, range );
+			fixtures[6] = createFixture(  -0.08248, 6.43135,   1.71936, intensity, range );
+			fixtures[7] = createFixture(   3.34185, 6.41467,   9.38976, intensity, range );
+			fixtures[8] = createFixture(   9.71543, 6.43135,  -6.30282, intensity, range );
+			fixtures[9] = createFixture(   9.71543, 6.43135,  -1.04061, intensity, range );
+			fixtures[10] = createFixture(  13.13120, 6.41467,   9.38976, intensity, range );
+			fixtures[11] = createFixture(  20.72244, 5.55018,   1.16555, intensity, range );
 		}
 	}
 
-	SpotLight createFixture( float x, float y, float z )
+	SpotLight createFixture( float x, float y, float z, float intensity, float range )
 	{
 		SpotLight l = new SpotLight( stuff );
 		l.setPosition( new Vector3( x, y, z ) );
 		l.setDirection( new Vector3( 0.0, -1.0, 0.0 ) );
 		l.setColor( 0xFFFFFF );
-		l.setIntensity( 24.0 );
-		l.setRange( 20.0 );
+		l.setIntensity( intensity );
+		l.setRange( range );
 		l.setCone( 65.0, 80.0 );
 		return l;
 	}
@@ -1590,14 +1596,15 @@ public class Garage extends Scene implements GameState
 					//el kell menni odaig..
 					GameLogic.spendTime( 1800 );
 					GameLogic.changeActiveSection( new TrackSelect() );
+					// OpenSLRR #235: save only after leaving the garage, so the
+					// mechanic strip is flushed; a refused command does not save.
+					GameLogic.autoSaveQuiet(); // Save Game
 				}
 				else
 					giveWarning( problem );
 			}
 			else
 				giveWarning( "You need a car to do this! \n Buy a car or get one from the car lot." );
-
-			GameLogic.autoSaveQuiet(); // Save Game
 		}
 		else
 		if( cmd == CMD_CARLOT )
@@ -1655,13 +1662,13 @@ public class Garage extends Scene implements GameState
 				}
 
 				GameLogic.changeActiveSection( new CarMarket( used, vds ) );
+				// OpenSLRR #235: save after the transition only (see Choose Track).
+				GameLogic.autoSaveQuiet(); // Save Game
 			}
 			else
 			{
 				giveWarning( "The car dealer is closed now! \n Opening hours: 7am to 5pm" );
 			}
-
-			GameLogic.autoSaveQuiet(); // Save Game
 		}
 		else
 		if( cmd == CMD_CATALOG )

@@ -2636,8 +2636,18 @@ inventing new Java classes.
   - ROC (`misc/garage/g4`, ground 0x2f, stuff 0x51): an open-air scene
     (sand ground, tents, containers, stands); no ceiling fittings and no
     emissive lamp group. No lights are created there.
-  - The adapter (`legacy_neon.hpp`) still matches only g1 (`garazs1.dds`), so
-    without the patch g2 and g3 keep the neon-only lighting.
+  - Dark tubes in g2/g3 (user test at `bc2f8aa`): only
+    `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` turns tube faces
+    into `self_illuminated` groups, and it matched only g1's `garazs1.dds`
+    swatch. Script lights never touched it (g1 kept its white tubes). Now
+    `legacy_neon_candidate_group` also accepts groups with an SCX4 emissive
+    colour and no emission mask, and the same tube-shape and pairing rules pick
+    the faces. Its anchors equal the Garage.java tables in all three garages, so
+    without the patch g2 and g3 get the same fallback lights as g1.
+  - Brightness: Garage.java sets intensity 48 and range 26 m per garage
+    (`createFixtures`; first version 24 / 20 m). In the GPU test the floor that
+    was dim before (gain under 60 in an 8-bit capture) brightens about 2.2×
+    (g1 47→112, g2 54→123, g3 55→105); brighter areas clip in the capture.
 - Renderer: registry lights replace the adapter whenever one has a drawn parent,
   even when disabled. Limits: one point light, 12 fixtures, inner cone fixed at
   65° by `shaders/scene_shadow.sh`, fixture shadows all-or-nothing, rect drawn as
@@ -2656,8 +2666,21 @@ inventing new Java classes.
   adapter. Its `garage_fixtures` case loads g2 and g3, checks each Garage.java
   anchor sits 8 cm under its lamp group's tubes, that the registry places all
   10/12 spots there, and that they light the real floor (15,207 and 20,437 of
-  65,536 pixels); `tests/test_inventory_transition.cpp` runs the recompiled
-  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit).
+  65,536 pixels), that only lamp-group faces emit and stay white without any
+  light (g1 120, g2 193, g3 168 pixels), and the brightness above; and that the
+  neon point record stays ambient-only when every script light is disabled.
+  `tests/test_inventory_transition.cpp` runs the recompiled
+  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit), and
+  `garage_rejected_commands_do_not_save` runs `osdCommand` with a recording
+  probe.
+- Refused commands (review of PR #236): the MWM source saved after Choose
+  Track and the dealers even when they were refused (no car, undriveable car,
+  dealer closed). The shipped #59 class does not save there; it saves before the
+  transition when they are accepted (`save,change`). The patch saves inside the
+  success branch after `changeActiveSection` (`change,save`), so a refused
+  command never saves a garage whose mechanic strip was not flushed. With a local
+  `build/garage-59.class` (`git cat-file blob 6171aa2:patch/sl/Scripts/game/Garage.class`) the test also compares all 43 `CMD_*` commands: none
+  differs from the #59 class in whether it saves.
   Validated in game by the user in the g1 garage at `df7117f` (20 November
   2026): the nine script fittings light the garage as before. g2 and g3 are
   not validated in game yet.

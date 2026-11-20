@@ -771,6 +771,9 @@ struct SceneShadowRegression {
       // Disabled script lights still replace the adapter: the garage is dark.
       for(auto& light:scripted) script_lights_get(&light)->enabled=false;
       b.update_local_light();SLRR_REQUIRE(b.fixture_lights_.empty());
+      // The neon stays ambient-only: no shadowed point light comes back.
+      SLRR_REQUIRE(b.point_light_ && b.point_light_->owner==&neon &&
+                   b.point_light_->intensity==0 && !b.point_light_->casts_shadows);
       // A script point light takes the point record and keeps the neon ambient.
       Object bulb;SLRR_REQUIRE(script_lights_create(&bulb,&stuff,ScriptLightKind::Point));
       script_lights_get(&bulb)->position={0,3,0};
@@ -876,12 +879,18 @@ struct SceneShadowRegression {
     b.point_light_.reset();
     b.local_light_ = {};
   }
-  // #235: garages 2 and 3. Garage.java places one SpotLight per twin-tube
-  // fitting of the stuff mesh. Each anchor must sit 8 cm under its tubes, the
-  // registry must place it there, and the fittings must light the real floor.
+  // #235: the three club garages. Garage.java places one SpotLight per
+  // twin-tube fitting of the stuff mesh. The loader must turn exactly the tube
+  // faces into unlit emitters (they stay white without any light), each anchor
+  // must sit 8 cm under them, the registry must place the spots there, and the
+  // fittings must light the real floor at Garage.java's brightness.
   static void garage_fixtures(LibBgfxBackend &b) {
     struct Room { uint32_t ground, stuff; const char* lamps; std::vector<std::array<float,3>> anchors; };
     const Room rooms[] = {
+      {0x7a, 0x42, "texturak", {{-14.05739f,6.43138f,5.03007f},{-8.68388f,6.43138f,5.03007f},
+        {-3.03047f,6.43138f,5.03007f},{2.63350f,6.43138f,5.03007f},{8.82223f,6.43138f,5.03007f},
+        {5.77201f,6.43138f,-4.00419f},{-5.88736f,6.43138f,-4.00419f},
+        {12.71575f,6.43138f,1.23414f},{12.71575f,6.43138f,-5.19158f}}},
       {0x06, 0x18, "neon", {{-7.04596f,5.42426f,-3.26745f},{-7.04596f,5.42426f,4.32187f},
         {0.02651f,5.42426f,4.32187f},{0.02651f,5.42426f,-3.26745f},{7.12191f,5.42426f,4.32187f},
         {7.12191f,5.42426f,-3.26745f},{14.09471f,5.42426f,-3.26745f},{14.09471f,5.42426f,4.32187f},
@@ -907,12 +916,28 @@ struct SceneShadowRegression {
       b.instances_ = scene_instances_collect();
       const ScxGeometry* mesh = nullptr;
       for (const auto& obj : b.instances_) if (obj.key == &stuff) mesh = obj.geometry.get();
-      SLRR_REQUIRE(mesh && mesh->ceiling_light_anchors.empty());
-      // Derivation check: the lamp group's tube faces lie 8 cm above each
-      // anchor, along a 3 m tube through it.
+      SLRR_REQUIRE(mesh);
+      // The loader's adapter finds the same fittings as Garage.java.
+      SLRR_REQUIRE(mesh->ceiling_light_anchors.size() == room.anchors.size());
+      for (const auto& anchor : room.anchors) {
+        bool found = false;
+        for (const auto& a : mesh->ceiling_light_anchors)
+          found |= std::abs(a[0] - anchor[0]) < 1e-4f && std::abs(a[1] - anchor[1]) < 1e-4f &&
+                   std::abs(a[2] - anchor[2]) < 1e-4f;
+        SLRR_REQUIRE(found);
+      }
+      // Only faces of the named lamp group become emitters, two tubes each.
+      size_t emitting = 0;
+      for (const auto& group : mesh->groups) if (group.self_illuminated) {
+        SLRR_REQUIRE(group.name == room.lamps);
+        emitting += group.index_count / 3;
+      }
+      SLRR_REQUIRE(emitting >= room.anchors.size() * 2 * 12);
+      // Derivation check: the emitting tube faces lie 8 cm above each anchor,
+      // along a 3 m tube through it.
       for (const auto& anchor : room.anchors) {
         float lowest = 1e9f;
-        for (const auto& group : mesh->groups) if (group.name == room.lamps)
+        for (const auto& group : mesh->groups) if (group.self_illuminated)
           for (uint32_t i = group.index_start; i < group.index_start + group.index_count; ++i) {
             const auto v = mesh->indices[i] * 3;
             const float dx = std::abs(mesh->positions[v] * mesh->position_scale - anchor[0]);
@@ -923,9 +948,15 @@ struct SceneShadowRegression {
         SLRR_REQUIRE(std::abs(lowest - .08f - anchor[1]) < .002f);
       }
       std::vector<Object> lights(room.anchors.size());
+      // Garage.java's brightness for every garage (the first version used the
+      // registry defaults, 24 and 20 m).
+      constexpr float intensity = 48.f, range = 26.f;
       for (size_t i = 0; i < lights.size(); ++i) {
         SLRR_REQUIRE(script_lights_create(&lights[i], &stuff, ScriptLightKind::Spot));
-        script_lights_get(&lights[i])->position = room.anchors[i];
+        auto* light = script_lights_get(&lights[i]);
+        light->position = room.anchors[i];
+        light->intensity = intensity;
+        light->range = range;
       }
       for (const auto& obj : b.instances_) b.cache_scene_mesh(obj.geometry, nullptr, false);
       b.garage_ = true; b.outdoor_lighting_ = false;
@@ -935,7 +966,8 @@ struct SceneShadowRegression {
       SLRR_REQUIRE(b.fixture_lights_.size() == room.anchors.size());
       for (size_t i = 0; i < lights.size(); ++i) {
         const auto& light = b.fixture_lights_[i];
-        SLRR_REQUIRE(light.owner == &lights[i] && light.valid() && light.direction[1] < -.99f);
+        SLRR_REQUIRE(light.owner == &lights[i] && light.valid() && light.direction[1] < -.99f &&
+                     light.intensity == intensity && light.range == range);
         SLRR_REQUIRE(std::abs(light.position[0] - room.anchors[i][0]) < 1e-3f &&
                      std::abs(light.position[1] - room.anchors[i][1]) < 1e-3f &&
                      std::abs(light.position[2] + room.anchors[i][2]) < 1e-3f);
@@ -1002,11 +1034,54 @@ struct SceneShadowRegression {
       const auto fixtures = b.fixture_lights_;
       b.fixture_lights_.clear();
       const auto dark = capture();
+      // Previous brightness, for the before/after report.
       b.fixture_lights_ = fixtures;
-      unsigned pixels = 0;
-      for (size_t i = 0; i < lit.size(); i += 4) if (int(lit[i]) - int(dark[i]) > 10) ++pixels;
-      std::printf("GARAGE 0x%x script fittings=%zu lit floor pixels=%u\n", room.ground, fixtures.size(), pixels);
-      SLRR_REQUIRE(pixels > 100);
+      for (auto& light : b.fixture_lights_) { light.intensity = 24.f; light.range = 20.f; }
+      const auto before = capture();
+      b.fixture_lights_ = fixtures;
+      // 8-bit captures clip under the fittings, so also report the floor that
+      // was dim before (gain under 60), where the change is not clipped.
+      unsigned pixels = 0, floor_pixels = 0, dim_pixels = 0;
+      double gain = 0, gain_before = 0, dim = 0, dim_before = 0;
+      for (size_t i = 0; i < lit.size(); i += 4) {
+        if (!dark[i] && !dark[i + 1] && !dark[i + 2]) continue; // black clear colour
+        ++floor_pixels;
+        const int now = int(lit[i]) - int(dark[i]), old = int(before[i]) - int(dark[i]);
+        gain += now;
+        gain_before += old;
+        if (old < 60) { ++dim_pixels; dim += now; dim_before += old; }
+        if (now > 10) ++pixels;
+      }
+      gain /= std::max(floor_pixels, 1u);
+      gain_before /= std::max(floor_pixels, 1u);
+      dim /= std::max(dim_pixels, 1u);
+      dim_before /= std::max(dim_pixels, 1u);
+      std::printf("GARAGE 0x%x script fittings=%zu lit floor pixels=%u/%u mean floor gain 24/20m=%.1f 48/26m=%.1f;"
+                  " dim floor (%u px) %.1f -> %.1f\n", room.ground, fixtures.size(), pixels, floor_pixels,
+                  gain_before, gain, dim_pixels, dim_before, dim);
+      SLRR_REQUIRE(pixels > 100 && gain >= gain_before);
+      SLRR_REQUIRE(!dim_pixels || dim > dim_before * 1.5);
+      // The tube faces keep their texture without any light (#235): white.
+      auto tubes = std::make_shared<ScxGeometry>(*mesh);
+      tubes->indices.clear(); tubes->groups.clear();
+      for (auto group : mesh->groups) if (group.self_illuminated) {
+        const auto first = group.index_start;
+        group.index_start = uint32_t(tubes->indices.size());
+        tubes->indices.insert(tubes->indices.end(), mesh->indices.begin() + first,
+                              mesh->indices.begin() + first + group.index_count);
+        tubes->groups.push_back(group);
+      }
+      b.cache_scene_mesh(tubes, nullptr, false);
+      receiver.geometry = tubes;
+      b.fixture_lights_.clear();
+      b.point_light_.reset();
+      const auto tubes_off = capture();
+      unsigned white = 0;
+      for (size_t i = 0; i < tubes_off.size(); i += 4)
+        if (tubes_off[i] > 180 && tubes_off[i + 1] > 180 && tubes_off[i + 2] > 180) ++white;
+      std::printf("GARAGE 0x%x emitting tube triangles=%zu white tube pixels without lights=%u\n",
+                  room.ground, emitting, white);
+      SLRR_REQUIRE(white > 10);
       host_enhanced_graphics() = graphics;
       bgfx::destroy(readback);
       bgfx::destroy(fb);

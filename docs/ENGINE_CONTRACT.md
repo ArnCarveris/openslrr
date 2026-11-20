@@ -884,10 +884,13 @@ retain automatic ground-prop detection. Resource reset clears the scene intent.
 An inherited unassigned `internalScene` may be absent from the sparse host object;
 in that case a live Scene.sun parented to the current world also establishes
 exterior intent. Explicit interior metadata takes priority.
-The stock g1 garage now derives nine paired ceiling emitters from its actual
-SCX tube geometry. `legacy_neon.hpp` is an explicit asset adapter: the `texturak`
-section of `garazs1.dds` samples a known white swatch. Connected metre-scale tube
-components are paired into fittings; local anchors sit 8 cm below the tube's
+The stock club garages derive paired ceiling emitters from their actual SCX
+tube geometry (g1 9, g2 10, g3 12). `legacy_neon.hpp` is an explicit asset
+adapter. Candidate faces are the `texturak` section of `garazs1.dds` that samples
+a known white swatch (g1), or groups with an authored SCX4 emissive colour and no
+emission mask (the g2 `neon` and g3 `Material #11345` lamp groups). Only
+connected tube-shaped components (2–4 m long, under 0.25 m wide and tall, above
+3.3 m) are paired into fittings, which keeps emissive signs out; local anchors sit 8 cm below the tube's
 lowest face and follow the instance's transform. The loader splits only tube
 triangles into `self_illuminated` groups, preserving their original texture/UVs.
 These opaque surfaces remain white without dynamic light or sky ambient; the
@@ -1202,8 +1205,11 @@ a spot. The first enabled point light becomes the point record and keeps the
 neon's ambient fill. Any registered light whose parent is in the drawn world,
 enabled or not, disables the stock g1 anchor adapter (`legacy_neon.hpp`), so a
 script can turn the garage dark. Without registry lights the adapter path is
-unchanged. The patched Garage creates one spot per twin-tube fitting in garages
-1–3 (9, 10 and 12 lights); the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
+unchanged. While script lights own the scene, including when all of them are
+disabled, the neon point record stays ambient-only (intensity 0, no shadows).
+The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 10
+and 12 lights, intensity 48, range 26 m, set per garage in its fixture tables);
+the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
 
 ## 13. Interface, input, and options

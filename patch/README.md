@@ -79,7 +79,9 @@ parented to the garage stuff mesh, and destroys them when leaving the garage:
 9 lights in the first garage, 10 in the second and 12 in the third. The ROC
 garage is outdoors and gets none. The engine draws them with the Enhanced
 local-light path, so **Local lights** must be on. Without the patched classes the
-engine keeps its built-in placement in the first garage only.
+engine places the same fittings itself in the three garages. The tube faces
+glow in every garage. Brightness is set per garage in `createFixtures`
+(intensity 48, range 26 m by default; 24 / 20 m before).
 
 | Class | Use |
 | --- | --- |
@@ -90,7 +92,11 @@ engine keeps its built-in placement in the first garage only.
 All three inherit `setPosition`, `setDirection` (parent-local, metres),
 `setColor(0xRRGGBB)`, `setIntensity`, `setRange`, `setShadows`, `setEnabled` and
 `destroy` from `LightSource`. Lights follow their parent and disappear with it.
-Car lights stay engine-driven. Street lamps and other scenery lights do not use
+Car lights stay engine-driven.
+
+`Garage.java` also saves only after a successful Choose Track, car dealer or
+car lot transition. A refused command (no car, undriveable car, dealer closed)
+stays in the garage and does not save. Street lamps and other scenery lights do not use
 this API yet.
 
 In-game check: with Local lights on, enter each club garage (first, second and

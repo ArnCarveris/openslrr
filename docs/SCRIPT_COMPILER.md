@@ -110,7 +110,7 @@ cp $R/sl/Scripts/game/Garage.class patch/sl/Scripts/game/
 The render package compiles first so Garage resolves `java.render.SpotLight`.
 Moving `OptionsDialog.java` aside keeps the second run to Garage alone; the
 directory argument compiles every `src/*.java` below it. Results: 4/4 render
-units, and 1/1 Garage unit producing three classes (93,683 bytes with the three garage tables), with two
+units, and 1/1 Garage unit producing three classes (94,397 bytes with the three garage tables), with two
 `W_UNVERIFIED` warnings for constructs already in the MWM source (a final
 static method, an empty `else ;`).
 

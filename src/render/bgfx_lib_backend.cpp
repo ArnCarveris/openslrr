@@ -1235,7 +1235,9 @@ void LibBgfxBackend::update_local_light() {
           if(fixture.valid()) fixture_lights_.push_back(fixture);
         }
       }
-      if(!fixture_lights_.empty()) {
+      // Script lights own the scene even when all of them are disabled: the
+      // neon must not come back as a shadowed point light (#235 review).
+      if(!fixture_lights_.empty() || scripted) {
         // Ambient-only compatibility record keeps the legacy directional fill
         // suppressed. Fixture shading has its own sources and shadow atlas.
         light.intensity=0;light.casts_shadows=false;
