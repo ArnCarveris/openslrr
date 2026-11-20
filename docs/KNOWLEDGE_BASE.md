@@ -2843,7 +2843,7 @@ city at night.
   - No pop: a slot's weight fades 0 → 1 in 0.8 s (real time) when assigned
     and back to 0 when it is released (out of reach or replaced); the shader
     mixes visibility by that weight.
-  - Sampling: `shaders/scene_shadow.sh:lampShadowVisibility`, the fixture
+  - Sampling: `shaders/scene_shadow.sh:lampTileVisibility`, the fixture
     filtering (receiver-plane depth gradient, aligned 2×2 taps, 4×4 tent for
     the very-soft Shadow smoothing), 3 cm normal offset toward the lamp.
     Shadowed lamps are the first `u_lampShadowParams.x` lamp entries; their
