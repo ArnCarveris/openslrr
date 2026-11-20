@@ -141,7 +141,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
         bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
         bgfx::setTransform(stamp.transform.data());
         bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-        bgfx::submit(view, static_shadow_program_);
+        submit_counted(view, static_shadow_program_);
       }
     }
   }
@@ -387,7 +387,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
       bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                      (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
-      bgfx::submit(view, skinned ? ao_skin_depth_program_ : static_shadow_program_);
+      submit_counted(view, skinned ? ao_skin_depth_program_ : static_shadow_program_);
     }
   };
   const float no_apertures[4]{};
@@ -517,7 +517,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
             bgfx::setScissor(uint16_t(column * half), uint16_t(2 * tile + row * half), half, half);
             bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                            (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
-            bgfx::submit(kCarShadowView, static_shadow_program_);
+            submit_counted(kCarShadowView, static_shadow_program_);
           }
         }
       }
@@ -883,7 +883,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
       bgfx::setVertexBuffer(0, part.vbh);
       bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
       bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-      bgfx::submit(view, static_shadow_program_);
+      submit_counted(view, static_shadow_program_);
     }
   }
   const float none[4]{};
@@ -913,7 +913,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
       bgfx::setTransform(stamp.transform.data());
       bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
       bgfx::setState(BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
-      bgfx::submit(66,program_);
+      submit_counted(66,program_);
     }
   }
   const float reset_mode[4]{};bgfx::setUniform(u_alpha_test_,reset_mode);
@@ -1041,7 +1041,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
           bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-          bgfx::submit(view, static_shadow_program_);
+          submit_counted(view, static_shadow_program_);
         }
       }
     }
@@ -1237,7 +1237,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
             conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0;
         bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                        coverage);
-        bgfx::submit(view_id, static_shadow_program_);
+        submit_counted(view_id, static_shadow_program_);
       }
     }
     std::vector<SceneBatch> shadow_batches;
@@ -1273,7 +1273,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
           bgfx::setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS|
                          (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
-          bgfx::submit(view_id,ao_skin_depth_program_);
+          submit_counted(view_id,ao_skin_depth_program_);
         }
       }
   }
@@ -1351,7 +1351,7 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
       bgfx::setVertexBuffer(0, part.vbh);
       bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
       bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
-      bgfx::submit(id, static_shadow_program_);
+      submit_counted(id, static_shadow_program_);
     }
   }
   car_depth_active_ = true;

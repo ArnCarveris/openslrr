@@ -211,7 +211,7 @@ namespace slrr {
                    BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE,
                                          BGFX_STATE_BLEND_INV_SRC_ALPHA) |
                    BGFX_STATE_MSAA);
-    bgfx::submit(osd_view_, program_);
+    submit_counted(osd_view_, program_);
   }
 #endif
 #ifdef _WIN32
@@ -447,7 +447,7 @@ namespace slrr {
     bgfx::setUniform(u_alpha_test_, u_at);
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                    BGFX_STATE_MSAA);
-    bgfx::submit(view_id, program_);
+    submit_counted(view_id, program_);
   }
 #endif
 #ifdef _WIN32
@@ -525,7 +525,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         ? BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA)
         : BGFX_STATE_BLEND_ALPHA;
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | blend);
-    bgfx::submit(osd_view_, program_);
+    submit_counted(osd_view_, program_);
   };
   const auto safe_numeric_format = [](const std::string& fmt) {
     if (fmt.size() < 2 || fmt.size() > 6 || fmt.front() != '%' || fmt.back() != 'f')
@@ -1031,7 +1031,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       bgfx::setUniform(u_font_shadow_, shadow.data());
       bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                      BGFX_STATE_BLEND_ALPHA | BGFX_STATE_MSAA);
-      bgfx::submit(osd_view_, text_program_);
+      submit_counted(osd_view_, text_program_);
     }
     const float white[4] = {1.f, 1.f, 1.f, 1.f};
     bgfx::setUniform(u_color_, white);

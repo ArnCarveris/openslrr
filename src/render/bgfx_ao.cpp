@@ -144,7 +144,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                            ? part.tex[slot]
                            : white_tex_);
       bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER);
-      bgfx::submit(140, skin ? ao_skin_depth_program_ : static_shadow_program_);
+      submit_counted(140, skin ? ao_skin_depth_program_ : static_shadow_program_);
     }
   };
   for (const auto &object : instances_) {
@@ -210,7 +210,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     bgfx::setTexture(3, s_ao_normal_, geometry ? white_tex_ : ao_normal_tex_, sampler);
     bgfx::setVertexBuffer(0, &vb);
     bgfx::setState(geometry ? BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A : BGFX_STATE_WRITE_RGB);
-    bgfx::submit(id, ao_program_);
+    submit_counted(id, ao_program_);
   }
 }
 } // namespace slrr

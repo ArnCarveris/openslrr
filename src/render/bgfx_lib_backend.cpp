@@ -606,6 +606,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       FrameCache() { scene_instances_frame_cache(true); }
       ~FrameCache() { scene_instances_frame_cache(false); }
     } frame_cache;
+    view_draws_.fill(0);
     auto video = host_game_options().video;
     const auto& debug_render = debug_overlay_.render_options();
     video.view_distance = 3000.f;
@@ -979,6 +980,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
 {
     for(auto& entry:instance_meshes_)destroy_part(entry.second);
     instance_meshes_.clear();deformed_meshes_.clear();instances_.clear();previews_.clear();
+    night_batches_.clear();
     residency_uses_.clear();residency_count_ = SIZE_MAX;
     for (ScenePart& p : parts_) destroy_part(p);
     parts_.clear();
@@ -1118,7 +1120,8 @@ void LibBgfxBackend::cache_scene_mesh(
       else
         prop_batches_.clear();
     }
-    instances_ = scene_instances_collect(&frustum, &resident_props);
+    instances_ = scene_instances_collect(&frustum, &resident_props, true, &night_batches_);
+    if (!render_debug().map_props) night_batches_.clear();
     lod_view.update = false;
     scene_instances_set_lod_view(lod_view);
     // Debug toggles (#243): removing the records removes every pass they feed.
@@ -1374,6 +1377,7 @@ void LibBgfxBackend::publish_debug_stats() {
     }
     auto& stats = render_debug_stats();
     stats.instances = uint32_t(instances_.size());
+    stats.view_draws = view_draws_;
     stats.batches = 0;
     stats.batch_instances = 0;
     for (const auto& batch : prop_batches_) {
@@ -1620,7 +1624,7 @@ void LibBgfxBackend::draw_sky(uint16_t view_id, const float* view, const float* 
     bgfx::setTransform(identity);
     bgfx::setVertexBuffer(0, &vertices);
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA);
-    bgfx::submit(view_id, program_);
+    submit_counted(view_id, program_);
 }
 
 void LibBgfxBackend::refresh_distance_fog(const float render_eye[3]) {
@@ -1654,9 +1658,43 @@ void LibBgfxBackend::refresh_distance_fog(const float render_eye[3]) {
 void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
     perf::Scope perf_scope(perf::Zone::World);
     draw_prop_batches(view_id, prop_batches_, false);
-    for (int pass = 0; pass < 2; ++pass)
+    // Props with a blended section, one group per mesh and lighting in first
+    // appearance order (#264). Their records stay in instances_ for shadows,
+    // AO and reflections; here they are drawn instanced instead.
+    size_t groups = 0;
+    for (const auto& instance : instances_) {
+      if (!blended_prop_instance(instance)) continue;
+      const auto same_light = [&](const SceneSun& a, const SceneSun& b) {
+        return a.set == b.set && a.has_direction == b.has_direction &&
+               std::memcmp(a.diffuse, b.diffuse, sizeof(a.diffuse)) == 0 &&
+               std::memcmp(a.ambient, b.ambient, sizeof(a.ambient)) == 0 &&
+               std::memcmp(a.direction, b.direction, sizeof(a.direction)) == 0;
+      };
+      size_t g = 0;
+      while (g < groups && !(blended_groups_[g].geometry == instance.geometry.get() &&
+                             same_light(*blended_groups_[g].lighting, instance.lighting)))
+        ++g;
+      if (g == groups) {
+        if (blended_groups_.size() <= groups) blended_groups_.emplace_back();
+        auto& group = blended_groups_[groups++];
+        group.geometry = instance.geometry.get();
+        group.lighting = &instance.lighting;
+        group.placements.clear();
+      }
+      blended_groups_[g].placements.push_back({instance.transform.data(), instance.color});
+    }
+    const auto draw_blended = [&](int pass) {
+      for (size_t g = 0; g < groups; ++g) {
+        const auto& group = blended_groups_[g];
+        const auto found = instance_meshes_.find(group.geometry);
+        if (found == instance_meshes_.end()) continue;
+        draw_props_instanced(view_id, found->second, *group.lighting, false, pass,
+                             group.placements.data(), group.placements.size());
+      }
+    };
+    for (int pass = 0; pass < 2; ++pass) {
       for (const auto& instance : instances_) {
-        if (instance.sky) continue;
+        if (instance.sky || blended_prop_instance(instance)) continue;
         // The mesh stays resident, so a pedestrian walking into view does not
         // upload on that frame. The triangles behind the camera are not sent.
         // A walker outside the view frustum has no palette this frame.
@@ -1671,6 +1709,22 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         }
         draw_instance(view_id, instance, instance.transform.data(), false, pass);
       }
+      if (pass == 1) {
+        // Night overlays add light (ONE, ONE after alpha): their order among
+        // themselves does not change an 8-bit target.
+        for (const auto& batch : night_batches_) {
+          if (batch.instances.empty() || !batch.geometry) continue;
+          const auto found = instance_meshes_.find(batch.geometry.get());
+          if (found == instance_meshes_.end()) continue;
+          placement_scratch_.clear();
+          for (const auto& placement : batch.instances)
+            placement_scratch_.push_back({placement.transform.data(), placement.color});
+          draw_props_instanced(view_id, found->second, batch.lighting, true, 1,
+                               placement_scratch_.data(), placement_scratch_.size());
+        }
+      }
+      draw_blended(pass);
+    }
   }
   void LibBgfxBackend::draw_previews()
 {
@@ -1991,7 +2045,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         bind_baked_light(group, &part.tex, BGFX_INVALID_HANDLE, true,
                          host_enhanced_graphics().dynamic_lighting ? &light : nullptr);
         bgfx::setState(alpha_cutout ? state_cutout : state_opaque);
-        bgfx::submit(view_id, program_);
+        submit_counted(view_id, program_);
       };
       // v4: always honour DDS alpha (SLRR_rev scxDiffuseUsesAlpha).
       // v3: only when material flag alphaOpacity (0x1).

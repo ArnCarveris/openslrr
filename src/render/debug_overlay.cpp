@@ -171,6 +171,10 @@ void sample_render_timings() {
 constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     {perf::Zone::Collect, "Scene collection + residency"},
     {perf::Zone::CollectBatches, "  instanced prop batches"},
+    // #264: the world list is built by the first collection of the frame
+    // (the batches above, in the main view); every collection copies it.
+    {perf::Zone::WorldList, "    world list build"},
+    {perf::Zone::WorldCopy, "  world list copies (all collections)"},
     {perf::Zone::LampSelect, "Street lamp selection"},
     {perf::Zone::Shadows, "Shadow updates (all)"},
     {perf::Zone::SunShadows, "  sun cascades / point"},
@@ -246,11 +250,11 @@ std::string render_timing_dump() {
                 s.batches, s.batch_instances, s.lamps_registered, s.lamps_lit, s.lamps_shadowed,
                 s.car_tiles);
   out += line;
-  out += "view | name | GPU avg/min/max ms | CPU avg ms\n";
+  out += "view | name | GPU avg/min/max ms | CPU avg ms | draws\n";
   for (const auto& [id, view] : t.views) {
-    std::snprintf(line, sizeof(line), "%3u | %s | %.3f / %.3f / %.3f | %.3f\n", unsigned(id),
+    std::snprintf(line, sizeof(line), "%3u | %s | %.3f / %.3f / %.3f | %.3f | %u\n", unsigned(id),
                   view.name.c_str(), view.gpu.average(), view.gpu.minimum(), view.gpu.maximum(),
-                  view.cpu.average());
+                  view.cpu.average(), id < s.view_draws.size() ? s.view_draws[id] : 0u);
     out += line;
   }
   const auto timing = perf::snapshot();
@@ -320,10 +324,10 @@ void draw_render_timings() {
               s.lamps_registered, s.lamps_lit, s.lamps_shadowed, s.car_tiles,
               static_cast<unsigned long long>(s.lamp_tile_redraws),
               static_cast<unsigned long long>(s.car_tile_redraws));
-  if (ImGui::BeginTable("render-views", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+  if (ImGui::BeginTable("render-views", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
                                                ImGuiTableFlags_Sortable |
                                                ImGuiTableFlags_SizingStretchProp)) {
-    for (const char* name : {"View", "Pass", "GPU avg ms", "GPU min / max", "CPU ms"})
+    for (const char* name : {"View", "Pass", "GPU avg ms", "GPU min / max", "CPU ms", "Draws"})
       ImGui::TableSetupColumn(name);
     ImGui::TableHeadersRow();
     std::vector<std::pair<uint16_t, const RenderTimings::View*>> rows;
@@ -339,6 +343,7 @@ void draw_render_timings() {
       ImGui::TableNextColumn(); ImGui::Text("%.3f", view->gpu.average());
       ImGui::TableNextColumn(); ImGui::Text("%.3f / %.3f", view->gpu.minimum(), view->gpu.maximum());
       ImGui::TableNextColumn(); ImGui::Text("%.3f", view->cpu.average());
+      ImGui::TableNextColumn(); ImGui::Text("%u", id < s.view_draws.size() ? s.view_draws[id] : 0u);
     }
     ImGui::EndTable();
   }
