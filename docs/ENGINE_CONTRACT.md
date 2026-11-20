@@ -1056,6 +1056,12 @@ a colour post-process chain. Low/medium AO use half resolution; high full.
 HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.
 Reconstruct sample positions at the exact depth texel centres, including the
 centre used by normal reconstruction; otherwise flat receivers develop false AO.
+Choose normal derivatives with two-sample projected-depth extrapolation on each
+side of the receiver, rejecting unsupported discontinuities. Recover the plane
+normal from projected-depth slopes rather than subtracting reconstructed world
+positions: the latter loses precision at grazing angles. The separable filter
+weights distance to the receiver plane, so tilted surfaces are denoised without
+accepting foreground depth discontinuities.
 Finite-slice GTAO is normalised against its unobstructed hemisphere. Reject
 coplanar/behind-tangent samples: quantised screen samples may leave the nominal
 slice and must not occlude a flat road. Clear AO depth to zero and use GREATER

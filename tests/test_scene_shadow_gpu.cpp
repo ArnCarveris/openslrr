@@ -71,7 +71,7 @@ struct SceneShadowRegression {
         if(int(flat_plain[i])-int(flat[i])>3) ++dark;
       }
       std::printf("AO flat method=%d dark=%u/%u average=%g reference=%g\n",method,dark,visible,double(total)/visible,double(reference)/visible);
-      SLRR_REQUIRE(dark<visible/10);
+      SLRR_REQUIRE(visible>100 && dark==0);
     }
     // Near-plane precision must not turn a distant, unobstructed road into AO bands.
     const auto near_positions=floor->positions;
@@ -88,7 +88,7 @@ struct SceneShadowRegression {
         ++visible;if(int(distant_plain[i])-int(image[i])>3) ++dark;
       }
       std::printf("AO distant road method=%d quality=%d false occlusion=%u/%u pixels\n",method,quality,dark,visible);
-      SLRR_REQUIRE(visible>100 && dark<visible/100);
+      SLRR_REQUIRE(visible>100 && dark==0);
     }
     floor->positions=near_positions;++floor->revision;b.cache_scene_mesh(floor,nullptr,false);
     bx::mtxLookAt(view,{3,3,-4},{0,0,3});

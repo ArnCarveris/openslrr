@@ -26,14 +26,37 @@ vec3 positionAt(vec2 uv) {
 }
 vec3 surfaceNormal(vec2 uv,vec3 p) {
     vec2 t=u_aoScreen.xy;
-    vec3 l=positionAt(clamp(uv-vec2(t.x,0.0),vec2(0.0,0.0),vec2(1.0,1.0)));
-    vec3 r=positionAt(clamp(uv+vec2(t.x,0.0),vec2(0.0,0.0),vec2(1.0,1.0)));
-    vec3 d=positionAt(clamp(uv-vec2(0.0,t.y),vec2(0.0,0.0),vec2(1.0,1.0)));
-    vec3 u=positionAt(clamp(uv+vec2(0.0,t.y),vec2(0.0,0.0),vec2(1.0,1.0)));
-    vec3 dx=abs(l.z-p.z)<abs(r.z-p.z)?p-l:r-p;
-    vec3 dy=abs(d.z-p.z)<abs(u.z-p.z)?p-d:u-p;
-    vec3 n=cross(dx,dy);float n2=dot(n,n);
-    n=n2>1e-12?n*inversesqrt(n2):normalize(-p);
+    vec2 lo=t*0.5,hi=vec2(1.0,1.0)-lo;
+    vec2 left=clamp(uv-vec2(t.x,0.0),lo,hi),right=clamp(uv+vec2(t.x,0.0),lo,hi);
+    vec2 down=clamp(uv-vec2(0.0,t.y),lo,hi),up=clamp(uv+vec2(0.0,t.y),lo,hi);
+    float c=depthAt(uv),l=depthAt(left),r=depthAt(right),d=depthAt(down),u=depthAt(up);
+    float l2=depthAt(clamp(uv-vec2(2.0*t.x,0.0),lo,hi));
+    float r2=depthAt(clamp(uv+vec2(2.0*t.x,0.0),lo,hi));
+    float d2=depthAt(clamp(uv-vec2(0.0,2.0*t.y),lo,hi));
+    float u2=depthAt(clamp(uv+vec2(0.0,2.0*t.y),lo,hi));
+    // Projected depth is affine on a plane. Predict the centre from two
+    // samples per side instead of choosing the nearest Z (which crosses
+    // silhouettes on tilted floors and manufactures sloping AO receivers).
+    float el=l>0.0 && l2>0.0?abs(2.0*l-l2-c):1e10;
+    float er=r>0.0 && r2>0.0?abs(2.0*r-r2-c):1e10;
+    float ed=d>0.0 && d2>0.0?abs(2.0*d-d2-c):1e10;
+    float eu=u>0.0 && u2>0.0?abs(2.0*u-u2-c):1e10;
+    if(min(el,er)>max(abs(c)*0.01,1e-7) || min(ed,eu)>max(abs(c)*0.01,1e-7)) return vec3(0.0,0.0,0.0);
+    bool chooseLeft=abs(el-er)<max(abs(c)*1e-5,1e-9)?abs(l-c)<abs(r-c):el<er;
+    bool chooseDown=abs(ed-eu)<max(abs(c)*1e-5,1e-9)?abs(d-c)<abs(u-c):ed<eu;
+    // Recover the plane normal directly from projected-depth slopes. Taking
+    // differences of reconstructed positions loses precision at grazing angles.
+    float sx=(chooseLeft?c-l:r-c)/(2.0*t.x);
+    float sy=(chooseDown?c-d:u-c)/(2.0*t.y);
+    vec2 ndc=uv*2.0-1.0;
+    float scale=u_aoProjection.z>0.5?2.0:1.0;
+    float centerNdc=u_aoProjection.z>0.5?c*2.0-1.0:c;
+    vec3 n=vec3(sx*scale*u_aoScreen.z,
+                sy*scale*u_aoScreen.w*(u_aoProjection.w>0.5?1.0:-1.0),
+                centerNdc-u_aoProjection.x-scale*dot(vec2(sx,sy),ndc));
+    float n2=dot(n,n);
+    if(n2<1e-30) return vec3(0.0,0.0,0.0);
+    n*=inversesqrt(n2);
     return dot(n,-p)<0.0?-n:n;
 }
 vec3 sampleDelta(vec2 uv,vec3 p) {
@@ -95,6 +118,8 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
             if(a2>0.0001 && a2<r2 && dot(n,a)*inversesqrt(a2)>0.02) h0=max(h0,mix(low0,dot(a*inversesqrt(a2),view),saturate(1.0-a2/r2)));
             if(b2>0.0001 && b2<r2 && dot(n,b)*inversesqrt(b2)>0.02) h1=max(h1,mix(low1,dot(b*inversesqrt(b2),view),saturate(1.0-b2/r2)));
         }
+        // Avoid cancellation in the grazing-angle integral when no sample occludes this slice.
+        if(h0==low0 && h1==low1) {visibility+=1.0;continue;}
         float a0=clamp(-acos(clamp(h1,-1.0,1.0)),normalAngle-PI*0.5,normalAngle+PI*0.5);
         float a1=clamp( acos(clamp(h0,-1.0,1.0)),normalAngle-PI*0.5,normalAngle+PI*0.5);
         float integral0=(cosine+2.0*a0*sin(normalAngle)-cos(2.0*a0-normalAngle))*0.25;
@@ -115,21 +140,25 @@ void main() {
     vec2 receiverUv=clamp((floor(uv/u_aoScreen.xy)+vec2(0.5,0.5))*u_aoScreen.xy,
                           u_aoScreen.xy*0.5,vec2(1.0,1.0)-u_aoScreen.xy*0.5);
     vec3 p=positionAt(receiverUv);
+    vec3 n=surfaceNormal(receiverUv,p);
+    if(dot(n,n)<0.5) {gl_FragColor=vec4(1.0,1.0,1.0,1.0);return;}
     if(u_aoParams.x>0.5) {
         vec2 direction=u_aoParams.x<1.5?vec2(u_aoParams.y,0.0):vec2(0.0,u_aoParams.z);
         float sum=0.0,weight=0.0;
         for(int k=-2;k<=2;++k) {
             vec2 q=clamp(uv+direction*float(k),vec2(0.0,0.0),vec2(1.0,1.0));
             if(depthAt(q)<=0.0) continue;
-            float z=linearDepth(depthAt(q));
+            vec3 samplePosition=positionAt(q);
             float spatial=k==0?0.375:abs(k)==1?0.25:0.0625;
-            float w=spatial*exp2(-abs(z-p.z)/max(u_aoConfig.z*0.08,0.02));
+            // Same-plane neighbours remain filterable on tilted receivers;
+            // foreground silhouettes are rejected by their plane distance.
+            float planeDistance=abs(dot(samplePosition-p,n));
+            float w=spatial*exp2(-planeDistance/max(u_aoConfig.z*0.025,0.01));
             sum+=texture2DLod(s_aoInput,q,0.0).r*w;weight+=w;
         }
         float result=weight>0.0001?sum/weight:1.0;
         gl_FragColor=vec4(result,result,result,1.0);return;
     }
-    vec3 n=surfaceNormal(receiverUv,p);
     vec2 radiusUv=u_aoConfig.z*u_aoScreen.zw/(2.0*max(p.z,0.05));
     // Radius is in metres: a fixed pixel cap shrinks contact AO as the camera
     // approaches an object. Off-screen samples are rejected by sampleDelta.
