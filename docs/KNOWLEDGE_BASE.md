@@ -2490,7 +2490,10 @@ documents SSAO or NVIDIA HBAO+ over a pre-pass with real scene normals and
 uses baked vertex AO for cars and tracks; it publishes no further algorithm
 details. This host still reconstructs normals from depth and has no baked AO.
 
-Limits: a numerical model of a box on a plane (ideal normals) did not show the
-streaks before or after, so the in-game cause is not proven by it. Confirm on
-the reported views in game. Pedestrians cast no sun shadow at all (#230); the
+Validated at `b92f6c0`: Release build and `scene_shadow_gpu` (flat planes
+0 darkened pixels, contact AO kept), `render_programs_gpu` and
+`scene_mesh_cache` pass. The user retested the reported car and pedestrian
+views in game and confirmed the streaks are gone. A numerical model of a box
+on a plane with ideal normals had not reproduced them, so in-game checks are
+the reliable test for this kind of pattern artifact. Pedestrians cast no sun shadow at all (#230); the
 contact darkening under them comes only from AO.
