@@ -336,3 +336,15 @@ quality; medium/low have zero. HBAO has 37/6,640 at high and zero at lower tiers
 Contact occlusion and instanced props remain covered. These are numerical
 regressions, not a claim of full GI or temporally accumulated AO. See
 [ao-road-banding/README.md](../assets/validation/ao-road-banding/README.md).
+
+
+## Pedestrian sun shadows (#230)
+
+Skinned characters were excluded from every shadow pass, so pedestrians had no
+ground contact apart from AO. The outdoor cascades now draw visible characters
+within 100 m with the existing skinned depth program, using the same origin
+rebase as other casters. The atlas cache includes a bone-palette hash, so
+animation redraws it. Off-screen characters, point-light and interior-daylight
+fields, and the separate nearby car-depth map are unchanged. Characters now
+also receive their own shadow; receiver-plane bias is expected to keep that
+free of acne, which needs in-game confirmation.

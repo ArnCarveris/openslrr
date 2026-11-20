@@ -1099,6 +1099,15 @@ Do not collect casters using only the visible camera frustum.
 The list must respect the useful light volume. When the time of day changes,
 sun-dependent matrices and caches must be invalidated.
 
+Skinned characters (pedestrians, seated drivers) cast into the outdoor sun
+cascades only. They come from the main-view records, whose bone palettes are
+already complete; the outer shadow collection keeps skipping palette
+completion, so a character outside the camera frustum or beyond 100 m casts
+nothing. Rest-pose bounds do not describe animated limbs: cull them by the
+cascade radius, not by mesh bounds. Their caster stamp hashes the bone palette,
+so a pose change redraws the atlas. Point-light and interior-daylight fields
+still exclude skinned casters.
+
 The renderer factory always selects libbgfx for Bgfx in the supported build.
 NullBackend is retained for headless probes and tests; there is no separate
 WGL fallback. Image and font decoders do not depend on an optional renderer
