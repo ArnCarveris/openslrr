@@ -2518,3 +2518,9 @@ cull by distance, not `shadow_bounds_visible`. `u_skinBones` reads 48 matrices;
 only pass a palette of at least 48x16 floats, as the main draw does.
 Off-screen characters, point lights, interior daylight and the car-depth map
 still ignore skinned casters.
+
+Validated in game by the user together with the AO tile fix: pedestrians cast
+sun shadows in ValoCity and no AO streaks appear around them or the car. A
+build without the AO fix showed the streaks again, which is a quick way to tell
+the two problems apart. No skinned-caster GPU regression or `--perf-log`
+measurement exists yet.
