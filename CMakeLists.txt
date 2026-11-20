@@ -44,6 +44,7 @@ add_executable(slrr_host
   src/platform/game_root.cpp
   src/platform/frame_profiler.cpp
   src/platform/host_input.cpp
+  src/platform/host_clipboard.cpp
   src/platform/host_sfx.cpp
   src/platform/host_music.cpp
   src/platform/host_game_options.cpp

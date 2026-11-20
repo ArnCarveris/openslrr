@@ -201,7 +201,9 @@ minimum and maximum, the CPU time of renderer phases (collection, prop
 batches, lamp selection, sun/vehicle/lamp shadows, fixture shadows, AO,
 reflections, submission), draws, primitives, instances, batches, texture and
 render-target memory; **Freeze**, **Copy to clipboard** and **Log** take a
-snapshot. **Passes** and **Budgets and quality** are debug overrides that are
+snapshot. **Log** also appends it to `perf/renderer_debug_YYYYMMDD_HHMMSS.txt`
+next to `slrr_host.exe` (for example `build/Release/perf/`); the menu shows
+the path. **Passes** and **Budgets and quality** are debug overrides that are
 not saved: AO, each sun cascade, shadow caching, vehicle and character
 casters, garage fixture shadows, street lamp lighting and shadows, car lamp
 tiles, reflections, sky, clouds, fog, MSAA, anisotropic filtering, map props,

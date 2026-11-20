@@ -2906,6 +2906,17 @@ city at night.
   buffer), Session and host, Options (saved). View names come from
   `src/render/render_debug.hpp:render_debug_view_name`; views 128–135 are the
   fixture or lamp tiles, 136 the car lamp tiles, 140–143 AO.
+- Clipboard and log: bgfx's Dear ImGui build defines
+  `IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS` (bgfx `imconfig.h`), so
+  `ImGui::SetClipboardText` only filled an in-process buffer and Copy never
+  reached Windows (user report on PR #244). `src/platform/host_clipboard.cpp:host_clipboard_set_text`
+  writes CF_UNICODETEXT; `DebugOverlay::draw` installs it, with
+  `host_clipboard_get_text`, as the ImGui platform clipboard after
+  `imguiCreate`, and the Copy button calls it directly
+  (`tests/test_host_clipboard.cpp` round-trips UTF-8 and restores the previous
+  text). Log prints to stdout and appends to
+  `perf/renderer_debug_YYYYMMDD_HHMMSS.txt` beside the executable
+  (`src/render/debug_overlay.cpp:write_render_dump`); the menu shows the path.
 - CPU zones added to `include/slrr/frame_profiler.hpp` (also new `--perf-log`
   CSV columns): `CollectBatches` (inside Collect), `SunShadows`, `CarDepth`,
   `LampShadows` (inside Shadows), `FixtureShadows`, `LampSelect`,

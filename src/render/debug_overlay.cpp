@@ -1,6 +1,7 @@
 #include "debug_overlay.hpp"
 #include "slrr/frame_profiler.hpp"
 
+#include "slrr/host_clipboard.hpp"
 #include "slrr/host_game_options.hpp"
 #include "slrr/host_input.hpp"
 #include "slrr/host_sfx.hpp"
@@ -18,6 +19,9 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -211,15 +215,45 @@ std::string render_timing_dump() {
   return out;
 }
 
+// Writes the snapshot next to the executable, in perf/ (#243). Returns the
+// path, or an error text.
+std::string write_render_dump(const std::string& text) {
+  wchar_t module[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+  std::error_code error;
+  auto directory = length ? std::filesystem::path(module).parent_path() / "perf"
+                          : std::filesystem::current_path(error) / "perf";
+  std::filesystem::create_directories(directory, error);
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+  localtime_s(&local, &now);
+  char name[64];
+  std::strftime(name, sizeof(name), "renderer_debug_%Y%m%d_%H%M%S.txt", &local);
+  const auto path = directory / name;
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  if (!out) return "cannot write " + path.string();
+  out << text << "\n";
+  return out ? path.string() : "cannot write " + path.string();
+}
+
 void draw_render_timings() {
   auto& t = render_timings();
+  static std::string status;
   ImGui::Checkbox("Freeze", &t.frozen);
   ImGui::SameLine();
-  if (ImGui::Button("Copy to clipboard")) ImGui::SetClipboardText(render_timing_dump().c_str());
+  if (ImGui::Button("Copy to clipboard"))
+    status = host_clipboard_set_text(render_timing_dump()) ? "Copied to the clipboard."
+                                                           : "Clipboard unavailable.";
   ImGui::SameLine();
-  if (ImGui::Button("Log")) std::printf("[render-debug]\n%s", render_timing_dump().c_str());
+  if (ImGui::Button("Log")) {
+    const auto text = render_timing_dump();
+    std::printf("[render-debug]\n%s", text.c_str());
+    std::fflush(stdout);
+    status = "Written to " + write_render_dump(text);
+  }
   ImGui::SameLine();
   if (ImGui::Button("Clear")) t = {};
+  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
   ImGui::Text("Frame %.2f ms (min %.2f, max %.2f) | GPU %.2f ms | render thread %.2f ms",
               t.frame.average(), t.frame.minimum(), t.frame.maximum(), t.gpu.average(),
               t.render_thread.average());
@@ -625,6 +659,17 @@ void DebugOverlay::draw(HWND hwnd, uint16_t width, uint16_t height, const char* 
   if (!initialized_) {
     imguiCreate();
     ImGui::GetIO().IniFilename = nullptr;
+    // bgfx's Dear ImGui build disables the Win32 clipboard, so Ctrl+C and
+    // SetClipboardText only reached an in-process buffer (#243).
+    auto& platform = ImGui::GetPlatformIO();
+    platform.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) {
+      host_clipboard_set_text(text ? text : "");
+    };
+    platform.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
+      static std::string text;
+      text = host_clipboard_get_text();
+      return text.c_str();
+    };
     initialized_ = true;
   }
   POINT point{};
