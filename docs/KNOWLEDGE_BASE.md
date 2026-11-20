@@ -2469,3 +2469,31 @@ so `copy.id()` aliases the copy and the instance inherits its replacement.
 texture as a flat picture over the slot's hit box, and destroying the instance
 removes it. The button mesh itself is not drawn.
 Projection/preview behavior remains the host approximation described above.
+
+### AO silhouette streaks around cars and pedestrians (#201)
+
+Reported at `905dee4`: with HBAO or GTAO on, dark lines spread on the
+ground beside cars (rear wheel, bumper) and pedestrians' legs; AO Off removes
+them. Both methods in `shaders/fs_ao.sc` sampled every receiver at the same
+radial distances (`(k+0.75)/steps`), and only varied the direction rotation
+with interleaved gradient noise. That hash is built for temporal accumulation,
+which this AO does not have; on its own it varies slowly along diagonals. The
+5-tap Gaussian filter could not remove either pattern, so the occluder's
+outline appeared as shifted copies on the ground.
+
+The main pass now takes rotation and step offset from a 4x4 tile
+(`shaders/fs_ao.sc:hbao`, `shaders/fs_ao.sc:gtao`), and the separable filter
+uses [1,2,2,2,1]/8, one full tile period. This follows the HBAO+ approach
+(per-texel rotation and jitter from a small tile, then a matched blur).
+Assetto Corsa's Custom Shaders Patch, which the user named as a reference,
+documents SSAO or NVIDIA HBAO+ over a pre-pass with real scene normals and
+uses baked vertex AO for cars and tracks; it publishes no further algorithm
+details. This host still reconstructs normals from depth and has no baked AO.
+
+Validated at `b92f6c0`: Release build and `scene_shadow_gpu` (flat planes
+0 darkened pixels, contact AO kept), `render_programs_gpu` and
+`scene_mesh_cache` pass. The user retested the reported car and pedestrian
+views in game and confirmed the streaks are gone. A numerical model of a box
+on a plane with ideal normals had not reproduced them, so in-game checks are
+the reliable test for this kind of pattern artifact. Pedestrians cast no sun shadow at all (#230); the
+contact darkening under them comes only from AO.

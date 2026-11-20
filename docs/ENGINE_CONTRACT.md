@@ -1069,6 +1069,12 @@ for individual, skinned and instanced depth draws. Use the actual reversed
 projection coefficients when reconstructing positions; do not reinterpret the
 main-view field as normal-Z. AO radius stays in world metres; a fixed pixel
 cap must not shrink it when approaching a receiver.
+Per-texel sampling variation is a 4x4 tile: each texel of a block has its own
+direction rotation and radial step offset, and the two filter passes use
+[1,2,2,2,1]/8 weights, which average exactly one tile period on a flat
+receiver. Do not reintroduce fixed step distances or a non-periodic per-pixel
+hash (such as interleaved gradient noise) without temporal accumulation: both
+leave occluder silhouettes stamped on the ground as parallel streaks.
 Only main-view opaque indirect diffuse is attenuated. Direct sun/lamps, emission,
 transparent glass, preview/inset views, cubemap captures and UI opt out. Off or
 zero strength destroys the AO targets; resizing/quality changes recreate them.
