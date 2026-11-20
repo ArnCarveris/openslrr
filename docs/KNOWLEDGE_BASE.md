@@ -3103,3 +3103,20 @@ city at night.
     props. That matches the +0.3 ms of collection seen in game. Testing the
     LOD before the frustum test, caching the level per placement and frame, or
     keeping per-LOD lists would remove it.
+
+### LOD selection cost in collection (#257)
+
+- `src/resources/scene_instances.cpp:prop_lod_visible` now computes a
+  placement's level once per updating LOD view: `scene_instances_set_lod_view`
+  bumps `g_lod_epoch` when `update` is set, `PlacementLod::epoch` records the
+  epoch of the stored level, and the second chain member and the other
+  collection path reuse it. The batch path tests the LOD before the frustum
+  sphere, so the non-selected chain member costs one lookup. Levels are now
+  also refreshed for placements in visible cells outside the view frustum,
+  which keeps off-screen casters consistent.
+- Harness (`tests/test_prop_lod.cpp`, Valo City, street-level 60° frustum,
+  no size filter, 60 frames): collection 0.56–0.58 ms with the highest LOD
+  only; with LOD 0.60–0.63 ms before this change and 0.59–0.61 ms after
+  (noisy, ±0.2 ms on a loaded machine). LOD selection itself costs about
+  0.03–0.05 ms here, so the +0.3 ms of collection seen in game at #252 is
+  mostly not LOD selection; it is within frame-to-frame noise of that zone.
