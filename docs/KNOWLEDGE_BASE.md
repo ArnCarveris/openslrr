@@ -2686,8 +2686,9 @@ inventing new Java classes.
   `build/garage-59.class` (`git cat-file blob 6171aa2:patch/sl/Scripts/game/Garage.class`) the test also compares all 43 `CMD_*` commands: none
   differs from the #59 class in whether it saves.
   Validated in game by the user in the g1 garage at `df7117f` (20 November
-  2026): the nine script fittings light the garage as before. g2 and g3 are
-  not validated in game yet.
+  2026): the nine script fittings light the garage as before. g1, g2 and g3
+  validated in game by the user at `2f904ac` (20 November 2026): glowing tubes
+  and intensity 30 / range 26 m accepted (24 was too dim, 48 and 36 too bright).
 - Phase 2 (not done): stock light resources (type 13) and cfg `render` light
   children for street lamps and scenery objects; per-light spot shadows and inner
   cone; outside-garage rendering.
