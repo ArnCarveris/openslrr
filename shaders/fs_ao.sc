@@ -64,7 +64,7 @@ vec3 sampleDelta(vec2 uv,vec3 p) {
         return vec3(0.0,0.0,0.0);
     return positionAt(uv)-p;
 }
-float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
+float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
     int directions=u_aoConfig.y<0.5?4:u_aoConfig.y<1.5?6:8;
     int steps=u_aoConfig.y<0.5?3:u_aoConfig.y<1.5?4:6;
     float sum=0.0,r2=u_aoConfig.z*u_aoConfig.z;
@@ -75,7 +75,7 @@ float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
         float horizon=0.05;
         for(int k=0;k<6;++k) {
             if(k>=steps) break;
-            float distance=(float(k)+0.75)/float(steps);distance*=distance;
+            float distance=(float(k)+jitter)/float(steps);distance*=distance;
             vec3 delta=sampleDelta(uv+direction*distance,p);
             float d2=dot(delta,delta);
             if(d2<0.0001 || d2>r2) continue;
@@ -90,7 +90,7 @@ float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
 // Ground-truth AO slice integral (Jimenez et al. 2016), independently expressed
 // for bgfx. The projected normal and two horizon angles define each cosine-
 // weighted visible arc. No vendor SDK, temporal history or deinterleaving.
-float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
+float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
     int slices=u_aoConfig.y<0.5?2:u_aoConfig.y<1.5?3:4;
     int steps=u_aoConfig.y<0.5?4:u_aoConfig.y<1.5?6:8;
     vec3 view=normalize(-p);float visibility=0.0,r2=u_aoConfig.z*u_aoConfig.z;
@@ -109,7 +109,7 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
         float h0=low0,h1=low1;
         for(int k=0;k<8;++k) {
             if(k>=steps) break;
-            float distance=(float(k)+0.75)/float(steps);distance*=distance;
+            float distance=(float(k)+jitter)/float(steps);distance*=distance;
             vec2 offset=screenDirection*radiusUv*distance;
             vec3 a=sampleDelta(uv+offset,p),b=sampleDelta(uv-offset,p);
             float a2=dot(a,a),b2=dot(b,b);
@@ -149,7 +149,11 @@ void main() {
             vec2 q=clamp(uv+direction*float(k),vec2(0.0,0.0),vec2(1.0,1.0));
             if(depthAt(q)<=0.0) continue;
             vec3 samplePosition=positionAt(q);
-            float spatial=k==0?0.375:abs(k)==1?0.25:0.0625;
+            // [1,2,2,2,1]/8 spans exactly one 4-texel noise period, so a flat
+            // receiver averages all sixteen rotation/jitter cells after both
+            // passes. A Gaussian leaves the per-pixel pattern visible as
+            // streaks along occluder silhouettes.
+            float spatial=abs(k)==2?0.125:0.25;
             // Same-plane neighbours remain filterable on tilted receivers;
             // foreground silhouettes are rejected by their plane distance.
             float planeDistance=abs(dot(samplePosition-p,n));
@@ -162,7 +166,15 @@ void main() {
     vec2 radiusUv=u_aoConfig.z*u_aoScreen.zw/(2.0*max(p.z,0.05));
     // Radius is in metres: a fixed pixel cap shrinks contact AO as the camera
     // approaches an object. Off-screen samples are rejected by sampleDelta.
-    float rotation=fract(52.9829189*fract(dot(floor(uv/u_aoParams.yz),vec2(0.06711056,0.00583715))));
-    float visibility=u_aoConfig.x<1.5?hbao(receiverUv,p,n,radiusUv,rotation):gtao(receiverUv,p,n,radiusUv,rotation);
+    // HBAO+-style 4x4 tile: every texel of a 4x4 block gets a distinct
+    // direction rotation and a distinct radial step offset. With fixed step
+    // distances every receiver sampled the same rings, so a car or pedestrian
+    // silhouette was stamped as parallel copies on the ground (reported
+    // streaks). The separable [1,2,2,2,1]/8 filter passes remove the tile.
+    vec2 cell=mod(floor(uv/u_aoParams.yz),4.0);
+    float index=dot(cell,vec2(1.0,4.0));
+    float rotation=(mod(index*5.0,16.0)+0.5)/16.0;
+    float jitter=(mod(dot(cell,vec2(4.0,1.0))+5.0,16.0)+0.5)/16.0;
+    float visibility=u_aoConfig.x<1.5?hbao(receiverUv,p,n,radiusUv,rotation,jitter):gtao(receiverUv,p,n,radiusUv,rotation,jitter);
     gl_FragColor=vec4(visibility,visibility,visibility,1.0);
 }
