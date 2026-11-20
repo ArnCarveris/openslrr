@@ -90,7 +90,8 @@ inline bool same_material(const ScxGroup &a, const ScxGroup &b) {
                     std::begin(b.diffuse)) &&
          std::equal(std::begin(a.specular), std::end(a.specular),
                     std::begin(b.specular)) &&
-         a.shininess == b.shininess;
+         a.shininess == b.shininess &&
+         a.self_illuminated == b.self_illuminated;
 }
 inline void merge_scene_materials(SceneMeshUpload &upload,
                                   const ScxGeometry &source) {

@@ -143,9 +143,9 @@ are both shipped in patch/sl/Scripts/game; no new native signature was added.
 
 ## AO and shadow controls
 
-The same OptionsDialog getters/setters add integer IDs 7–12: AO method
-(0 off, 1 HBAO, 2 GTAO), AO quality, shadow quality, shadow smoothing (each 0–2),
-AO strength (0–200 percent), and AO radius (25–300 cm). Setters clamp values and
+The same OptionsDialog getters/setters add integer IDs 7â€“12: AO method
+(0 off, 1 HBAO, 2 GTAO), AO quality, shadow quality, shadow smoothing (each 0â€“2),
+AO strength (0â€“200 percent), and AO radius (25â€“300 cm). Setters clamp values and
 save immediately through host graphics persistence. Missing/malformed keys retain
 defaults; stock Config binary layout is unchanged. Menu source and compiled TUFA
 container ship together. Defaults are AO off, medium qualities, soft shadows,

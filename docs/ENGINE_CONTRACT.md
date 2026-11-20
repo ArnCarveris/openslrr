@@ -900,7 +900,8 @@ with a 65-degree inner and 80-degree outer half-angle. Captured scenery and
 vehicle diffuse/specular use the same inverse-square, radial/cone falloff and
 per-source shadow visibility. These are broad punctual approximations to the
 fittings, not area lights. Local/dynamic-light options and world transitions
-clear/reselect the records. The 15% legacy ambient remains an explicit fill;
+clear/reselect the records. Garage fixtures are gated by Local lights (option 4)
+only; Map sunlight (option 3) must not switch them off (#233). The 15% legacy ambient remains an explicit fill;
 when fixtures are present the point compatibility record supplies ambient only
 (zero direct intensity), suppressing the old directional neon contribution.
 
@@ -1051,7 +1052,7 @@ Startup reports each failed program as `[bgfx] program <name> failed to link`.
 
 Ambient occlusion uses a separate camera-matched reversed-Z D32F prepass in view
 140, then R8 horizon evaluation and separable depth-aware filtering in views
-141–143 before the main world draw. It does not replace the swapchain or require
+141â€“143 before the main world draw. It does not replace the swapchain or require
 a colour post-process chain. Low/medium AO use half resolution; high full.
 HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.
 Reconstruct sample positions at the exact depth texel centres, including the
@@ -1091,8 +1092,13 @@ and interior sunlight, Sharp uses a narrow continuous four-tap edge (never raw
 nearest-texel visibility), Soft uses bilinear four-tap coverage, and Very Soft
 uses a fractional 4x4 tent. Do not snap the wider filter to the nearest depth
 texel: this creates square coverage jumps. Fixture taps stay inside their atlas tile.
+Outdoor cascade receiver-plane gradients are clamped per cascade to a 20-unit
+world slope converted to normalized depth (`extent/(extent+768)`, #233). A pixel
+quad that straddles two surfaces (pole on ground, kerb, wall/floor crease) must
+not extrapolate wide filter taps against distant depths. Fixture and interior-sun
+gradients are not clamped yet.
 Options
-persist alongside host graphics; OptionsDialog native IDs 7–12 and debug UI agree.
+persist alongside host graphics; OptionsDialog native IDs 7â€“12 and debug UI agree.
 
 The active world renders to the swap chain. No offscreen scene-copy or HiZ depth
 pyramid is wired into the frame path; the unused implementations are removed.

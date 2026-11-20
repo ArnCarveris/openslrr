@@ -2524,3 +2524,25 @@ sun shadows in ValoCity and no AO streaks appear around them or the car. A
 build without the AO fix showed the streaks again, which is a quick way to tell
 the two problems apart. No skinned-caster GPU regression or `--perf-log`
 measurement exists yet.
+
+### Rendering foundation review findings (#233)
+
+Fixes from the `antomys` review of PR #202:
+
+- Batched props (trees, fences, street furniture) occlude in the AO prepass, so
+  they must also receive it. The prop path in
+  `src/render/bgfx_lighting.cpp:bind_ambient_occlusion` callers now binds AO
+  with `view_id == ao_world_view_`; before, `fs_mesh` read whatever
+  `u_aoSampling` the previous draw left.
+- `src/render/bgfx_lib_backend.cpp:update_local_light` is gated on
+  `local_lights` only. Gating it on `dynamic_lighting` (Map sunlight) removed the
+  garage fixtures and their point shadow with sunlight off, unlike `main`.
+- `shaders/scene_shadow.sh:clampReceiverGradient` caps the outdoor cascade
+  receiver-plane gradient. The old `receiverBias` capped it at 0.004; without a
+  cap, quads straddling two surfaces can produce thin leaks or dark fringes.
+  The limit is a 20-unit world slope times `extent/(extent+768)`, matching the
+  ortho depth range in `src/render/shadow_cascades.hpp:shadow_projection`.
+- `src/render/scene_mesh_data.hpp:same_material` compares `self_illuminated`,
+  so emissive and non-emissive parts are not merged.
+- Some docs held raw 0x96 bytes (Windows-1252 en dash), which is invalid UTF-8.
+  Check with `grep -P '\x96'` before committing.
