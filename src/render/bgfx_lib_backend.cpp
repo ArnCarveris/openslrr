@@ -570,7 +570,8 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     const float box = std::max(radius * std::fabs(cull_proj_[0]) / ahead * static_cast<float>(width_),
                                 radius * std::fabs(cull_proj_[5]) / ahead * static_cast<float>(height_));
     // Specks go. A building of a few metres still covers the screen at range.
-    return box >= 2.f;
+    // Default 4 px (#252, was 2); the debug menu overrides it.
+    return box >= std::clamp(render_debug().far_cull_px, 0.f, 64.f);
   }
 
   namespace {
@@ -1103,6 +1104,13 @@ void LibBgfxBackend::cache_scene_mesh(
     scene_instances_set_size_filter(inset ? nullptr : &LibBgfxBackend::screen_size_keep, this);
     const auto frustum = view_frustum(view, projection);
     std::vector<std::shared_ptr<const ScxGeometry>> resident_props;
+    // Map prop LOD from the main camera (#252); the other passes reuse it.
+    ScenePropLodView lod_view;
+    lod_view.eye = {cull_eye_[0], cull_eye_[1], cull_eye_[2]};
+    lod_view.bias = render_debug().lod_bias;
+    lod_view.force_highest = render_debug().force_highest_lod;
+    lod_view.update = lod_view.valid = true;
+    scene_instances_set_lod_view(lod_view);
     instances_ = scene_instances_collect(&frustum, &resident_props);
     prop_batches_.clear();
     {
@@ -1110,6 +1118,8 @@ void LibBgfxBackend::cache_scene_mesh(
       if (render_debug().map_props)
         scene_instances_collect_batches(&frustum, prop_batches_);
     }
+    lod_view.update = false;
+    scene_instances_set_lod_view(lod_view);
     // Debug toggles (#243): removing the records removes every pass they feed.
     {
       const auto& overrides = render_debug();

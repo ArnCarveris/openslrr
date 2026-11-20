@@ -208,8 +208,9 @@ not saved: AO, each sun cascade, shadow caching, vehicle and character
 casters, garage fixture shadows, street lamp lighting and shadows, car lamp
 tiles, reflections, sky, clouds, fog, MSAA, anisotropic filtering, map props,
 vehicles, characters and the OSD; lamp count and distance, shadowed lamps, car
-lamp tiles, shadow tile sizes, cascade radius scale, AO resolution and
-reflection faces per frame. **Buffers** shows the lamp/fixture shadow atlas,
+lamp tiles, shadow tile sizes, cascade radius scale, AO resolution,
+reflection faces per frame, map prop LOD bias, forcing the highest prop LOD,
+and the far size cull (4 px by default). **Buffers** shows the lamp/fixture shadow atlas,
 the sun cascade atlas and the AO buffer. **Options (saved)** holds the saved
 Enhanced graphics options as before.
 

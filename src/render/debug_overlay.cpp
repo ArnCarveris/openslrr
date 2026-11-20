@@ -395,6 +395,9 @@ void draw_render_budgets(DebugOverlay::RenderOptions& options) {
   ImGui::SliderFloat("Cascade radius scale", &o.cascade_scale, .25f, 4.f, "%.2fx");
   ImGui::SliderFloat("AO resolution scale (2 = full res)", &o.ao_resolution_scale, .25f, 2.f, "%.2fx");
   ImGui::SliderInt("Reflection faces per frame (0 freezes)", &options.reflection_faces, 0, 6);
+  ImGui::SliderFloat("Prop LOD bias", &o.lod_bias, .25f, 4.f, "%.2fx");
+  ImGui::Checkbox("Force highest prop LOD", &o.force_highest_lod);
+  ImGui::SliderFloat("Far size cull (px, beyond 40 m)", &o.far_cull_px, 0.f, 16.f, "%.1f");
   if (ImGui::Button("Reset debug overrides")) o = {};
 }
 
