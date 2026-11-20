@@ -1108,13 +1108,16 @@ void LibBgfxBackend::cache_scene_mesh(
     lod_view.force_highest = render_debug().force_highest_lod;
     lod_view.update = lod_view.valid = true;
     scene_instances_set_lod_view(lod_view);
-    instances_ = scene_instances_collect(&frustum, &resident_props);
-    prop_batches_.clear();
+    // prop_batches_ keeps its layout and vector capacity from frame to frame
+    // (#260).
     {
       perf::Scope batch_scope(perf::Zone::CollectBatches);
       if (render_debug().map_props)
         scene_instances_collect_batches(&frustum, prop_batches_);
+      else
+        prop_batches_.clear();
     }
+    instances_ = scene_instances_collect(&frustum, &resident_props);
     lod_view.update = false;
     scene_instances_set_lod_view(lod_view);
     // Debug toggles (#243): removing the records removes every pass they feed.
@@ -1340,9 +1343,12 @@ void LibBgfxBackend::publish_debug_stats() {
     }
     auto& stats = render_debug_stats();
     stats.instances = uint32_t(instances_.size());
-    stats.batches = uint32_t(prop_batches_.size());
+    stats.batches = 0;
     stats.batch_instances = 0;
-    for (const auto& batch : prop_batches_) stats.batch_instances += uint32_t(batch.instances.size());
+    for (const auto& batch : prop_batches_) {
+      stats.batches += batch.instances.empty() ? 0u : 1u;  // the layout keeps empty slots (#260)
+      stats.batch_instances += uint32_t(batch.instances.size());
+    }
     stats.lamps_registered = uint32_t(scenery_lights_count());
     stats.lamps_lit = uint32_t(scenery_lamps_.size());
     stats.lamps_shadowed = uint32_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),

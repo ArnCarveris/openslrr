@@ -245,18 +245,30 @@ SLRR_TEST(valo_city_lod_statistics) {
       view_lod.force_highest = force_highest;
       size_t records = 0;
       constexpr int runs = 60;
-      double total = 0;
+      double total = 0, checksum = 0;
+      // As in the renderer: a frame cache around each frame and one batch
+      // vector kept across frames (LibBgfxBackend::prop_batches_).
+      std::vector<SceneBatch> batches;
       for (int i = 0; i < runs; ++i) {
         view_lod.update = true;  // one main-view collection per frame
+        scene_instances_frame_cache(true);
         scene_instances_set_lod_view(view_lod);
         const auto start = std::chrono::steady_clock::now();
-        std::vector<SceneBatch> batches;
-        const auto instances = scene_instances_collect(&frustum);
+        // Renderer order (#260): batches, then instances.
         scene_instances_collect_batches(&frustum, batches);
+        const auto instances = scene_instances_collect(&frustum);
         total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        scene_instances_frame_cache(false);
         records = instances.size();
-        for (const auto &batch : batches) records += batch.instances.size();
+        checksum = 0;
+        for (const auto &instance : instances) checksum += instance.transform[12] + instance.transform[14];
+        for (const auto &batch : batches) {
+          records += batch.instances.size();
+          for (const auto &placement : batch.instances)
+            checksum += placement.transform[12] + 2.0 * placement.transform[14] + placement.transform[0];
+        }
       }
+      std::printf("  collection checksum %.6f\n", checksum);
       return std::pair{total / runs, records};
     };
     for (int round = 0; round < 2; ++round) {
