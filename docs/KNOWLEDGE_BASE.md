@@ -2550,3 +2550,40 @@ Fixes from the `antomys` review of PR #202:
 Validated in game by the user at `bbcb39c` (20 November 2026), after checking
 the garage with Map sunlight off, prop AO and shadow edges near poles and kerbs.
 No `--perf-log` measurement exists for these changes.
+
+### Stock light resources and placement (#235)
+
+Survey of the stock game plus the `DestructionTools` and `MW_Mod` RPKs
+(20 November 2026, read-only scan of the game root). The game already has a
+complete authored light model; an explicit light API should consume it before
+inventing new Java classes.
+
+- Light resources are RPK type 13 (`RESTYPE_RENDER_LIGHT` in the game's
+  `ResourceRef.java`), text payloads. 89 entries: 35 `spot`, 27 `fakespot`,
+  15 `directional`, 5 `fakepoint`, 2 `point`, 1 `fake point` (with a space),
+  4 base classes without a `type` line.
+- Common keywords: `type`, `diffuse a r g b`, `specular`, `ambient`,
+  `position x y z`, `direction x y z`, `range f`, usually `attenuation c l q`
+  (`1 .03 0` or `0 0 0`). Spot and fake lights add `theta`/`phi` cone angles
+  (radians, e.g. 1.896/2.02), `lit_dynamic 1`, `attH_texture`/`attV_texture`
+  (0x80000000 = none), and a flare set `lf_*` (note the `lenght` spelling).
+- Parser pitfalls: inline `//` comments (`type spot // thatis`), commented-out
+  lines, non-zero `position` on directional lights (garage `0 3 0`).
+- `src/natives/natives_renderref.cpp:apply_directional_light` only reads
+  directional lights (diffuse/ambient/specular/direction). Range, attenuation,
+  cone, `lit_dynamic`, `fake*` and `lf_*` are not parsed anywhere yet.
+- Placement: lights are render children in part/car/scenery cfgs,
+  `render <light id> <pos xyz> <ypr>`, then `flags <group>` and optionally
+  `colors 1 0xAARRGGBB`. 99 car/part cfgs do this. Group bits from cfg comments:
+  1 brake, 2 reversing, 4 city (headlights/streetlights), 8 police/siren,
+  16/32 indicators, 256 nitro; combinations exist.
+- Scenery: `objects.rpk` lamps (`0x18C` kislampa, `0x18E` lamp_base) place the
+  `0x1C7` street point light (range 500); `0x18F`/`0x191` use `0x16`
+  `fake point`. `0x1D7` trafficlamp is an ICFG with a separate
+  `light <id> ...` + `color` syntax.
+- Java: only directional lights are created from scripts (Garage.java duplicates
+  `misc.garage:0x001D` as "neon", CarLot uses `0x0025`, Scene.java the skydome
+  sun with `setLight`/`setFlare`). No Java creates headlights; lamp state is
+  engine-driven (time of day, car state).
+- The `fake*` types look like flare/glow-only lights that do not light the
+  scene. Not confirmed against the original engine.
