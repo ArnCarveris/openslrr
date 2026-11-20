@@ -81,7 +81,8 @@ garage is outdoors and gets none. The engine draws them with the Enhanced
 local-light path, so **Local lights** must be on. Without the patched classes the
 engine places the same fittings itself in the three garages. The tube faces
 glow in every garage. Brightness is set per garage in `createFixtures`
-(intensity 48, range 26 m by default; 24 / 20 m before).
+(intensity 36, range 26 m by default: 1.5× the first intensity of 24, whose
+range was 20 m).
 
 | Class | Use |
 | --- | --- |

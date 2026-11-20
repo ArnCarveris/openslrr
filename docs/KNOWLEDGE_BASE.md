@@ -2644,10 +2644,13 @@ inventing new Java classes.
     colour and no emission mask, and the same tube-shape and pairing rules pick
     the faces. Its anchors equal the Garage.java tables in all three garages, so
     without the patch g2 and g3 get the same fallback lights as g1.
-  - Brightness: Garage.java sets intensity 48 and range 26 m per garage
-    (`createFixtures`; first version 24 / 20 m). In the GPU test the floor that
-    was dim before (gain under 60 in an 8-bit capture) brightens about 2.2×
-    (g1 47→112, g2 54→123, g3 55→105); brighter areas clip in the capture.
+  - Brightness: Garage.java sets intensity 36 and range 26 m per garage
+    (`createFixtures`). History, all user feedback in game: 24 / 20 m too dim,
+    48 / 26 m (`c07d99c`) too bright, then 1.5× the original intensity with the
+    26 m range kept. In the GPU test the floor that was dim at 24 / 20 m (gain
+    under 60 in an 8-bit capture) brightens about 1.7× (g1 47→87, g2 54→93,
+    g3 55→91; 48 / 26 m gave 112, 123, 105). Brighter areas clip in the
+    capture. The tube glow does not depend on these values.
 - Renderer: registry lights replace the adapter whenever one has a drawn parent,
   even when disabled. Limits: one point light, 12 fixtures, inner cone fixed at
   65° by `shaders/scene_shadow.sh`, fixture shadows all-or-nothing, rect drawn as

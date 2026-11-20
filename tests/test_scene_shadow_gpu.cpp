@@ -950,7 +950,7 @@ struct SceneShadowRegression {
       std::vector<Object> lights(room.anchors.size());
       // Garage.java's brightness for every garage (the first version used the
       // registry defaults, 24 and 20 m).
-      constexpr float intensity = 48.f, range = 26.f;
+      constexpr float intensity = 36.f, range = 26.f;
       for (size_t i = 0; i < lights.size(); ++i) {
         SLRR_REQUIRE(script_lights_create(&lights[i], &stuff, ScriptLightKind::Spot));
         auto* light = script_lights_get(&lights[i]);
@@ -1056,11 +1056,11 @@ struct SceneShadowRegression {
       gain_before /= std::max(floor_pixels, 1u);
       dim /= std::max(dim_pixels, 1u);
       dim_before /= std::max(dim_pixels, 1u);
-      std::printf("GARAGE 0x%x script fittings=%zu lit floor pixels=%u/%u mean floor gain 24/20m=%.1f 48/26m=%.1f;"
+      std::printf("GARAGE 0x%x script fittings=%zu lit floor pixels=%u/%u mean floor gain 24/20m=%.1f 36/26m=%.1f;"
                   " dim floor (%u px) %.1f -> %.1f\n", room.ground, fixtures.size(), pixels, floor_pixels,
                   gain_before, gain, dim_pixels, dim_before, dim);
       SLRR_REQUIRE(pixels > 100 && gain >= gain_before);
-      SLRR_REQUIRE(!dim_pixels || dim > dim_before * 1.5);
+      SLRR_REQUIRE(!dim_pixels || dim > dim_before * 1.3);
       // The tube faces keep their texture without any light (#235): white.
       auto tubes = std::make_shared<ScxGeometry>(*mesh);
       tubes->indices.clear(); tubes->groups.clear();
