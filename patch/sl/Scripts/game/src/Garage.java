@@ -338,12 +338,12 @@ public class Garage extends Scene implements GameState
 	void createFixtures( int index )
 	{
 		// Per-garage brightness: intensity in engine units, range in metres.
-		// First version 24 / 20 m (too dim), then 48 / 26 m (too bright).
-		float intensity = 36.0, range = 26.0;
+		// First version 24 / 20 m (too dim), then 48 / 26 m (too bright), 36 / 26 m.
+		float intensity = 30.0, range = 26.0;
 		if( index == 0 )
 		{
 			// garazs_01_targyak.scx, group texturak: 9 fittings
-			intensity = 36.0; range = 26.0;
+			intensity = 30.0; range = 26.0;
 			fixtures = new SpotLight[9];
 			fixtures[0] = createFixture( -14.05739, 6.43138,   5.03007, intensity, range );
 			fixtures[1] = createFixture(  -8.68388, 6.43138,   5.03007, intensity, range );
@@ -359,7 +359,7 @@ public class Garage extends Scene implements GameState
 		if( index == 1 )
 		{
 			// garazs2_targyak.scx, group neon: 10 fittings
-			intensity = 36.0; range = 26.0;
+			intensity = 30.0; range = 26.0;
 			fixtures = new SpotLight[10];
 			fixtures[0] = createFixture(  -7.04596, 5.42426,  -3.26745, intensity, range );
 			fixtures[1] = createFixture(  -7.04596, 5.42426,   4.32187, intensity, range );
@@ -376,7 +376,7 @@ public class Garage extends Scene implements GameState
 		if( index == 2 )
 		{
 			// garazs3targyak.scx, group Material #11345: 12 fittings
-			intensity = 36.0; range = 26.0;
+			intensity = 30.0; range = 26.0;
 			fixtures = new SpotLight[12];
 			fixtures[0] = createFixture( -12.53611, 5.69371,  -0.75343, intensity, range );
 			fixtures[1] = createFixture(  20.72244, 5.52448,   6.01213, intensity, range );

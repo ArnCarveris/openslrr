@@ -1208,7 +1208,7 @@ script can turn the garage dark. Without registry lights the adapter path is
 unchanged. While script lights own the scene, including when all of them are
 disabled, the neon point record stays ambient-only (intensity 0, no shadows).
 The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 10
-and 12 lights, intensity 36, range 26 m, set per garage in its fixture tables);
+and 12 lights, intensity 30, range 26 m, set per garage in its fixture tables);
 the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
 
