@@ -359,6 +359,15 @@ See `ptx_image.cpp`.
 and children. A type resource is not its live instance. A script alias and
 reference wrappers do not justify duplicating the underlying object.
 
+Painter textures (#64) are host images with ids `0xFFFFxxxx`
+(`paint_texture.hpp`). A part shows one through its `Part.setTexture` value
+like a pack texture; it is drawn into only while that part alone shows it,
+and it is reclaimed after three host frames without a part, native resource
+wrapper or open save reader using it. `ResourceRef.makeTexture` file textures
+have live native handles; their pixels are embedded the same way on save.
+Painter textures are saved as
+type-7 blobs, never as pack references; see §15.
+
 `scene_instances_collect` produces the instances to draw for the selected
 world. Geometry can be shared. Pose, color, and texture replacements are
 instance properties. Avoid modifying shared geometry to fix a single car.
@@ -373,7 +382,8 @@ An active camera with a non-null viewport may render only while that viewport
 exists and is active. `Viewport.deactivate` / OSD hiding must stop an old
 preview even when the script retains its camera and scene. Reactivation may
 reuse those objects. Do not implement this by recognizing a mod's selector
-class or forcibly deleting its model.
+class or forcibly deleting its model. The same holds for OSD widgets: an Osd
+whose viewport has never been activated neither draws nor takes clicks.
 
 A map is not necessarily one SCX. `GroundMapData` distinguishes render and
 collision meshes, exterior packs, and placements. Valo City requires resolving
@@ -397,7 +407,7 @@ to a loose native body with its full CFG collision mesh and mass-weighted
 body-pose centre, and its static instances are hidden. The loose body sleeps
 until contact, reuses the loose-part solver for car and static-scene contacts,
 and updates every render slot, with its CFG render pose, from the simulated
-frame. Once it rests more than 40 m beyond the car's reach it becomes an
+frame. Once it rests more than 40 m beyond every active car's reach it becomes an
 ordinary prop again at the pose where it settled (for the rest of the
 session), so only props near the car are live. It returns to its map pose
 instead when it was pushed more than a 64 m prop cell away, falls below
@@ -409,7 +419,7 @@ remain on the exact static path.
 
 `PhysicsRef.setStatic(0)` hands a script body to the host free-body solver:
 it falls under gravity, rests on the scene, and exchanges impulses with the
-controlled car like a loose part, publishing its pose and velocities for
+active physical cars like a loose part, publishing its pose and velocities for
 `getPos`, `getOri`, `getVel` and `getAngVel`. `setMatrix` places it at rest,
 and `setStatic(1)` fixes it again. Created bodies stay fixed until then; the
 stock jack, lifts and showroom walls never call `setStatic`. A primitive has
@@ -572,6 +582,11 @@ mesh, mass and centre, starts asleep, wakes on car contact, and exchanges
 equal/opposite impulses with both car and static scene. A sleeping loose body
 skips the per-part car test unless its bounding sphere can reach the car's.
 Free `PhysicsRef` bodies (`setStatic(0)`) use the same loose-body contacts.
+Native/mechanical chassis also resolve unique finite-mass OBB pairs on shared
+120 Hz substeps. Dynamic-body reach, wake, contact and map-prop demotion consider
+all active physical cars, not just the controlled car; only a freshly detached
+engine temporarily ignores its original carrier. See the #197 audit for the
+bounded translational sweep, actual-impulse damage and remaining limits.
 This is a host loose-body approximation, not a general dynamic triangle-mesh
 engine: loose bodies collide with the car and the static scene, not with
 each other.
@@ -621,38 +636,96 @@ The active tire code is in `tire_model.cpp`, integrated in
 `vehicle_dynamics.cpp`. The presence of `sl2_pacejka.cpp` in the repository
 does not mean the whole driving model uses that older model.
 
-The tyre curve is built from the values the tyre script writes through
-`WheelRef` (stock `Tyre.java`), not from a fixed reference tyre: peak friction
-is `setFriction / kFrictionUnits` (1.68, so the stock 205 sport tyre peaks
-near 1.05), the slope at zero slip is `setStiffness` per unit slip and per
-newton, the sliding force is `setSliction` of the peak, `setMaxLoad` and
-`setLoadSmooth` saturate the load with the SL2 arctangent blend,
-`setFrictn_x` scales the longitudinal force, `setRollRes` is the rolling
-resistance and the `setCPatch` angle is the camber the full patch tolerates.
-Width, compound, profile and inflation therefore reach the road only through
-the numbers the script derives from them. Slip is combined: wheelspin or a
-locked wheel uses up cornering grip. A host-side impulse bound keeps the
-explicit step from reversing a slide within one tick, longitudinally per
-wheel and sideways shared by the tyres in contact.
+### Intended driving model: revision `8ac2ba9`
 
-`WheelRef.setInstantCenter` (`Suspension.setRollCenter`) gives each corner a
-front-view and a side-view instant centre, relative to the wheel centre.
-The links carry the tyre force along the line from the contact patch through
-that centre, so its vertical part lifts or pulls the body at the patch
-instead of compressing the spring (roll centre, anti-dive, anti-squat), and
-the tyre load is the spring force plus that lift. The stock 10000 values mean
-no centre. The centres stay at their static position; their travel with the
-suspension is not modelled. The lift feeds the next step's tyre load, so the
-link slope is limited to 0.5 and the lift to the spring's own support, which
-keeps that loop stable for any scripted tyre.
+The maintainer's `8ac2ba9601300b36efca54dd81031fb6bc9de98b` revision is the
+intended model for PR #48. It supersedes that PR's earlier script-derived
+curve and instant-centre load path. It is OpenSLRR tuning, not recovered
+stock physics; do not restore the earlier solver just to make its old tests
+pass. The follow-up work awaiting approval is in
+[the vehicle-dynamics migration plan](VEHICLE_DYNAMICS_PLAN.md).
 
-Bearing friction, the service brake and the handbrake act on a wheel's spin
-after the drive impulse and before the tyre force. A brake stronger than the
-drive keeps its wheel locked and the tyre slides; a weaker one lets the drive
-spin it. With the automatic gearbox and clutch, throttle in first or reverse
-raises the take-up speed even while the service brake is held, like a torque
-converter at stall, so the driven wheels spin when the engine beats their
-brakes and grip.
+`configure_drive` copies the tyre script's `WheelRef` values, but the active
+curve scales a reference tyre rather than interpreting those values as exact
+force-curve coefficients:
+
+- Friction, stiffness and sliction are divided by `TireParameters` defaults
+  (1.76863, 17.6839 and 0.814), then clamped respectively to 0.2–2.5,
+  0.4–2.5 and 0.3–1.5. Width, compound, profile and inflation enter through
+  these script-derived inputs, not through independent width parameters.
+- Slip ratio uses the greater of 1.5 m/s, road speed and wheel surface speed;
+  slip angle uses road speed with a 1.5 m/s floor. The base lateral Magic
+  Formula has B=11.5, C=1.32, E=0.35; the longitudinal one B=14, C=1.55,
+  E=0.45. Stiffness scales B, not an exact `stiffness × load` zero-slip slope.
+- `setMaxLoad` introduces progressive load efficiency above half capacity.
+  An arctangent factor blended by `setLoadSmooth × load_sensitivity` further
+  scales the lateral peak. The nominal lateral/longitudinal peak multipliers
+  are 1.42 and `0.85 × 1.76863`, before load efficiency, sliding, tuning and
+  `setFrictn_x` (longitudinal only); neither is a guaranteed measured peak mu.
+- Sliction scales the grip as combined slip grows; longitudinal slip also
+  reduces lateral B. A final friction ellipse bounds combined demand.
+  Low-slip forces are additionally capped in proportion to slip speed and
+  load. `TireTuning` exposes lateral grip/response, longitudinal grip and load
+  sensitivity. `setRollRes` supplies the wheel's rolling torque.
+
+Wheel alignment now scales load by the square of the hub-down/road-normal
+cosine, with a 0.25 floor. The copied `setCPatch` tolerance (`patch_angle`) is
+not read by the solver. Likewise, `setInstantCenter` values and the
+`WheelState::jacking` field are retained but have no active load effect:
+there is no instant-centre anti-dive/anti-squat force or jacking feedback.
+Wheel YPR and the existing arm/hub kinematics still affect contact geometry.
+The proposed anti-roll-bar loop is commented out, not implemented.
+
+The approved migration keeps that tyre law but corrects brake coupling.
+After the drivetrain impulse, one bearing/service/handbrake impulse budget
+is consumed before tyre force sees the spin. Its unused portion holds a
+locked wheel against the subsequent tyre reaction; it is not a second full
+brake application. ABS reduces the service budget and can release an
+already-locked wheel while the road moves. Only longitudinal force retains
+the per-wheel no-slip-reversal bound; the earlier shared lateral impulse
+bound is absent. Automatic first/reverse launch take-up is still raised
+only while both service brake and handbrake are below 0.05, not while
+holding the service brake. Previous burnout measurements do not validate
+this revision. The `8ac2ba9` brake-hold reproducer (traction despite zero
+final wheel spin) is covered by forward/reverse and weak/strong brake tests.
+
+The approved support migration replaces the spring-less corner's old
+previous-load/post-step-impulse path with a same-substep compliant tyre /
+bump-stop load. Fixed-travel corners and up to eight installed-body low
+points solve their implicit normal impulses jointly on a predicted body;
+the resulting loads reach the tyre law before integration. Stiffness scales
+with mass, the installed damper is retained, and a deep-penetration safety
+stop remains. An absent scripted compression limit falls back to CFG spring
+`base - travel`, not `base` (which could prop up the missing-spring corner).
+
+`rebuild_body_support` extracts actual low mesh vertices across left/right
+and four longitudinal sectors. It excludes running gear (already represented
+by wheels) and hinged panels (whose floor contact remains unsupported),
+respects slot poses/deformation, and refreshes after assembly changes,
+damage and repair. Hiding a mesh does not remove its physical support. In an
+upright car these samples replace fictitious underside AABB corners; the
+old box remains the fallback for callers without samples and after rollover.
+Floor-only support does not turn a low panel rubbing the ground into a
+chassis wall-impact damage event.
+
+A rim-less corner with only hub hardware uses a metal friction disk (0.4)
+and rolling-resistance factor 0.04, not the lost tyre's script values. An
+installed outer dually remains a rubber contact. Parked tyres use a 0.8
+friction upper bound; body and metal contacts use 0.4. These are host tuning.
+Rubber sticking is additionally bounded by the intended model's zero-slip
+friction-ellipse axes (`tire_friction_limits`), including script grip,
+alignment, progressive load efficiency and lateral smoothing. A zero
+longitudinal grip cannot be replaced with free parking friction. The same
+capacity equations are shared with the dynamic curve; its forces do not
+change. Native traffic keeps its separate force policy.
+A projected friction solve acts after forces/gravity but before advancing
+the pose, allowing real sticking instead of permanent tiny sliding steps.
+A mechanical brake's longitudinal hold additionally cannot spend more than
+its remaining brake/bearing impulse budget; lateral grip is independent of
+brake torque. The remaining friction ellipse still permits slipping when
+support is insufficient; no general chassis sleep state or new wake-state
+machine is introduced. `RigidBody::integrate` keeps its existing behaviour;
+the vehicle owner uses its force/pose split to insert the constraints.
 
 For the dyno, a new configuration must rebuild the matching curve banks,
 including nitro. Do not mix an old nitro bank with a new RPM step or a new
@@ -667,9 +740,15 @@ hull's bounds), and the pieces are summed in the chassis frame with the
 parallel-axis theorem. The stock game only sums point masses and has no
 authored centre; this is a host model, and the products of inertia are dropped
 because the rigid body takes principal moments along the chassis axes
-(`dynamics_configure` passes them to `RigidBody::configure`; no axis drops
-below 30 % of the solid box of the chassis render bounds, which stays the
-fallback). Parts
+(`dynamics_configure` passes them to `RigidBody::configure`; each supplied
+axis is floored at 30 % of the full-bounds box moment). In `8ac2ba9` the
+explicit-moment overload accepts the vector only when all three components
+are positive and finite; otherwise all three axes use the default. That
+default uses a box with dimensions 0.75 times the bounds, so its moments are
+0.5625 times the full-bounds box values. This generic fallback also affects
+loose bodies and native traffic, not just the player car. The collision
+bounds themselves are not shrunk. Angular momentum is damped by
+`exp(-0.015 × dt)` each substep. Parts
 without bodies (stock running gear, rims and tyres) add no mass. Crush zones
 are not those meshes: a deformation cage is generated over the part's visible
 render shell, as SLRR_rev (77b0fb6, `vehicle-3d.ts`) does, and its cage mass is
@@ -696,8 +775,9 @@ of new impact energy. Repair clears the dent, the baseline and the mount.
 The engine breaks off on a much bigger impact. Its mount takes the same impact
 energy weighted by 0.5 exp(-(d/1.1 m)²) of the horizontal distance to the engine
 and fails at 120 kJ, so 240 kJ at the engine itself (SLRR_rev `damageImpact` and
-its block release; not stock values). On the Baiern a 74 km/h frontal tree hit
-leaves it at about a third; a hit near 95 km/h or more breaks it. The engine is
+its block release; not stock values). Earlier Baiern captures retained the
+engine at 73–74 km/h and released it near 95 km/h; those approach speeds and
+outcomes have not been revalidated with the `8ac2ba9` solver. The engine is
 the chassis child that carries the `dynodata` (the stock `Block`), found as
 `configure_drive` finds it, and everything installed on it goes too. It leaves
 as one loose body with its pre-impact velocity, so it carries on out of the car;
@@ -706,13 +786,16 @@ none of its corners is inside the car's bounds (at most 1 s). Whenever a part
 breaks off, the reconfigured chassis keeps its velocity and angular velocity, as
 SLRR_rev does, not its angular momentum: with less inertia the same momentum
 would spin it up (a car that lost its engine pitched over).
-The car then has no dyno, so no drive torque, engine audio or rpm, and it keeps
-its wall collision and damage although drive torque normally gates them.
-`configure_drive` gives it a drive in neutral with a zero-torque engine that
-never starts, so it coasts on its tyres and its brakes still work, instead of
-the parked-tyre friction that stops a car without a drive. Repair
-restores the mount but not the engine; fitting an engine again clears the
-state.
+The mechanical car then has no dyno, so no drive torque, engine audio or
+rpm. `configure_drive` gives it a neutral drive with a zero-torque engine
+that never starts; the tyre and brake paths stay active. This is the coasting
+mechanism, not a guarantee that strong-brake holding is correct in the new
+solver. Mechanical AI input is preserved as well as player input.
+Released bodies keep wall collision, damage and distance accumulation
+regardless of engine or controller ownership; native traffic uses the separate
+`drive.native_traffic` force path without Java engine/gear data. Damage
+options still distinguish the player from other cars. Repair restores the
+mount but not the engine; fitting an engine again clears the state.
 
 Deformation and detached parts need consistency between the impact, the local
 frame, the deformed mesh, the part state, and collision. Check separately:
@@ -1020,6 +1103,21 @@ bindings or merge labels across the plates/icons that separate them. Long lines
 must rebase their 16-bit indices while retaining pen advance. See
 `src/render/osd_text_batch.hpp` and `LibBgfxBackend::draw_osd_line`.
 
+Font loading prefers `frontend/fonts/<stem>.ttf`, then `.otf`, with the legacy
+SCX/atlas loader as fallback. `scripts/bake_slrr_fonts.py` converts user-owned
+stock assets to outline TTFs, keeping the byte map, authored advances and top
+origin (zero hhea ascent). Ordinary replacement fonts use their hhea ascent as
+the baseline offset. Both outline formats rasterize to padded SDF atlases through
+the pinned dependency's stb_truetype; one shader composes fill, outline and
+shadow without extra glyph passes. Font assets/cache lifetime remain shared and
+weakly indexed as before. `slrr_text_set_effects` overrides a line's bounded
+outline width, shadow offsets and ARGB colours; effects do not affect measure,
+alignment or advance. They are not persistent options or Java APIs. Legacy
+atlases retain their baked effects and bypass SDF composition. The byte-based
+text contract is unchanged; this does not add Unicode shaping or kerning.
+Only trusted local font files are supported: SFNT table bounds are checked, but
+stb's parser does not provide comprehensive hostile-font validation.
+
 OSD surfaces have their own blending contract. Do not apply world lighting
 to them, or a global correction meant for the body.
 For trees and glass, check alpha test, blending, depth write, pass order,
@@ -1055,7 +1153,9 @@ light that corner's wheel blip. Do not key this on car or part names.
 The stock store is `save/game/options`. Applying a resolution live must
 synchronize Config, the host mode, framebuffer dimensions, the viewport, and
 size-dependent resources. Rereading an old value when a menu opens must not
-put the game back to 800×600.
+put the game back to 800×600. A mode equal to the monitor size (for example
+1920×1080 on a 1080p screen) gets a borderless window even in windowed mode,
+because a framed window of that size cannot fit on the screen.
 
 `EnhancedGraphics` holds the extra options shared with the menus and debug.
 Anisotropic filtering uses renderer option 6 (off/hardware maximum, default on),
@@ -1091,6 +1191,35 @@ correctly separated according to the options.
 
 ## 15. Saves and transitions
 
+`java.io.File` writes versioned JSON at the existing script-selected paths
+(including career, car, controls and options files). Reads detect JSON first,
+then fall back to legacy SDAT type 1/type 2 and older raw host streams. JSON
+save opening keys are reserved for detection, rather than treating every raw
+integer beginning with `{` as JSON. Merely reading a legacy file does not
+rewrite it; its next normal save writes JSON.
+New saves cannot be read by the original game or earlier SDAT-only hosts.
+
+The version 1 object has `format: "OpenSLRR-save"`, `version: 1`, and three
+arrays. `values` is the ordered script stream of `[type, value]` pairs: `int`,
+`float`, `resource`, or `string` (including null). Finite floats use round-trip
+precision; `floatBits` stores a nonfinite float's unsigned 32-bit pattern.
+`packs` contains `[ordinal, game-relative path]`; `blobs` contains
+`[ordinal, kind, hex bytes]`. Resource values retain SDAT's file-local IDs, not
+session pack numbers. Dynamic resources retain the existing limitation: their
+metadata/bytes can be read, but they are not reinstantiated by the remounter,
+except Painter textures stored as PNG blobs (below).
+
+Script strings are byte strings: JSON U+0001..U+00FF represents the corresponding
+byte, not a UTF-8 transcoding of it. The writer escapes non-ASCII/control bytes;
+null and empty remain distinct, and the existing `strlen` write behavior is
+unchanged. The reader rebuilds the binary stream before script reads, preserving
+cross-type reads used by stock Config and skin scripts. Damaged/unsupported
+JSON saves make `File.open` return 0 rather than falling through to binary reads. Paths and
+atomic single-file publication (including pending in-memory saves after a
+failed replacement) keep their existing contracts. This is not a multi-file
+career transaction. Regressions: `scripts/run_save_io_tests.ps1 -Suite save_io`
+and `-Suite save_persistence`, after a Release build.
+
 The active section has an exit/enter cycle. `SectionMachine` can also adopt
 a state that Java has already transitioned: do not call exit/enter a second
 time in that case. Presentation state holds one full frame during some
@@ -1105,6 +1234,12 @@ Resetting a section means inspecting, together: parent world, pose,
 velocities, the physics accumulator, contacts, assembly, camera, lights,
 reflections, shadows, and loading state. Do not keep the fallen pose of an
 old car as the initial pose of the next one.
+
+`File.write(ResourceRef)` stores a Painter texture as a PNG in its save blob
+(the SDAT trailer, or a JSON `blobs` entry). `readResID` turns the blob back
+into a new Painter texture; a blob the stock game left empty is read from its
+side file `<save>.<ordinal>` (JPEG). A texture id that is no longer live keeps
+an empty blob, like other dynamic resources, and reads back as null.
 
 A catalog/garage round trip does not necessarily recreate the same set of
 objects as a dealer round trip. A state repaired by the dealer but not by
@@ -1234,7 +1369,16 @@ outcome. Visible four-wheel native traffic, native racer doubles and scripted ri
 use the shared rigid-body/suspension solver. Native CFG wheel renders must use
 the same hub compression, steering and spin as physical contacts; inline wheels
 do not require scripted rim slots. Unsupported chassis retain an external-motion
-fallback. Java model weights, including weight-one registered rivals, determine
+fallback. Released bodies keep static-world response without requiring a live
+engine or controller. The 60 Hz host/control tick contains shared 120 Hz vehicle
+substeps; each unordered chassis OBB pair exchanges finite-mass impulses once,
+then all corrected bodies/wheels are published. Parked physical cars can wake on
+contact without a driver. Movable map props and free bodies query all active
+physical cars rather than only the controlled one. Pair impacts carry actual
+normal impulse and pre-hit motion for mount damage/detachment; legacy wall
+callers retain their default reconstruction. Bounded translational sweeping is
+not exact rotational CCD. See [the #197 audit](TRAFFIC_RACE_AUDIT.md).
+Java model weights, including weight-one registered rivals, determine
 the traffic/adversary share under the configured host population cap. Streaming visibility must exclude an entire
 car subtree from rendering, physics and triggers without destroying its Java
 identity. Incarnations prevent stale traffic/brain references after removal.

@@ -103,13 +103,17 @@ current gaps to SLRR_rev code are in
   The CMake guard rejects anything but Windows x64 (`CMakeLists.txt`).
   `bgfx.cmake` is cloned manually into the gitignored `third_party`
   folder at a pinned commit.
-- **Known build blocker on a fresh clone:** `CMakeLists.txt` declares the
-  `compile_game_sources` executable from `tools/compile_game_sources.cpp`,
-  but `/tools/` is gitignored (`.gitignore`) and the file is not tracked.
-  CMake stops with "Cannot find source file" unless the file exists locally.
-  The README's coverage generator under `tools/` is missing for the same
-  reason. Reproduced on Windows with a fresh export of `b907b6b`; a local
-  one-line `int main() { return 0; }` stub unblocks the build.
+- `compile_game_sources` is built from the tracked
+  `tools/compile_game_sources.cpp`, explicitly allowed by `.gitignore`.
+  The target was added in `af0dc9c` without its source, not deleted later;
+  the older `/tools/` ignore rule hid it. The restored CLI delegates to
+  `script_compile_all` rather than using the former local no-op stubs.
+  Build with `cmake --build build --config Release --target compile_game_sources`,
+  then run `build/Release/compile_game_sources.exe <game-root> <directory>`.
+  The directory is relative to the root. Use a copied game root: compilation
+  writes class files and retains first originals as `.openslrr.bak`.
+  Exit codes: 0 for successful compilation, 1 for failures or no source units,
+  2 for incorrect arguments.
 - The vendored compiler `third_party/slrrc` is a C++17 static library built
   with `/fp:precise`; its literal self-test must pass before any output is
   published (`src/jvm/script_compiler.cpp:script_compile_all`).
@@ -170,7 +174,7 @@ current gaps to SLRR_rev code are in
 | Renderer | `src/render/bgfx_lib_backend.cpp:flush`, `src/render/bgfx_lighting.cpp:draw_instance`, `src/render/bgfx_shadows.cpp`, `src/render/bgfx_osd.cpp:draw_osd` | Frame, materials, shadows, OSD and HUD |
 | UI | `src/ui/osd_registry.cpp:osd_add_widget`, `src/ui/osd_registry.cpp:osd_on_field_write` | OSD widgets, hit-testing, modal state |
 | Map ambience | `src/resources/scene_ambience.cpp:scene_ambience_attach`, `src/resources/scene_ambience.cpp:scene_ambience_tick` | `sfx_loop`/`sfx_random` lines of map placements |
-| Platform | `src/platform/host_input.cpp`, `src/platform/host_sfx.cpp`, `src/platform/host_music.cpp`, `src/platform/video_fmv.cpp`, `src/platform/host_game_options.cpp` | Input, audio, FMV, options |
+| Platform | `src/platform/host_input.cpp`, `src/platform/host_sfx.cpp`, `src/platform/host_music.cpp`, `src/platform/video_fmv.cpp`, `src/platform/video_cinepak.cpp`, `src/platform/host_game_options.cpp` | Input, audio, FMV (built-in Cinepak AVI decoder), options |
 | Worker pool | `src/platform/job_system.cpp:jobs_parallel_for` | One worker per logical processor for loading work off the host thread (§6) |
 
 Code that exists but is not used:
@@ -267,12 +271,13 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    dynamics and calls `VehicleDynamics::advance` for two 120 Hz substeps
    (`include/slrr/vehicle_dynamics.hpp:VehicleDynamics`). At most four host
    ticks run per frame; excess time is dropped.
-4. Wall contact is `collide_chassis`: four 0.18 m spheres against the static
-   index. It runs only for a released chassis whose `drive.torque` is set
-   or whose engine flew out (`engine_lost`), and `configure_drive` sets the
-   torque only for the player-controlled car with gear ratios, a dyno and a
-   positive maximum RPM. Other cars get no wall
-   collision, impact damage or mileage
+4. Wall contact is `collide_chassis`: four 0.18 m sphere probes plus oriented
+   chassis-box contacts against the static index. A released car enters it
+   when `drive.torque`, `engine_lost` or `drive.native_traffic` is set.
+   `configure_drive` handles player and autonomous mechanical cars, an
+   engine-lost car's zero-torque neutral drive, and the distinct native
+   traffic force path. Wall collision, impact damage and mileage are no
+   longer player-only; damage options still distinguish the player
    (`src/resources/part_runtime.cpp:advance_chassis_tick`,
    `src/resources/part_runtime.cpp:configure_drive`).
 5. Impacts feed `damage_chassis` and the XPBD cage
@@ -442,7 +447,12 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
 - Enhanced options (MSAA, reflections, clouds, sunlight, local lights) are
   session-only and exposed through `OptionsDialog.get/setRendererOption`
   (`src/natives/natives_script.cpp:register_script_natives`).
-- Car saves use the SDAT container (`src/natives/natives_io.cpp:sdat_frame`).
+- File saves now write versioned typed JSON at the existing paths, with SDAT
+  type 1/type 2 and raw-stream read fallback. Resource paths remount independently
+  of session pack order; scripts keep binary cross-type read semantics. See
+  ENGINE_CONTRACT §15 (`src/natives/natives_io.cpp:json_frame`,
+  `src/natives/natives_io.cpp:json_take_payload`,
+  `src/natives/natives_io.cpp:sdat_take_payload`).
 
 ### 5.10 Threads and the worker pool
 
@@ -619,10 +629,43 @@ Physics:
 - The physics delta is clamped to 0.1 s and scaled by the time warp
   (`src/jvm/jvm.cpp:advance_sim_time`), and at most four host ticks run per
   frame, so below 15 FPS the simulation slows down.
+- The intended vehicle solver is maintainer revision `8ac2ba9`, not the
+  earlier #48 curve. `src/physics/tire_model.cpp:tire_forces` scales reference
+  Magic Formula curves by clamped ratios of script friction, stiffness and
+  sliction, with progressive load efficiency, lateral load smoothing and a
+  combined friction ellipse. Stiffness is a B multiplier, not an exact slope.
+  `setCPatch` tolerance and `setInstantCenter` data are copied/stored but have
+  no active solver effect; there is no jacking or shared lateral impulse
+  bound. The approved brake fix consumes one impulse budget before tyre
+  force and holds the reaction with the unused budget; raised launch take-up
+  still requires the service brake below 0.05
+  (`src/physics/vehicle_dynamics.cpp:VehicleDynamics::step_drive`).
+  See ENGINE_CONTRACT §11 and [the migration plan](VEHICLE_DYNAMICS_PLAN.md).
+- Installed body low points are cached from real mesh vertices, not the
+  chassis AABB's empty underside corners
+  (`src/resources/part_runtime.cpp:rebuild_body_support`). Hidden meshes keep
+  their supports; corner gear and hinged panels have separate contact paths.
+  Slot poses, deformation, repair and assembly changes invalidate the cache.
+- Missing-spring fixed-travel support is solved implicitly with body contacts
+  in the current substep, before the tyre law consumes the load
+  (`src/physics/vehicle_dynamics.cpp:solve_fixed_support`). A compression limit
+  missing from scripts uses CFG `base - travel`. Rim-less hub hardware has a
+  metal contact, not the previous tyre's grip. Static friction is projected
+  after forces/gravity and before pose advance
+  (`src/physics/vehicle_dynamics.cpp:solve_rest_contacts`). Rubber sticking
+  also respects the active tyre model's anisotropic zero-slip capacities
+  (`src/physics/tire_model.cpp:tire_friction_limits`), so low grip or zero
+  longitudinal grip cannot borrow a stronger parking coefficient. Controlled
+  longitudinal brake holding is additionally limited by its unspent brake
+  impulse, independently of lateral grip. This adds no new chassis
+  sleep/wake state machine.
 - A CFG `body` line is mass and collision; it is not a crush zone. Do not size
-  a deformation cage from the phys SCX bodies, and do not take inertia from the
-  render bounds: 815 of the 818 stock racer phys hulls with mass are closed
-  solids, and the mass properties integrate them.
+  a deformation cage from the phys SCX bodies. The assembly mass properties
+  integrate the closed phys hulls (815 of 818 stock racer hulls in the earlier
+  audit), with a 30%-of-render-box moment floor for chassis configuration.
+  The generic rigid-body fallback now uses 0.75 times the bounds dimensions
+  (`src/physics/vehicle_dynamics.cpp:RigidBody::configure`); a supplied inertia
+  vector replaces it only when every component is positive and finite.
 - Repairs must restore deformation, damage-associated slot state and wheel
   damage together. The native `repair` command does this locally for each part
   (`src/resources/part_runtime.cpp:repair_part`); stock Java covers the normal
@@ -666,7 +709,7 @@ Process:
 | SFX voices | 32 total, 3 menu, 2 copies per cue, 35 ms coalescing | `src/platform/host_sfx.cpp:host_sfx_play_file` |
 | Ambient start range | 250 m beyond the CFG radius | `src/resources/scene_ambience.cpp:scene_ambience_audible` |
 | Chassis wall probe | four spheres of 0.18 m | `src/resources/part_runtime.cpp:collide_chassis` |
-| Tyre friction units | script friction / 1.68 = peak mu | `include/slrr/tire_model.hpp:kFrictionUnits` |
+| Tyre reference scaling (`8ac2ba9`) | friction / 1.76863, stiffness / 17.6839, sliction / 0.814, each clamped; nominal lateral peak multiplier 1.42 before load/slip factors | `src/physics/tire_model.cpp:tire_forces` |
 | Hinged panel step / latch release / tear-off | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
 | Prop cell | 64 m | `src/resources/scene_instances.cpp:kPropCellSize` |
 | Shadow maps | 2048² | `src/render/bgfx_lib_backend.hpp:kShadowResolution` |
@@ -686,8 +729,10 @@ signatures, 339 have a body, 3 are explicit no-ops and 34 are missing.
 | --- | ---: | --- |
 | `GroundRef` routes, traffic, water | 19 | Navigation, traffic |
 | `ParticleSystem` | 9 | Smoke, sparks and other effects |
-| `Painter` | 3 | Paint booth: `doPaint`, `paintPart`, `xPaint` |
 | Leftovers (`Welder`) | 3 | No stock caller found |
+
+The three `Painter` natives that this table listed are bound since #64;
+see "Garage paint booth (#64)" below.
 
 Explicit no-ops: `System.analyze` ×3 (faithful).
 `GameRef.setActiveCollision` has a body since PR #22 (§12). Two host-only
@@ -716,7 +761,7 @@ run time.
 | DirectShow dynamic media-format renegotiation is not supported; malformed/short RGB32 frames are rejected | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot adopts the section already entered by Java Init without replaying lifecycle (#76). Windowed startup retains a timer-only reset so startup work cannot consume the splash display interval. | `src/boot/boot.cpp:boot_game`, `src/boot/mainloop.cpp:mainloop_adopt_section` |
-| Wall collision, impact damage and mileage run only for the player-controlled car with an engine | `src/resources/part_runtime.cpp:advance_chassis_tick` |
+| Released cars retain static-world contacts without a driver/engine. Shared chassis OBB pairs and all-car movable-body contacts now use impulse-aware damage/detachment; full Bot recovery/audio/seating remain partial. See [traffic/race audit](TRAFFIC_RACE_AUDIT.md). | `src/resources/part_runtime.cpp:advance_chassis_tick`, `src/resources/part_runtime.cpp:advance_loose_panels`, `src/resources/part_runtime.cpp:advance_free_bodies` |
 | Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
 | The unused offscreen scene target, HiZ pyramid/readback and legacy projected car shadows are removed (#105). World rendering uses the swap chain; the retained projected-size filter does not perform occlusion. Shader creation releases caller handles on success and failure. | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open`, `src/render/bgfx_program.hpp:create_owned_program` |
 
@@ -812,8 +857,9 @@ Each answer names its evidence.
    `Jvm::RootScope` or a registered root provider (§6).
 6. *Does doubling the frame rate double the simulation speed?* No: fixed
    60 Hz host ticks with two 120 Hz substeps, at most four ticks per frame.
-7. *Why does a fresh clone fail to configure?* `CMakeLists.txt` needs the
-   untracked, gitignored `tools/compile_game_sources.cpp` (§3).
+7. *What caused the missing compiler-tool source error on fresh clones?*
+   `af0dc9c` added the target without tracking its ignored source. The source
+   is now tracked and the CLI uses the existing compiler adapter (§3).
 8. *Why did cars pass through Valo City trees?* Placement bodies were dropped
    and props were not in the collision index. PR #22 retains and indexes those
    bodies and adds full-chassis contact coverage (§11, #16).
@@ -830,10 +876,12 @@ Each answer names its evidence.
     idempotent request and consumes it at the physics boundary
     (`src/resources/gameref.cpp:gameref_process_collision_requests`).
 13. *Which tyre model drives the car?* `src/physics/tire_model.cpp:tire_forces`,
-    not `sl2_pacejka.cpp`. Its curve comes from the tyre script's `WheelRef`
-    values (friction, stiffness, sliction, load capacity, `frictn_x`, patch
-    angle); `configure_drive` copies them each tick
-    (`src/resources/part_runtime.cpp:configure_drive`).
+    not `sl2_pacejka.cpp`. Revision `8ac2ba9` scales reference curves by script
+    friction, stiffness, sliction, load capacity/smoothing and `frictn_x`;
+    `configure_drive` also copies the patch tolerance, but the solver does
+    not use that field (`src/resources/part_runtime.cpp:configure_drive`).
+    Native traffic has its own load-limited force path within the same
+    `VehicleDynamics` owner, not this mechanical-tyre curve.
 14. *Can SLRR_rev's EXE addresses be used for the MWM binary?* No. They
     belong to Steam build 940. SLRR_rev documents three EXE hashes, and the
     MWM binary is a fourth.
@@ -1588,6 +1636,16 @@ opening a generated silent AVI; no later intro is opened. Immediate LibVLC
 cancellation can log demux errors in this fixture; actual rendered frames are
 not asserted. Release build and the suite pass.
 
+Video without VLC (#216): 64-bit Windows ships no Cinepak codec (only the
+32-bit `SysWOW64\iccvid.dll`), so without LibVLC both the AVIFile and the
+DirectShow paths failed and every intro and `prime.avi` was skipped.
+`video_fmv_open` now tries `src/platform/video_cinepak.cpp` first: it indexes
+the AVI, decodes Cinepak frames in order into BGRA and plays PCM audio through
+its own XAudio2 voice, whose position drives the frame clock. Files it rejects
+(another codec, or a first frame it cannot decode) still go to LibVLC, then
+AVIFile/DirectShow. The video_safety suite checks the decoder and a generated
+Cinepak AVI with PCM audio.
+
 
 ### Options save failure policy (#109)
 
@@ -2158,7 +2216,11 @@ Sources and host limits: EXTERNAL_RESEARCH v221 section and SCRIPT_RUNTIME share
 race section. Tests: road_routes, race_brain, traffic_runtime and race_vehicle.
 A real assembled Baiern moves under original Bot.startRace commands in an
 isolated fixture; this is not proof of finished career day/night/ROC sessions.
-The tracker and original issues remain open pending each gameplay check.
+The original issues and #179 were closed for consolidation, not gameplay acceptance;
+#197 retains the remaining work. The [current audit](TRAFFIC_RACE_AUDIT.md)
+records the baseline's missing chassis pairs/player-only movable contacts, the
+shared-contact implementation and remaining physical/kinematic, seating/audio
+limits. Contact integration is not acceptance of the complete #197 checklist.
 
 
 ## Inactive renderer passes cleanup (#105)
@@ -2297,3 +2359,113 @@ assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.
   nonzero origin reception, origin rebase phase and real-map reuse/invalidation.
   See assets/validation/shadow-origin-stability.txt; manual user validation of
   the reported camera remains outstanding.
+
+## Garage paint booth (#64)
+
+Body paint, spray and decals were inert: the three `Painter` natives were
+unbound, and no world-pointer event ever reached `Painter.handleEvent`, because
+only the Mechanic received part clicks.
+
+Events. `MouseCursor.addHandler` registers `EVENT_CURSOR` on the cursor
+GameRef. `src/boot/mainloop.cpp:dispatch_world_pointer` now emits `EC_HOVER`,
+`EC_LEAVE`, `EC_LDOWN`, `EC_LUP` and `EC_LCLICK` from that GameRef whenever
+the Mechanic thread is not running (see SCRIPT_RUNTIME.md). The
+press/release edges come from `HostInput::world_press` / `world_release`,
+set only for a left press that missed every OSD widget. `GameRef.getInfo`
+answers `GII_CATEGORY` (7) with `GIR_CAT_PART` (9) for parts, which the
+Painter, CarMarket and garage drop handlers test. Vehicles are not yet
+reported as `GIR_CAT_VEHICLE`.
+
+Natives. `src/natives/natives_painter.cpp:register_painter_natives` binds
+`paintPart`, `doPaint` and `xPaint`. Each picks the part under the pointer
+with `src/resources/scene_instances.cpp:scene_instances_pick_surface`, which
+also returns the hit mesh, its paint slot and the hit point and normal in the
+mesh frame. The executable (slrr-reverse notes on 0x004827D0, 0x00482960,
+0x00482C00) queues `paint 0 0 <color> 0 -1` and `bigdecal ...` commands on the
+picked part; the host draws directly instead:
+
+- `paintPart` fills the part's own texture with the can colour.
+- `doPaint` projects the brush (`misc.garage:0x0102`, a soft dot) or a decal
+  with `src/resources/paint_texture.cpp:paint_stamp_mesh`: a square `size`
+  metres wide, along the hit normal, oriented to screen up (including
+  mirrored part frames), turned by
+  `rot` and mirrored by `flip`. Only paint-slot triangles facing the stamp
+  inside a depth slab are painted; each texel blends once per stamp. Other
+  panels whose bounds the stamp reaches
+  (`src/resources/scene_instances.cpp:scene_instances_paint_targets`) and
+  whose triangles it covers (`src/resources/paint_texture.cpp:paint_stamp_reaches`)
+  are painted too, in their own frames, so a decal across a door seam lands
+  on both parts. A preview can therefore span several textures.
+  `temp = 1` (the decal preview) is drawn over a copy and replaced by the next
+  preview.
+- `xPaint` and `painter_tick` (two host frames without a refresh) take the preview off.
+  A texture created only for a preview gives the part its previous texture
+  back.
+
+These orientation, size and expiry rules are host approximations.
+
+Textures. `paint_texture.hpp` keeps Painter textures in host memory with ids
+`0xFFFFxxxx`. `src/resources/part_runtime.cpp:assign_texture` shows them in
+the part's paint slot like a pack colour (`Part.setTexture` accepts them) and
+reclaims one after three host frames without a live part, resource wrapper
+or open save reader using it. This also reclaims unused loaded-skin textures and preserves
+ids through synchronous part rebuilds. A part draws on a copy when it
+shares its texture. `scene_instances_texture` maps the id to a `paint:` path;
+`src/render/bgfx_osd.cpp:paint_texture_handle` uploads it with a box-filtered
+mip chain and again on each change. Images start from the part's current
+paint (DXT/DDS/PNG/PTX decoded by `paint_image_from_texture`).
+
+File-backed decals. Stock `Decal(String)` calls `ResourceRef.makeTexture`,
+then Painter receives only `brush.id()`. Previously `makeTexture` stored a
+filename but left that ID at zero. It now allocates a live native texture ID
+and type 7. `scene_instances_texture` resolves its canonical wrapper's file;
+file-texture duplication creates an independent handle, and aliases carry the
+type so career saves can serialize purchased decal sets. The PNG serializer
+also accepts these file resources. Loaded image resources stay alive while
+native resource wrappers refer to them (`gameref_uses_resource`).
+
+Saves. `Part.save` and `Vehicle.saveSkin` write the texture through
+`File.write(ResourceRef)`: `ResourceRef.set` types it 7 and its save blob
+(SDAT trailer or JSON `blobs` entry) carries a PNG (`paint_png_encode`,
+fixed-Huffman deflate).
+`src/natives/natives_io.cpp:sdat_load_texture_blob` restores it on
+`readResID`; an empty stock blob reads the JPEG side file `<save>.<ordinal>`
+that the original game writes. Stock MWM saves with painted parts therefore
+load their paint. OpenSLRR saves are not meant to be read by the original
+executable.
+
+Paint-can preview follow-up. Paint cans share the resource flags (640) used
+by the host's reconstructed world-cue animation. Applying its half-metre bob
+and transparency in the tiny inventory cells moved the cans partly or entirely
+offscreen. `src/resources/scene_instances.cpp:collect_root` now applies that
+world-space animation only when collecting the active world, not the separate
+local worlds of inventory previews. The stock script's preview camera remains
+authoritative. The real-asset `trigger_markers` regression checks stationary,
+opaque paint cans in a local preview and preserves the active-world marker's
+rotation/bobbing and sensor behavior.
+
+Decal picker. Painter is the only stock user of the legacy
+`Osd.createButton(rid, ...)`: `Osd.createIcon` creates a `native button`
+type (`misc.garage:0x008C`) in the Osd group and `Osd.event_handler` turns its
+`EC_LCLICK` into `osdCommand(CMD_DECALBUTTONS + i)` by matching the object's
+`id()`. `src/natives/natives_gameref.cpp:bind_icon_button` gives that GameRef
+a live id and a hit-only OSD widget sized from the cfg render mesh; the click
+handler in `src/boot/boot.cpp` emits `EC_LCLICK` from the icon instead of an
+osdCommand. Before this the slots took no clicks, so only the first decal of
+the shown page could be painted.
+
+The garage builds the Mechanic's parts bin even when it reopens straight
+into body paint. Its never-shown `InventoryPanel` Osds had visible hit boxes
+at layer 15 over the paint-can and decal slots, so after a catalog visit those
+clicks reached the parts bin. `osd_on_field_write("vp")` now keeps an Osd's
+widgets hidden until its viewport is activated (ENGINE_CONTRACT.md).
+
+Decal thumbnails. `setDecalButtons` duplicates the button render type,
+swaps its texture for the decal and creates
+`RenderRef(slot, copy.id(), "decal button")`. A duplicated render type is now
+a live resource (`ResourceRef.duplicate` in `src/natives/natives_resref.cpp`),
+so `copy.id()` aliases the copy and the instance inherits its replacement.
+`RenderRef.create` (`src/natives/natives_renderref.cpp`) then draws that
+texture as a flat picture over the slot's hit box, and destroying the instance
+removes it. The button mesh itself is not drawn.
+Projection/preview behavior remains the host approximation described above.

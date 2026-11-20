@@ -35,3 +35,46 @@ the distributed patch when needed.
 Update the relevant documentation whenever a contract or responsibility changes.
 Report compilation and in-game validation separately; neither result alone
 establishes complete compatibility.
+
+## Branches and pull requests
+
+- Name branches `{type}/{issue_number}-short-desc`, where `type` is `feature`,
+  `bug`, `hotfix`, or `spike`. The issue number is required. For example:
+  `bug/44-remaining-limitations-fix`.
+- Start the PR title with `#<issue_number>` and make its wording match the
+  branch's short description, for example: `#44 Remaining limitations fix`.
+- Keep the PR description concise and direct. Include a `Not fixed / limitations`
+  section listing remaining work so a crawler can add it to issue #44; write
+  `None` when nothing remains. Do not omit known gaps.
+- For UI changes, include labelled **Before** and **After** screenshots in the
+  PR description.
+- Always request review from someone other than the PR author. PRs created by
+  `antomys` must request `EliasFD3S`; PRs created by `EliasFD3S` must request
+  `antomys`.
+
+## Build speed and its edge cases
+
+Compile options are described in [README.md](README.md#faster-builds). Known
+limits and edge cases:
+
+- Every target builds with `/MP`. With several builds at once the machine can
+  run out of memory or cores; lower it with `-DSLRR_COMPILE_JOBS=<n>`.
+- `slrr_host` uses a precompiled header of standard headers. Do not put project
+  headers, macros such as `NOMINMAX`, or Windows headers in it, and a source
+  file must still include what it uses.
+- The shared `shaderc` (`SLRR_TOOLS_CACHE_DIR`) is keyed by the git revisions
+  and uncommitted changes of bgfx.cmake, bgfx, bimg and bx, the compiler and the
+  toolset. Changing the toolset's version or the sources builds a new copy;
+  old `shaderc-<key>` folders are never deleted automatically, so remove them
+  by hand when the disk fills.
+- If those sources are not git checkouts, `shaderc` is built once in
+  `<build>/shaderc-local` instead and is not shared. It is not rebuilt when the
+  sources change: delete that folder after changing them.
+- The first build for a new key compiles `shaderc` (about 13 minutes) while the
+  other builds wait on its lock for up to 2 hours. A build killed midway leaves
+  no half-written copy; the next build retries.
+- `shaderc` is always built in Release, whatever configuration the game uses.
+- Shader outputs are not regenerated when only `shaderc` changes; delete
+  `<build>/generated/shaders` after switching to another `shaderc`.
+- `tests/test_cmake_dependency_paths.py` needs Windows Python (it uses
+  `winreg`); the agent environment has none, so it cannot be run there.
