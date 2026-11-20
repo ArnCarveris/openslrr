@@ -26,10 +26,19 @@ vec2 clampReceiverGradient(vec2 gradient,float limit)
 // Bounded ceiling emitters share one downward projection each, not six cube
 // faces per tube. The housing limits the direct source to its lower hemisphere.
 uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
-uniform vec4 u_fixturePositions[12];
-uniform vec4 u_fixtureColors[12];
-uniform vec4 u_fixtureDirections[12];
-uniform mat4 u_fixtureMatrices[12];
+// Per-frame light data (#254): a 256 x 3 RGBA32F texture read with texelFetch
+// instead of ~550 vec4 of fragment constants re-uploaded with every draw.
+// Row 0: lamp position+range [0,64), colour*intensity [64,128), attenuation
+// [128,192). Row 1: per shadowed lamp s, scenery tile matrix [4s,4s+4) and
+// tile [96+s], car tile matrix [120+4s,124+4s) and tile [216+s]. Row 2:
+// fixture position+range [0,12), colour+intensity [12,24), direction+outer
+// cosine [24,36), shadow matrix [36+4i,40+4i). Matrices are stored by column.
+SAMPLER2D(s_lightData, 11);
+vec4 lightData(int x,int y) { return texelFetch(s_lightData,ivec2(x,y),0); }
+mat4 lightMatrix(int x,int y)
+{
+    return mtxFromCols(lightData(x,y),lightData(x+1,y),lightData(x+2,y),lightData(x+3,y));
+}
 float fixtureReceiverTap(vec2 uv,vec3 receiver,vec2 receiverUv,vec2 gradient)
 {
     float depth=receiver.z+dot(gradient,(uv-receiverUv)*vec2(4.0,3.0))-0.000005;
@@ -41,16 +50,16 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
     diffuse=vec3(0.0,0.0,0.0);highlight=vec3(0.0,0.0,0.0);
     for(int i=0;i<12;++i) {
         if(float(i)>=u_fixtureParams.x) break;
-        vec3 delta=u_fixturePositions[i].xyz-world;
+        vec3 delta=lightData(i,2).xyz-world;
         float d2=max(dot(delta,delta),0.001);
         vec3 toward=delta*inversesqrt(d2);
-        float cone=smoothstep(u_fixtureDirections[i].w,0.422618,
-                             dot(-toward,u_fixtureDirections[i].xyz));
-        float range=u_fixturePositions[i].w;
+        float cone=smoothstep(lightData(24+i,2).w,0.422618,
+                             dot(-toward,lightData(24+i,2).xyz));
+        float range=lightData(i,2).w;
         float window=saturate(1.0-pow(d2/(range*range),2.0));
         float visibility=1.0;
         if(u_fixtureParams.w>0.5) {
-            vec4 clip=mul(u_fixtureMatrices[i],vec4(world+toward*0.015,1.0));
+            vec4 clip=mul(lightMatrix(36+4*i,2),vec4(world+toward*0.015,1.0));
             vec3 p=clip.xyz/max(clip.w,0.0001);
             // Evaluate derivatives before the varying bounds branch. Compare
             // each depth texel against the receiver plane at that texel, not
@@ -99,7 +108,7 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                 }
             }
         }
-        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
+        vec3 radiance=lightData(12+i,2).rgb*(lightData(12+i,2).w*window*window/
                         max(d2,0.25))*cone*visibility;
         float facing=max(dot(n,toward),0.0);
         diffuse+=radiance*facing;
@@ -113,18 +122,15 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
 // Scenery lamps (#237): street lamps outside garages, unshadowed and
 // omnidirectional, separate from the 12 garage fixtures. Count in x.
 uniform vec4 u_lampParams;
-uniform vec4 u_lampPositions[64];   // render-space xyz, range (metres)
-uniform vec4 u_lampColors[64];      // rgb * intensity
-uniform vec4 u_lampAttenuation[64]; // D3D c, l, q: 1/(c + l*d + q*d*d)
+// Lamp data in s_lightData row 0 (#254): position+range, rgb*intensity,
+// D3D attenuation c, l, q for 1/(c + l*d + q*d*d).
 // Shadowed lamps (#237) are the first x entries of the lamp arrays. Each may
 // sample a scenery tile (a downward perspective tile of s_fixtureShadow, free
 // outside garages) and a car-only tile (a narrow perspective onto the car);
 // a strength of 0 in z means no tile.
 uniform vec4 u_lampShadowParams;       // count, inverse atlas width/height
-uniform mat4 u_lampShadowMatrices[24]; // world -> tile-local uv, depth
-uniform vec4 u_lampShadowTiles[24];    // tile origin uv, shadow strength
-uniform mat4 u_lampCarMatrices[24];
-uniform vec4 u_lampCarTiles[24];       // half-size tile origin uv, strength
+// Tile matrices (world -> tile-local uv, depth) and tiles (origin uv,
+// strength) in s_lightData row 1 (#254).
 float lampShadowTap(vec2 uv,vec3 p,vec2 receiverUv,vec2 gradient,vec2 toLocal)
 {
     float depth=p.z+dot(gradient,(uv-receiverUv)*toLocal)-0.000005;
@@ -206,14 +212,14 @@ float lampTileVisibilityFast(mat4 sampleMatrix,vec4 tileInfo,vec2 size,vec3 worl
 }
 vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
 {
-    float r2=u_lampPositions[i].w*u_lampPositions[i].w;
+    float r2=lightData(i,0).w*lightData(i,0).w;
     if(d2>=r2) return vec3(0.0,0.0,0.0);
     d2=max(d2,0.001);
     float inv=inversesqrt(d2);
     float facing=max(dot(n,delta*inv),0.0);
     float window=saturate(1.0-(d2/r2)*(d2/r2));
-    vec3 a=u_lampAttenuation[i].xyz;
-    return u_lampColors[i].rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+    vec3 a=lightData(128+i,0).xyz;
+    return lightData(64+i,0).rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
 }
 vec3 lampLighting(vec3 n,vec3 world)
 {
@@ -225,17 +231,17 @@ vec3 lampLighting(vec3 n,vec3 world)
     // they are skipped before the projection and the shadow lookup.
     for(int s=0;s<24;++s) {
         if(float(s)>=u_lampShadowParams.x) break;
-        vec3 delta=u_lampPositions[s].xyz-world;
+        vec3 delta=lightData(s,0).xyz-world;
         float d2=dot(delta,delta);
-        float r2=u_lampPositions[s].w*u_lampPositions[s].w;
+        float r2=lightData(s,0).w*lightData(s,0).w;
         if(d2>=r2 || dot(n,delta)<=0.0) continue;
         vec3 toward=delta*inversesqrt(max(d2,0.001));
         float visibility=1.0;
-        if(u_lampShadowTiles[s].z>0.0)
-            visibility*=lampTileVisibilityFast(u_lampShadowMatrices[s],u_lampShadowTiles[s],
+        if(lightData(96+s,1).z>0.0)
+            visibility*=lampTileVisibilityFast(lightMatrix(4*s,1),lightData(96+s,1),
                                                vec2(0.25,1.0/3.0),world,toward,true,dwx,dwy);
-        if(u_lampCarTiles[s].z>0.0)
-            visibility*=lampTileVisibilityFast(u_lampCarMatrices[s],u_lampCarTiles[s],
+        if(lightData(216+s,1).z>0.0)
+            visibility*=lampTileVisibilityFast(lightMatrix(120+4*s,1),lightData(216+s,1),
                                                vec2(0.125,1.0/6.0),world,toward,false,dwx,dwy);
         sum+=lampRadiance(s,n,delta,d2)*visibility;
     }
@@ -244,15 +250,15 @@ vec3 lampLighting(vec3 n,vec3 world)
     // screen-space derivatives per lamp and the full kernel.
     for(int s=0;s<24;++s) {
         if(float(s)>=u_lampShadowParams.x) break;
-        vec3 delta=u_lampPositions[s].xyz-world;
+        vec3 delta=lightData(s,0).xyz-world;
         float d2=dot(delta,delta);
         vec3 toward=delta*inversesqrt(max(d2,0.001));
         float visibility=1.0;
-        if(u_lampShadowTiles[s].z>0.0)
-            visibility*=lampTileVisibility(u_lampShadowMatrices[s],u_lampShadowTiles[s],
+        if(lightData(96+s,1).z>0.0)
+            visibility*=lampTileVisibility(lightMatrix(4*s,1),lightData(96+s,1),
                                            vec2(0.25,1.0/3.0),world,toward,true);
-        if(u_lampCarTiles[s].z>0.0)
-            visibility*=lampTileVisibility(u_lampCarMatrices[s],u_lampCarTiles[s],
+        if(lightData(216+s,1).z>0.0)
+            visibility*=lampTileVisibility(lightMatrix(120+4*s,1),lightData(216+s,1),
                                            vec2(0.125,1.0/6.0),world,toward,false);
         sum+=lampRadiance(s,n,delta,d2)*visibility;
     }
@@ -260,8 +266,8 @@ vec3 lampLighting(vec3 n,vec3 world)
     for(int i=0;i<64;++i) {
         if(float(i)>=u_lampParams.x) break;
         if(float(i)<u_lampShadowParams.x) continue;
-        vec3 delta=u_lampPositions[i].xyz-world;
-        float r2=u_lampPositions[i].w*u_lampPositions[i].w;
+        vec3 delta=lightData(i,0).xyz-world;
+        float r2=lightData(i,0).w*lightData(i,0).w;
         float d2=dot(delta,delta);
         // Most lamps are far from a given pixel: skip them before any
         // transcendental work.
@@ -270,8 +276,8 @@ vec3 lampLighting(vec3 n,vec3 world)
         float inv=inversesqrt(d2);
         float facing=max(dot(n,delta*inv),0.0);
         float window=saturate(1.0-(d2/r2)*(d2/r2));
-        vec3 a=u_lampAttenuation[i].xyz;
-        sum+=u_lampColors[i].rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+        vec3 a=lightData(128+i,0).xyz;
+        sum+=lightData(64+i,0).rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
     }
     return sum;
 }

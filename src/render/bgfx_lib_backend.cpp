@@ -267,20 +267,13 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_aperture_edge_ = bgfx::createUniform("u_apertureEdge", bgfx::UniformType::Vec4, 32);
     s_aperture_ = bgfx::createUniform("s_aperture", bgfx::UniformType::Sampler);
     s_fixture_shadow_=bgfx::createUniform("s_fixtureShadow",bgfx::UniformType::Sampler);
+    s_light_data_=bgfx::createUniform("s_lightData",bgfx::UniformType::Sampler);
+    light_data_tex_=bgfx::createTexture2D(kLightDataWidth,kLightDataRows,false,1,
+        bgfx::TextureFormat::RGBA32F,BGFX_SAMPLER_POINT|BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
+    light_data_.clear();
     u_fixture_params_=bgfx::createUniform("u_fixtureParams",bgfx::UniformType::Vec4);
-    u_fixture_positions_=bgfx::createUniform("u_fixturePositions",bgfx::UniformType::Vec4,12);
-    u_fixture_colors_=bgfx::createUniform("u_fixtureColors",bgfx::UniformType::Vec4,12);
-    u_fixture_directions_=bgfx::createUniform("u_fixtureDirections",bgfx::UniformType::Vec4,12);
-    u_fixture_matrices_=bgfx::createUniform("u_fixtureMatrices",bgfx::UniformType::Mat4,12);
     u_lamp_params_=bgfx::createUniform("u_lampParams",bgfx::UniformType::Vec4);
-    u_lamp_positions_=bgfx::createUniform("u_lampPositions",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
-    u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
-    u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_shadow_params_=bgfx::createUniform("u_lampShadowParams",bgfx::UniformType::Vec4);
-    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
-    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
-    u_lamp_car_matrices_=bgfx::createUniform("u_lampCarMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
-    u_lamp_car_tiles_=bgfx::createUniform("u_lampCarTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -369,6 +362,11 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
       bgfx::destroy(depth_white_);
       depth_white_ = BGFX_INVALID_HANDLE;
     }
+    if (bgfx::isValid(light_data_tex_)) bgfx::destroy(light_data_tex_);
+    light_data_tex_ = BGFX_INVALID_HANDLE;
+    if (bgfx::isValid(s_light_data_)) bgfx::destroy(s_light_data_);
+    s_light_data_ = BGFX_INVALID_HANDLE;
+    light_data_.clear();
     if (bgfx::isValid(s_tex_)) {
       bgfx::destroy(s_tex_);
       s_tex_ = BGFX_INVALID_HANDLE;
@@ -472,11 +470,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_point_shadow_params_, &s_interior_sun_, &s_sun_aperture_, &u_interior_sun_mtx_,
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
-          &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
-          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_,
-          &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_,
-          &u_lamp_shadow_params_, &u_lamp_shadow_matrices_, &u_lamp_shadow_tiles_,
-          &u_lamp_car_matrices_, &u_lamp_car_tiles_}) {
+          &s_fixture_shadow_, &u_fixture_params_,
+          &u_lamp_params_, &u_lamp_shadow_params_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }

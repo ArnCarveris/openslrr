@@ -8,6 +8,8 @@
 #include "slrr/mainloop.hpp"
 #include "slrr/script_lights.hpp"
 #include <bx/math.h>
+#include "dxbc/fs_mesh.sc.bin.h"
+#include "dxbc/fs_vehicle.sc.bin.h"
 #include <chrono>
 #include <limits>
 #include <map>
@@ -1208,6 +1210,24 @@ struct SceneShadowRegression {
     b.light_array_cache_=true;
     std::printf("LIGHT UNIFORMS 2000 lit draws: submit %.3f -> %.3f ms, render thread %.3f -> %.3f ms\n",
                 uncached.first,cached.first,uncached.second,cached.second);
+    // #254: fragment uniform size (vec4) of fs_mesh / fs_vehicle, from the
+    // embedded D3D11 shaders' uniform tables.
+    const auto uniform_vec4=[](const uint8_t* data,uint32_t size) {
+      const auto shader=bgfx::createShader(bgfx::makeRef(data,size));
+      bgfx::UniformHandle handles[128];
+      const uint16_t count=bgfx::getShaderUniforms(shader,handles,128);
+      uint32_t vec4=0;
+      for(uint16_t i=0;i<count;++i) {
+        bgfx::UniformInfo info;bgfx::getUniformInfo(handles[i],info);
+        const uint32_t rows=info.type==bgfx::UniformType::Mat4?4:info.type==bgfx::UniformType::Mat3?3
+                           :info.type==bgfx::UniformType::Vec4?1:0;
+        vec4+=rows*info.num;
+      }
+      bgfx::destroy(shader);
+      return vec4;
+    };
+    std::printf("FRAGMENT UNIFORMS fs_mesh %u vec4, fs_vehicle %u vec4\n",
+                uniform_vec4(fs_mesh_dxbc,sizeof(fs_mesh_dxbc)),uniform_vec4(fs_vehicle_dxbc,sizeof(fs_vehicle_dxbc)));
     bgfx::setViewMode(view_id,bgfx::ViewMode::Default);
     b.sequential_views_.reset(view_id);
     bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);

@@ -3063,3 +3063,43 @@ city at night.
   1.69 M triangles / 26,728 records at 2 px and 1.47 M / 23,152 at 4 px (of
   31,075). Draw calls are not reduced by LOD itself (a low mesh replaces the
   high one); the size cull removes records.
+
+### Light data texture (#254)
+
+- The fixture, street lamp, lamp-tile and car-tile arrays moved out of the
+  fragment constants into a 256 × 3 RGBA32F texture (`s_lightData`, stage 11)
+  read with `texelFetch` (`shaders/scene_shadow.sh:lightData`,
+  `shaders/scene_shadow.sh:lightMatrix`; layout documented there). Matrices
+  are stored by column and rebuilt with `mtxFromCols`, which reproduces the
+  uniform `mat4` exactly.
+- `src/render/bgfx_lighting.cpp:upload_light_data` builds the contents where
+  the #246 per-view arrays were uploaded (first lit draw of a Sequential view
+  and frame, every draw in other views) and calls `updateTexture2D` only when
+  they changed. A bgfx texture update applies to the whole frame, which is
+  valid because light data changes only in the `update_*` functions, before
+  any draw. Per-draw counts and flags stay uniforms.
+- Fragment uniforms (from the embedded D3D11 shaders' uniform tables):
+  `fs_mesh` 595 → 79 vec4, `fs_vehicle` 593 → 77 vec4. Harness, 2,000 lit
+  draws in one view: bgfx render thread 6.5–7.1 ms → 4.7–5.0 ms (about −30 %),
+  main-thread submission unchanged at about 1.1 ms with the per-view path.
+  Images are byte-identical to the uniform version (cross-build capture of the
+  lamp/car-tile scene, and every scene_shadow_gpu pixel count unchanged).
+- Investigations noted while measuring (not fixed):
+  - Half-res GTAO pass 1 still reads the full-resolution D32F prepass:
+    `surfaceNormal` takes 9 depth taps, and each slice sample calls
+    `sampleDelta`, which reads the depth twice (`depthAt`, then `positionAt`).
+    High is 5 slices × 8 steps × 2 sides, so about 170 full-res depth fetches
+    per AO pixel, spread over a screen radius that grows with the world radius
+    (Elias uses 3 m, the harness 1 m, which is why the harness predicted more
+    savings). Filter passes 2 and 3 each rebuild the position and the 9-tap
+    normal again. Likely wins: one fetch per sample, a half-resolution linear
+    depth (R16F/R32F) for all three passes, and a depth mip chain chosen by
+    sample distance (as in XeGTAO); storing the normal once would remove the
+    9-tap reconstruction from passes 2 and 3.
+  - Prop LOD (#252) keeps both meshes of a chain as props, so the collection
+    loops visit about twice as many props for the 16,602 chained placements.
+    Each runs the frustum test before the LOD test, and `prop_lod_visible`
+    recomputes the transformed centre and distance for both of a placement's
+    props. That matches the +0.3 ms of collection seen in game. Testing the
+    LOD before the frustum test, caching the level per placement and frame, or
+    keeping per-LOD lists would remove it.
