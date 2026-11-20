@@ -4,6 +4,7 @@
 #include "slrr/gameref.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/scene_sun.hpp"
+#include "slrr/script_lights.hpp"
 #include "slrr/frame_profiler.hpp"
 #include "slrr/job_system.hpp"
 
@@ -1149,6 +1150,56 @@ void LibBgfxBackend::update_local_light() {
     // controls scenery sunlight; it must not switch the garage lamps off.
     if (!garage_ || !host_enhanced_graphics().local_lights)
       return;
+    // Script lights (java.render.LightSource, #235) come first. Position and
+    // direction are in the parent's local script space; S*M*S with S = diag
+    // (1,1,-1) is the instance transform, so render space is S*(M*local).
+    // Any light whose parent is in the drawn world, enabled or not, replaces
+    // the stock-garage anchor adapter below, so a script can switch it off.
+    bool scripted = false;
+    std::optional<PointLight> script_point;
+    for (const auto* source : script_lights_all()) {
+      float matrix[16];
+      if (!scene_instances_render_matrix(source->parent, matrix)) continue;
+      scripted = true;
+      if (!source->enabled) continue;
+      const auto& l = source->position;
+      const auto& d = source->direction;
+      const bx::Vec3 world{
+          matrix[0] * l[0] + matrix[4] * l[1] + matrix[8] * l[2] + matrix[12],
+          matrix[1] * l[0] + matrix[5] * l[1] + matrix[9] * l[2] + matrix[13],
+          -(matrix[2] * l[0] + matrix[6] * l[1] + matrix[10] * l[2] + matrix[14])};
+      if (source->kind == ScriptLightKind::Point) {
+        // One shadowed point source per interior: the first one wins.
+        if (script_point) continue;
+        PointLight point;
+        point.owner = source->key;
+        point.position = {world.x, world.y, world.z};
+        point.color = source->color;
+        point.intensity = source->intensity;
+        point.range = source->range;
+        point.casts_shadows = source->shadows;
+        if (point.valid()) script_point = point;
+        continue;
+      }
+      if (fixture_lights_.size() >= kFixtureLights) continue;
+      // Spot and rect lights share the fixture path. RectLight is drawn as a
+      // spot for now; its size is stored but not used. The shader's inner
+      // cone is fixed at 65 degrees, so the outer half-angle must lie above it.
+      const auto direction = bx::normalize(bx::Vec3{
+          matrix[0] * d[0] + matrix[4] * d[1] + matrix[8] * d[2],
+          matrix[1] * d[0] + matrix[5] * d[1] + matrix[9] * d[2],
+          -(matrix[2] * d[0] + matrix[6] * d[1] + matrix[10] * d[2])});
+      SpotLight fixture;
+      fixture.owner = source->key;
+      fixture.position = {world.x, world.y, world.z};
+      fixture.direction = {direction.x, direction.y, direction.z};
+      fixture.color = source->color;
+      fixture.intensity = source->intensity;
+      fixture.range = source->range;
+      fixture.outer_cos = std::cos(
+          std::clamp(source->outer_degrees, 65.5f, 89.f) * 3.14159265f / 180.f);
+      if (fixture.valid()) fixture_lights_.push_back(fixture);
+    }
     for (const auto* node : gameref_directional_lights()) {
       float matrix[16];
       if ((node->type_id & 0xffff) != 0x001d ||
@@ -1170,6 +1221,7 @@ void LibBgfxBackend::update_local_light() {
       if (!light.valid())
         continue;
       for(const auto& instance:instances_) {
+        if(scripted) break;
         if(!instance.geometry || instance.sky || instance.vehicle_material || instance.emissive_overlay) continue;
         for(const auto& anchor:instance.geometry->ceiling_light_anchors) {
           if(fixture_lights_.size()>=kFixtureLights) break;
@@ -1192,6 +1244,14 @@ void LibBgfxBackend::update_local_light() {
       local_light_ = {light.position[0], light.position[1], light.position[2],
                       light.range};
       break;
+    }
+    if (script_point) {
+      // A script point light takes the point record; it keeps the neon's
+      // ambient fill when the stock neon is present.
+      if (point_light_) script_point->ambient = point_light_->ambient;
+      point_light_ = script_point;
+      local_light_ = {script_point->position[0], script_point->position[1],
+                      script_point->position[2], script_point->range};
     }
 }
 

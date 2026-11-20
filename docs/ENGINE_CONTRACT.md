@@ -1160,6 +1160,51 @@ to them, or a global correction meant for the body.
 For trees and glass, check alpha test, blending, depth write, pass order,
 and mipmaps before modifying the original textures.
 
+### Script light sources (#235)
+
+Scripts create lights with `java.render.LightSource` and its subclasses
+`PointLight`, `SpotLight` and `RectLight`. These classes are new: they are
+OpenSLRR additions shipped in `patch/system/Scripts/render`, not stock API.
+Car head- and taillights stay engine-driven and do not use this API.
+
+| Native (owner) | Descriptor | Effect |
+| --- | --- | --- |
+| `LightSource.create` | `(Ljava.util.resource.ResourceRef;I)V` | Registers the receiver as kind 0 point, 1 spot or 2 rect, attached to the parent's canonical GameRef. A parent without GameRef state, or another kind, creates nothing and logs `[light]`. A second call restarts the light with defaults. |
+| `LightSource.setPosition` | `(Ljava.lang.Vector3;)V` | Parent-local position, metres, script axes (as `RenderRef.setMatrix`). Each axis is clamped to ±1e5. |
+| `LightSource.setDirection` | `(Ljava.lang.Vector3;)V` | Parent-local direction of travel, normalised. A zero vector is ignored. |
+| `LightSource.setColor` | `(I)V` | `0xRRGGBB`; alpha ignored. |
+| `LightSource.setIntensity` | `(F)V` | Engine units, clamped to 0–1000. |
+| `LightSource.setRange` | `(F)V` | Metres, clamped to 0.2–500. |
+| `LightSource.setShadows` | `(I)V` | Stored for every kind; only the point light honours it today. |
+| `LightSource.setEnabled` | `(I)V` | Enables or disables the light. |
+| `LightSource.destroy` | `()V` | Removes the light; later calls on the object are ignored. |
+| `SpotLight.setCone` | `(FF)V` | Inner/outer half-angles in degrees; outer clamped to 1–89, inner to 0–outer. |
+| `RectLight.setSize` | `(FF)V` | Width and height in metres, clamped to 0–100. Stored only. |
+
+Every setter ignores non-finite or mistagged arguments and keeps the previous
+value. Defaults: position 0, direction (0,-1,0), white, intensity 24, range
+20 m, cone 65/80°, shadows and enabled on.
+
+Lifetime. The registry (`src/resources/script_lights.cpp`) is keyed by the Java
+object and is a GC root provider: a registered light and its parent stay alive
+until `destroy`, removal of the parent GameRef (`gameref_remove`), or a world
+reset (`gameref_clear`, or a new VM registering the natives). Lights are not
+saved.
+
+Rendering. `LibBgfxBackend::update_local_light` reads the registry every frame,
+still only in the garage with Local lights (option 4) on. The parent's drawn
+script matrix M gives the render-space position S·M·p (S flips Z), the same
+convention as the instance transform S·M·S applied to mesh vertices. Spot and
+rect lights become fixture `SpotLight`s, at most 12, in creation order; the
+outer angle is clamped to 65.5–89° because the shader's inner edge is fixed at
+65°, and every fixture shares the fixture shadow atlas. A rect light is drawn as
+a spot. The first enabled point light becomes the point record and keeps the
+neon's ambient fill. Any registered light whose parent is in the drawn world,
+enabled or not, disables the stock g1 anchor adapter (`legacy_neon.hpp`), so a
+script can turn the garage dark. Without registry lights the adapter path is
+unchanged. The stock `misc.garage:0x001D` neon remains an ambient-only record
+whenever fixtures exist.
+
 ## 13. Interface, input, and options
 
 OSD registries, script widgets, and picking rectangles must stay in sync.

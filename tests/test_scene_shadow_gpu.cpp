@@ -5,6 +5,7 @@
 #include "../src/render/shadow_cascades.hpp"
 #include "save_io_fixture.hpp"
 #include "slrr/mainloop.hpp"
+#include "slrr/script_lights.hpp"
 #include <bx/math.h>
 #include <limits>
 namespace slrr {
@@ -738,6 +739,50 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(b.fixture_shadow_active_);
     b.draw_previews();bgfx::frame();
     const auto fixtures=b.fixture_lights_;
+    {
+      // #235: the patched Garage.java creates one SpotLight per fitting,
+      // parented to the stuff mesh at these local anchors. They must give the
+      // adapter's world positions and replace it.
+      const float anchors[9][3]={{-14.05739f,6.43138f,5.03007f},{-8.68388f,6.43138f,5.03007f},
+          {-3.03047f,6.43138f,5.03007f},{2.63350f,6.43138f,5.03007f},{8.82223f,6.43138f,5.03007f},
+          {5.77201f,6.43138f,-4.00419f},{-5.88736f,6.43138f,-4.00419f},
+          {12.71575f,6.43138f,1.23414f},{12.71575f,6.43138f,-5.19158f}};
+      Object scripted[9];
+      for(int i=0;i<9;++i) {
+        SLRR_REQUIRE(script_lights_create(&scripted[i],&stuff,ScriptLightKind::Spot));
+        auto* light=script_lights_get(&scripted[i]);
+        light->position={anchors[i][0],anchors[i][1],anchors[i][2]};
+        light->outer_degrees=80;
+      }
+      b.update_local_light();
+      SLRR_REQUIRE(b.fixture_lights_.size()==fixtures.size());
+      for(size_t i=0;i<fixtures.size();++i) {
+        const auto& got=b.fixture_lights_[i];const auto& want=fixtures[i];
+        for(int axis=0;axis<3;++axis) {
+          SLRR_REQUIRE(std::abs(got.position[axis]-want.position[axis])<1e-3f);
+          SLRR_REQUIRE(std::abs(got.direction[axis]-want.direction[axis])<1e-5f);
+        }
+        SLRR_REQUIRE(got.owner==&scripted[i] && got.intensity==want.intensity &&
+                     got.range==want.range && std::abs(got.outer_cos-want.outer_cos)<1e-5f);
+      }
+      // The neon stays an ambient-only record next to script fixtures.
+      SLRR_REQUIRE(b.point_light_ && b.point_light_->intensity==0 && !b.point_light_->casts_shadows);
+      std::printf("NEON script fixtures match adapter=%zu\n",b.fixture_lights_.size());
+      // Disabled script lights still replace the adapter: the garage is dark.
+      for(auto& light:scripted) script_lights_get(&light)->enabled=false;
+      b.update_local_light();SLRR_REQUIRE(b.fixture_lights_.empty());
+      // A script point light takes the point record and keeps the neon ambient.
+      Object bulb;SLRR_REQUIRE(script_lights_create(&bulb,&stuff,ScriptLightKind::Point));
+      script_lights_get(&bulb)->position={0,3,0};
+      b.update_local_light();
+      SLRR_REQUIRE(b.point_light_ && b.point_light_->owner==&bulb && b.point_light_->intensity==24);
+      SLRR_REQUIRE(std::abs(b.point_light_->position[1]-3)<1e-4f);
+      for(auto& light:scripted) script_lights_destroy(&light);
+      script_lights_destroy(&bulb);
+      b.update_local_light();
+      SLRR_REQUIRE(b.fixture_lights_.size()==fixtures.size() && b.fixture_lights_[0].owner==&neon);
+      b.fixture_lights_=fixtures;
+    }
     const auto fixture_image=capture(false);
     capture_view=72;
     SLRR_REQUIRE(capture(false)==fixture_image);

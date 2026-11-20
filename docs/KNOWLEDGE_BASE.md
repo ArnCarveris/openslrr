@@ -94,7 +94,8 @@ current gaps to SLRR_rev code are in
   The host matches this (`src/platform/host_music.cpp:host_music_change_set`).
   The extra `Misc_Menu` and `Anim_Scene` sets in SLRR_rev belong to build 940.
 - Java changes are allowed only for specific authorized features. Shipped
-  changes live in `patch/` with their source (`patch/sl/Scripts/game/src/OptionsDialog.java`).
+  changes live in `patch/` with their source (`patch/sl/Scripts/game/src/OptionsDialog.java`,
+  `patch/sl/Scripts/game/src/Garage.java`, `patch/system/Scripts/render/src/*.java`).
   A file that exists only in the local game tree is not a patch.
 
 ## 3. Build, run and diagnostics
@@ -1903,6 +1904,8 @@ Mechanic.flushInventory before autoSaveQuiet snapshots player.parts. The VM,
 natives and save format are unchanged. scripts/patch_garage_save_order.py
 reproduces the binary patch from one SHA-256 verified MWM input and rejects
 other mods; do not apply binary offsets to an unknown Garage container.
+Since #235 the shipped class is compiled from `patch/sl/Scripts/game/src/Garage.java`
+instead, which keeps this order; the binary builder is kept as the #59 reference.
 
 Validation: inventory_transition executes the actual shipped GameLogic transition,
 Mechanic.flushInventory and Garage.osdCommand/exit with isolated presentation
@@ -2587,3 +2590,54 @@ inventing new Java classes.
   engine-driven (time of day, car state).
 - The `fake*` types look like flare/glow-only lights that do not light the
   scene. Not confirmed against the original engine.
+
+### Script light sources and the g1 garage (#235, phase 1)
+
+- API: `patch/system/Scripts/render/src/LightSource.java` with `PointLight`,
+  `SpotLight` (`setCone`) and `RectLight` (`setSize`). Package `java.render`,
+  new classes, no stock equivalent. Contract in ENGINE_CONTRACT §12
+  "Script light sources".
+- Natives: `src/natives/natives_lights.cpp:register_light_natives`, called from
+  `src/natives/natives_boot.cpp:register_boot_natives`. Natives are registered
+  on the declaring class only: `Jvm::invoke` resolves the declaring owner first
+  (`src/jvm/jvm.cpp:find_method_inherited`), so `SpotLight.setPosition` reaches
+  `java.render.LightSource.setPosition`. Registrations use literal class names
+  because `scripts/render_native_coverage.py` reads them statically.
+- Registry: `src/resources/script_lights.cpp:script_lights_create`, keyed by the
+  Java object, parent stored as the canonical GameRef key (`gameref_get`).
+  `src/resources/gameref.cpp:gameref_remove` calls
+  `script_lights_forget_parent`; `gameref_clear` and `register_light_natives`
+  clear it. `script_lights_visit_gc_roots` roots lights and parents.
+- Parent type: `ResourceRef`, not `GameRef`. `RenderRef` extends `ResourceRef`
+  directly (`GAME:system/Scripts/util/resource/src/RenderRef.java`), and the
+  garage parents its lights to `stuff`, a `RenderRef`.
+- Space: parent-local script metres, the coordinates of `RenderRef.setMatrix`.
+  `src/resources/scene_instances.cpp:chain_matrix` documents the S·M·S instance
+  transform; `src/render/bgfx_lib_backend.cpp:update_local_light` uses
+  `scene_instances_render_matrix` (the drawn pose, as the instance transform)
+  and flips Z. Mesh-local SCX coordinates equal script-local coordinates, so
+  the adapter's anchors can be pasted into Java unchanged.
+- g1 anchors: `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` finds
+  nine fittings, all in `misc/garage/g1/garazs_01_targyak.scx` (the 0x42 stuff
+  mesh), none in the room mesh; y = 6.43138, x/z in `Garage.java:createG1Fixtures`.
+- Renderer: registry lights replace the adapter whenever one has a drawn parent,
+  even when disabled. Limits: one point light, 12 fixtures, inner cone fixed at
+  65° by `shaders/scene_shadow.sh`, fixture shadows all-or-nothing, rect drawn as
+  spot, garage only (`garage_`).
+- Garage source: `sources/sl/Scripts/game/src/Garage.java` is the only copy on
+  disk and is the MWM version (jack, `Mirans_Mod_protection`). Every
+  non-comment string literal appears in the original MWM class; the known code
+  difference was the #59 save order. The patch copy adds `createG1Fixtures`,
+  `createFixture` and `destroyFixtures` (called in `exit` before
+  `stuff.destroy`).
+- Validation: `tests/test_script_lights.cpp` (constructors and inherited natives
+  through the shipped classes, input validation, destroy/parent/GC/reset
+  lifetime); `tests/test_scene_shadow_gpu.cpp` checks that nine script spots at
+  the Garage.java anchors give the adapter's positions, directions and cones,
+  that disabled lights darken the garage and that destroying them restores the
+  adapter; `tests/test_inventory_transition.cpp` runs the recompiled
+  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit). No
+  in-game validation yet.
+- Phase 2 (not done): stock light resources (type 13) and cfg `render` light
+  children for street lamps and scenery objects; per-light spot shadows and inner
+  cone; outside-garage rendering.
