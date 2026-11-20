@@ -999,9 +999,13 @@ for each cascade. Skip character palette completion in that collection; do not
 change default completion for ordinary/reflection views. Depth draws may merge
 adjacent opaque material sections, but must preserve alpha-cutout and blended
 index boundaries, rebuilding their metadata with every geometry revision.
-The shared visibility uses a symmetric nine-tap tent footprint with bilinear
-comparison; this mitigates thin-caster aliasing without claiming complete
-motion stability on every asset.
+Outdoor shadow comparisons align to depth texel centres and evaluate each
+reference depth on the receiver plane. Derivatives are evaluated for every
+cascade before distance selection. Sharp uses four continuous comparisons,
+Soft a 4x4 cubic/tent filter, and Very Soft a broader 4x4 fractional tent. A constant
+reference across a wide footprint produces moire/acne on sloped receivers;
+inflating a single slope bias is not an adequate replacement. Only sample an
+adjacent cascade in its blend interval; clamp every tap inside its own tile.
 
 Sun rotation is evaluated around a nearby shared floating origin. Rebase
 caster model translations and receiver positions together; depth vertices must
@@ -1045,14 +1049,20 @@ nothing. The passes check the handle and switch themselves off. A varying added
 to `vs_mesh` must therefore be added to every fragment shader paired with it.
 Startup reports each failed program as `[bgfx] program <name> failed to link`.
 
-Ambient occlusion uses a separate camera-matched normal-Z D32F prepass in view
+Ambient occlusion uses a separate camera-matched reversed-Z D32F prepass in view
 140, then R8 horizon evaluation and separable depth-aware filtering in views
 141–143 before the main world draw. It does not replace the swapchain or require
 a colour post-process chain. Low/medium AO use half resolution; high full.
 HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.
 Reconstruct sample positions at the exact depth texel centres, including the
 centre used by normal reconstruction; otherwise flat receivers develop false AO.
-Finite-slice GTAO is normalised against its unobstructed hemisphere.
+Finite-slice GTAO is normalised against its unobstructed hemisphere. Reject
+coplanar/behind-tangent samples: quantised screen samples may leave the nominal
+slice and must not occlude a flat road. Clear AO depth to zero and use GREATER
+for individual, skinned and instanced depth draws. Use the actual reversed
+projection coefficients when reconstructing positions; do not reinterpret the
+main-view field as normal-Z. AO radius stays in world metres; a fixed pixel
+cap must not shrink it when approaching a receiver.
 Only main-view opaque indirect diffuse is attenuated. Direct sun/lamps, emission,
 transparent glass, preview/inset views, cubemap captures and UI opt out. Off or
 zero strength destroys the AO targets; resizing/quality changes recreate them.

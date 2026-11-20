@@ -315,3 +315,24 @@ when moving an edge in 1/32-texel increments; the corrected Sharp/Soft/Very Soft
 paths have 11/14/7 values and maximum jumps 6/3/3 respectively. Contact shadows,
 vertical receivers, AO isolation and cached depths remain covered. This changes
 comparison filtering, not emitter positions or simulated volumetric beams.
+
+
+## Outdoor banding and distant AO receivers
+
+The reported large road stripes reproduce with AO disabled and disappear with
+map shadows disabled. Outdoor PCF had one depth reference across a wide
+footprint and a slope estimate with an absolute determinant threshold; this
+created self-shadow moire on roads. Aligned, receiver-plane comparisons now
+cover the full filter footprint, with continuous fractional weights and atlas
+isolation. Only the blend region samples an adjacent cascade. Shadow coverage
+and distance settings are unchanged. A production GPU test shades an inclined
+receiver that is its own only caster: the old Soft filter darkens RGB sum
+534 to 384; all corrected filters retain 534.
+
+A separate AO test extends a plane to 1.5 km with a 5 cm camera near plane.
+GTAO previously falsely darkened 1,396 of 6,640 visible pixels. Reversed-Z
+camera depth and tangent-hemisphere rejection reduce that to 10 pixels in high
+quality; medium/low have zero. HBAO has 37/6,640 at high and zero at lower tiers.
+Contact occlusion and instanced props remain covered. These are numerical
+regressions, not a claim of full GI or temporally accumulated AO. See
+[ao-road-banding/README.md](../assets/validation/ao-road-banding/README.md).

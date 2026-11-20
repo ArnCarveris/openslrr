@@ -571,7 +571,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
 
 void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                        const std::vector<SceneBatch>& batches,
-                                       bool shadow, bool conservative) {
+                                       bool shadow, bool conservative, bool reversed_depth) {
   const auto program = shadow ? inst_shadow_program_ : inst_program_;
   if (!bgfx::isValid(program) || batches.empty()) return;
   float identity[16];
@@ -635,7 +635,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, first, index_count);
           // Like a single caster in update_static_shadow: both faces cast.
-          uint64_t state = BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS;
+          uint64_t state = BGFX_STATE_WRITE_Z | (reversed_depth ? BGFX_STATE_DEPTH_TEST_GREATER : BGFX_STATE_DEPTH_TEST_LESS);
           if (conservative) state |= BGFX_STATE_CONSERVATIVE_RASTER;
           bgfx::setState(state);
         } else {

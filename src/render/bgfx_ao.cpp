@@ -78,19 +78,26 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     ao_height_ = ah;
   }
   const auto *caps = bgfx::getCaps();
-  ao_projection_ = {projection[10], projection[14],
+  float depth_projection[16];
+  std::copy(projection, projection + 16, depth_projection);
+  for (int i : {2, 6, 10, 14})
+    depth_projection[i] = caps->homogeneousDepth
+                              ? -projection[i]
+                              : projection[i + 1] - projection[i];
+  ao_projection_ = {depth_projection[10], depth_projection[14],
                     caps->homogeneousDepth ? 1.f : 0.f,
                     caps->originBottomLeft ? 1.f : 0.f};
   ao_world_view_ = world_view;
   ao_active_ = true;
-  // A camera-matched, single-sample normal-Z depth prepass. No swapchain read,
-  // MSAA depth resolve, post-darkening of direct light or UI processing.
+  // A camera-matched, single-sample reversed-Z depth prepass. No swapchain
+  // read, MSAA depth resolve, post-darkening of direct light or UI processing.
   bgfx::setViewFrameBuffer(140, ao_depth_fb_);
   bgfx::setViewRect(140, 0, 0, width, height);
-  bgfx::setViewClear(140, BGFX_CLEAR_DEPTH, 0, 1.f);
-  bgfx::setViewTransform(140, view, projection);
+  bgfx::setViewClear(140, BGFX_CLEAR_DEPTH, 0, 0.f);
+  bgfx::setViewTransform(140, view, depth_projection);
   bgfx::touch(140);
   const float no_apertures[4]{};
+  bgfx::setUniform(u_alpha_test_, no_apertures);
   bgfx::setUniform(u_aperture_params_, no_apertures);
   auto draw = [&](const ScenePart &part, const float *matrix,
                   const SceneInstance *object) {
@@ -118,7 +125,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                        slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                            ? part.tex[slot]
                            : white_tex_);
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER);
       bgfx::submit(140, skin ? ao_skin_depth_program_ : static_shadow_program_);
     }
   };
@@ -137,7 +144,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
       draw(part, identity, nullptr);
   const bool saved_local = static_shadow_local_;
   static_shadow_local_ = true;
-  draw_prop_batches(140, prop_batches_, true);
+  draw_prop_batches(140, prop_batches_, true, false, true);
   static_shadow_local_ = saved_local;
   const float screen[4] = {1.f / width, 1.f / height, projection[0],
                            projection[5]};

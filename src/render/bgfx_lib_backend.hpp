@@ -170,7 +170,7 @@ class LibBgfxBackend final : public IRenderBackend {
 
   void draw_instance(uint16_t view_id,const SceneInstance& instance,const float* matrix,bool preview,int pass);
   void draw_prop_batches(uint16_t view_id, const std::vector<SceneBatch>& batches,
-                         bool shadow, bool conservative = false);
+                         bool shadow, bool conservative = false, bool reversed_depth = false);
   void refresh_distance_fog(const float render_eye[3]);
 
   void draw_sky(uint16_t view_id, const float* view, const float* projection);

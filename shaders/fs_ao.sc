@@ -37,7 +37,7 @@ vec3 surfaceNormal(vec2 uv,vec3 p) {
     return dot(n,-p)<0.0?-n:n;
 }
 vec3 sampleDelta(vec2 uv,vec3 p) {
-    if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0))) || depthAt(uv)>=0.999999)
+    if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0))) || depthAt(uv)<=0.0)
         return vec3(0.0,0.0,0.0);
     return positionAt(uv)-p;
 }
@@ -90,8 +90,10 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
             vec2 offset=screenDirection*radiusUv*distance;
             vec3 a=sampleDelta(uv+offset,p),b=sampleDelta(uv-offset,p);
             float a2=dot(a,a),b2=dot(b,b);
-            if(a2>0.0001 && a2<r2) h0=max(h0,mix(low0,dot(a*inversesqrt(a2),view),saturate(1.0-a2/r2)));
-            if(b2>0.0001 && b2<r2) h1=max(h1,mix(low1,dot(b*inversesqrt(b2),view),saturate(1.0-b2/r2)));
+            // Quantised screen samples can leave the nominal slice plane.
+            // A coplanar/behind-tangent sample cannot occlude its hemisphere.
+            if(a2>0.0001 && a2<r2 && dot(n,a)*inversesqrt(a2)>0.02) h0=max(h0,mix(low0,dot(a*inversesqrt(a2),view),saturate(1.0-a2/r2)));
+            if(b2>0.0001 && b2<r2 && dot(n,b)*inversesqrt(b2)>0.02) h1=max(h1,mix(low1,dot(b*inversesqrt(b2),view),saturate(1.0-b2/r2)));
         }
         float a0=clamp(-acos(clamp(h1,-1.0,1.0)),normalAngle-PI*0.5,normalAngle+PI*0.5);
         float a1=clamp( acos(clamp(h0,-1.0,1.0)),normalAngle-PI*0.5,normalAngle+PI*0.5);
@@ -109,7 +111,7 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation) {
 void main() {
     vec2 uv=v_texcoord0;
     float depth=depthAt(uv);
-    if(depth>=0.999999) {gl_FragColor=vec4(1.0,1.0,1.0,1.0);return;}
+    if(depth<=0.0) {gl_FragColor=vec4(1.0,1.0,1.0,1.0);return;}
     vec2 receiverUv=clamp((floor(uv/u_aoScreen.xy)+vec2(0.5,0.5))*u_aoScreen.xy,
                           u_aoScreen.xy*0.5,vec2(1.0,1.0)-u_aoScreen.xy*0.5);
     vec3 p=positionAt(receiverUv);
@@ -118,7 +120,7 @@ void main() {
         float sum=0.0,weight=0.0;
         for(int k=-2;k<=2;++k) {
             vec2 q=clamp(uv+direction*float(k),vec2(0.0,0.0),vec2(1.0,1.0));
-            if(depthAt(q)>=0.999999) continue;
+            if(depthAt(q)<=0.0) continue;
             float z=linearDepth(depthAt(q));
             float spatial=k==0?0.375:abs(k)==1?0.25:0.0625;
             float w=spatial*exp2(-abs(z-p.z)/max(u_aoConfig.z*0.08,0.02));
@@ -129,7 +131,8 @@ void main() {
     }
     vec3 n=surfaceNormal(receiverUv,p);
     vec2 radiusUv=u_aoConfig.z*u_aoScreen.zw/(2.0*max(p.z,0.05));
-    radiusUv=min(radiusUv,u_aoScreen.xy*96.0);
+    // Radius is in metres: a fixed pixel cap shrinks contact AO as the camera
+    // approaches an object. Off-screen samples are rejected by sampleDelta.
     float rotation=fract(52.9829189*fract(dot(floor(uv/u_aoParams.yz),vec2(0.06711056,0.00583715))));
     float visibility=u_aoConfig.x<1.5?hbao(receiverUv,p,n,radiusUv,rotation):gtao(receiverUv,p,n,radiusUv,rotation);
     gl_FragColor=vec4(visibility,visibility,visibility,1.0);

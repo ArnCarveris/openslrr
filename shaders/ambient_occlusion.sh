@@ -13,7 +13,7 @@ float ambientVisibility(vec2 pixel) {
     vec2 uv=pixel*u_aoSampling.yz;
     if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0)))) return 1.0;
     float depth=texture2DLod(s_aoDepth,uv,0.0).r;
-    if(depth>=0.999999) return 1.0;
+    if(depth<=0.0) return 1.0;
     float z=aoViewDepth(depth);
     vec2 grid=uv/u_aoFieldSize.xy-vec2(0.5,0.5);
     vec2 base=(floor(grid)+vec2(0.5,0.5))*u_aoFieldSize.xy;
@@ -21,7 +21,7 @@ float ambientVisibility(vec2 pixel) {
     for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
         vec2 q=clamp(base+vec2(float(x),float(y))*u_aoFieldSize.xy,vec2(0.0,0.0),vec2(1.0,1.0));
         float d=texture2DLod(s_aoDepth,q,0.0).r;
-        if(d>=0.999999) continue;
+        if(d<=0.0) continue;
         float w=(x==0?1.0-f.x:f.x)*(y==0?1.0-f.y:f.y);
         w*=exp2(-abs(aoViewDepth(d)-z)/max(u_aoFieldSize.z*0.08,0.02));
         sum+=texture2DLod(s_aoField,q,0.0).r*w;weights+=w;

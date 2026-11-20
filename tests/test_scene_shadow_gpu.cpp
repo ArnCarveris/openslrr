@@ -73,6 +73,28 @@ struct SceneShadowRegression {
       std::printf("AO flat method=%d dark=%u/%u average=%g reference=%g\n",method,dark,visible,double(total)/visible,double(reference)/visible);
       SLRR_REQUIRE(dark<visible/10);
     }
+    // Near-plane precision must not turn a distant, unobstructed road into AO bands.
+    const auto near_positions=floor->positions;
+    floor->positions={-300,0,0,300,0,0,-300,0,-1500,300,0,-1500};
+    ++floor->revision;b.cache_scene_mesh(floor,nullptr,false);
+    bx::mtxLookAt(view,{3,1.6f,-4},{0,1.6f,50});
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,3000.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    const auto distant_plain=capture(0,2);
+    for(int method=1;method<=2;++method) for(int quality=0;quality<3;++quality) {
+      const auto image=capture(method,quality);unsigned dark=0,visible=0;
+      for(size_t i=0;i<image.size();i+=4) if(distant_plain[i]>10) {
+        ++visible;if(int(distant_plain[i])-int(image[i])>3) ++dark;
+      }
+      std::printf("AO distant road method=%d quality=%d false occlusion=%u/%u pixels\n",method,quality,dark,visible);
+      SLRR_REQUIRE(visible>100 && dark<visible/100);
+    }
+    floor->positions=near_positions;++floor->revision;b.cache_scene_mesh(floor,nullptr,false);
+    bx::mtxLookAt(view,{3,3,-4},{0,0,3});
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,100.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
     b.instances_={receiver,blocker};draw_blocker=true;
     const auto plain=capture(0,1);
     std::vector<uint8_t> methods[2];
@@ -85,6 +107,14 @@ struct SceneShadowRegression {
       methods[method-1]=image;
     }
     SLRR_REQUIRE(methods[0]!=methods[1]);
+    b.instances_={receiver};
+    SceneBatch batch;batch.geometry=cube;SceneBatchInstance placement;bx::mtxIdentity(placement.transform.data());
+    batch.instances.push_back(placement);b.prop_batches_={batch};
+    const auto instanced=capture(2,1);unsigned prop_shaded=0;
+    for(size_t i=0;i<instanced.size();i+=4) if(int(plain[i])-int(instanced[i])>3) ++prop_shaded;
+    SLRR_REQUIRE(prop_shaded>10);b.prop_batches_.clear();b.instances_={receiver,blocker};
+    std::printf("AO reversed-depth instanced blocker contact=%u pixels\n",prop_shaded);
+
     draw_view=72;SLRR_REQUIRE(capture(2,1)==plain);draw_view=5;
     // AO can only affect ambient diffuse: retain exactly the same direct light.
     b.point_light_.reset();b.garage_=false;b.outdoor_lighting_=true;
@@ -1075,6 +1105,7 @@ struct SceneShadowRegression {
     }
     int darkTile = -1;
     int stripeX = -1;
+    bool sloped_self_receiver=false;
     auto pixel = [&](bool vehicle, bool enabled, float shadowDepth,
                      uint16_t view, bool preview = false, bool lamp = false) {
       instance.vehicle_material = vehicle;
@@ -1095,6 +1126,18 @@ struct SceneShadowRegression {
         bgfx::setViewRect(0, 0, 0, size, size);
         bgfx::setViewClear(0, BGFX_CLEAR_DEPTH, uint32_t(0), shadowDepth);
         bgfx::touch(0);
+      }
+      if(sloped_self_receiver) {
+        float sloped_projection[16];bx::mtxIdentity(sloped_projection);
+        sloped_projection[2]=.2f;sloped_projection[6]=.15f;sloped_projection[10]=0;sloped_projection[14]=.5f;
+        if(bgfx::getCaps()->homogeneousDepth) for(int row:{2,6,10,14}) sloped_projection[row]=2*sloped_projection[row]-sloped_projection[row+1];
+        bgfx::setViewTransform(0,identity,sloped_projection);
+        const auto& part=b.instance_meshes_.at(geo.get());
+        const float params[4]={0,-1,0,0};bgfx::setUniform(b.u_static_shadow_params_,params);
+        const float opaque[4]{};bgfx::setUniform(b.u_alpha_test_,opaque);bgfx::setUniform(b.u_aperture_params_,opaque);
+        bgfx::setTransform(identity);bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh);
+        bgfx::setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
+        bgfx::submit(0,b.static_shadow_program_);
       }
       if (stripeX >= 0) {
         bgfx::setViewFrameBuffer(1, b.static_shadow_fb_);
@@ -1219,6 +1262,20 @@ struct SceneShadowRegression {
     }
     host_enhanced_graphics()=saved_filters;stripeX=-1;
     b.fixture_lights_.clear();b.fixture_shadow_active_=false;b.fixture_shadow_tex_=BGFX_INVALID_HANDLE;
+    const auto flat_matrix=b.static_shadow_matrix_;
+    bx::mtxIdentity(b.static_shadow_matrix_.data());
+    b.static_shadow_matrix_[0]=.5f;b.static_shadow_matrix_[5]=bgfx::getCaps()->originBottomLeft?.5f:-.5f;
+    b.static_shadow_matrix_[2]=.2f;b.static_shadow_matrix_[6]=.15f;b.static_shadow_matrix_[10]=0;
+    b.static_shadow_matrix_[12]=b.static_shadow_matrix_[13]=b.static_shadow_matrix_[14]=.5f;
+    sloped_self_receiver=true;
+    for(int filter=0;filter<3;++filter) {
+      host_enhanced_graphics().shadow_smoothing=filter;
+      const auto self=pixel(false,true,1.f,5);
+      std::printf("Outdoor grazing plane filter %d: lit=%d self=%d\n",filter,meshLit,self);
+      SLRR_REQUIRE(std::abs(self-meshLit)<=3);
+    }
+    sloped_self_receiver=false;b.static_shadow_matrix_=flat_matrix;
+    host_enhanced_graphics()=saved_filters;
     // Distinct depth in each tile detects wrong atlas selection or clears
     // accidentally overwriting other view rectangles on D3D11.
     bgfx::destroy(b.static_shadow_fb_);
