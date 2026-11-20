@@ -25,13 +25,13 @@ void LibBgfxBackend::bind_ambient_occlusion(bool enabled) {
   const float field[4] = {ao_width_ ? 1.f / ao_width_ : 0.f,
                           ao_height_ ? 1.f / ao_height_ : 0.f,
                           std::clamp(options.ao_radius, 25, 300) * .01f, 0};
-  bgfx::setUniform(u_ao_sampling_, sampling);
-  bgfx::setUniform(u_ao_field_size_, field);
-  bgfx::setUniform(u_ao_projection_, ao_projection_.data());
+  set_uniform(u_ao_sampling_, sampling);
+  set_uniform(u_ao_field_size_, field);
+  set_uniform(u_ao_projection_, ao_projection_.data());
   constexpr uint32_t point = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
                              BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT;
-  bgfx::setTexture(9, s_ao_field_, active ? ao_raw_tex_ : white_tex_, point);
-  bgfx::setTexture(10, s_ao_depth_, active ? ao_depth_tex_ : depth_white_,
+  set_texture(9, s_ao_field_, active ? ao_raw_tex_ : white_tex_, point);
+  set_texture(10, s_ao_depth_, active ? ao_depth_tex_ : depth_white_,
                    point);
 }
 void LibBgfxBackend::update_ambient_occlusion(const float *view,
@@ -132,7 +132,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                                   ? group.alpha_reference / 255.f
                                   : .5f;
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
-      bgfx::setUniform(u_static_shadow_params_, params);
+      set_uniform(u_static_shadow_params_, params);
       bgfx::setTransform(matrix);
       if (skin)
         bgfx::setUniform(u_skin_bones_, object->skin.data(), 48);
@@ -196,7 +196,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     vertices[2] = {-1, 3, 0, 0, 0, 1, 0, v1};
     const float params[4] = {float(pass), 1.f / aw, 1.f / ah, 0};
     bgfx::setUniform(u_ao_screen_, screen);
-    bgfx::setUniform(u_ao_projection_, ao_projection_.data());
+    set_uniform(u_ao_projection_, ao_projection_.data());
     bgfx::setUniform(u_ao_config_, config);
     bgfx::setUniform(u_ao_params_, params);
     bgfx::setTexture(0, s_ao_depth_, ao_depth_tex_, sampler);

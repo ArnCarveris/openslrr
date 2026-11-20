@@ -1301,6 +1301,131 @@ struct SceneShadowRegression {
     gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
     std::puts("PASS per-view light uniforms: one upload per Sequential view and frame, same image");
   }
+  // #262: main-thread cost of a real city frame. Valo City at night, street
+  // view: sync_instances (collection + residency) and world submission
+  // (draw_dynamic_world into a Sequential view), plus the render thread, and
+  // a byte capture compared with the previous build when one is on disk.
+  static void city_submission(LibBgfxBackend& b) {
+    Fixture f;
+    const auto game=fs::absolute("game");
+    f.vm.set_game_root(game.string());f.packs.set_root(game.string());f.packs.open_all();
+    scene_instances_set_resources(&f.packs);
+    const auto pack=f.packs.open_lib("maps/city.rpk");
+    const auto ground_id=RpkIndex::make_full_id(pack,1);
+    Object* root=f.vm.new_object("java.util.resource.GroundRef");
+    gameref_upsert(root,GameRefKind::GroundRef)->type_id=static_cast<int32_t>(ground_id);
+    gameref_get(root)->flags|=kWorldTreeRoot;
+    spawn_ground_shell(f.vm,f.packs,root);
+    scene_instances_select(root,nullptr,false,SceneEnvironment::Exterior);
+    float frame_matrix[16];
+    SLRR_REQUIRE(scene_instances_ground_frame(root,frame_matrix));
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_method=0;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};b.fixture_lights_.clear();
+    scene_sun_set_time(22*3600.f);
+    constexpr uint16_t width=640,height=360;
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    // Street level, looking along +x (render space), as test_prop_lod does.
+    const bx::Vec3 eye{frame_matrix[12],frame_matrix[13]+2.f,-frame_matrix[14]};
+    float view[16],projection[16],render[16];
+    bx::mtxLookAt(view,eye,bx::add(eye,bx::Vec3{1.f,0.f,.2f}));
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,5000.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    const uint16_t view_id=5;
+    b.set_view_sequential(view_id);
+    // #262: the uniform value cache, the kept texture stages and the
+    // residency skip are measured on and off; both captures must match.
+    struct Run { double sync=0,submit=0,render=0; uint32_t draws=0; std::vector<uint8_t> image;
+                 uint64_t uniform_sets=0,uniform_skips=0,texture_sets=0,texture_skips=0,residency_skips=0; };
+    auto run=[&](bool caches,int frames,int warmup) {
+      b.uniform_cache_=b.texture_cache_=b.residency_cache_=caches;
+      Run out;int samples=0;
+      const auto u0=b.uniform_sets_,s0=b.uniform_skips_,t0=b.texture_sets_,k0=b.texture_skips_,r0=b.residency_skips_;
+      for(int frame=0;frame<frames;++frame) {
+        ++b.frames_;
+        scene_instances_frame_cache(true);
+        auto start=std::chrono::steady_clock::now();
+        b.sync_instances(view,projection);
+        const double sync=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        b.update_local_light();
+        bgfx::setViewFrameBuffer(view_id,fb);bgfx::setViewRect(view_id,0,0,width,height);
+        bgfx::setViewClear(view_id,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+        bgfx::setViewTransform(view_id,view,render);
+        start=std::chrono::steady_clock::now();
+        b.draw_dynamic_world(view_id);
+        const double submit=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        scene_instances_frame_cache(false);
+        const bool last=frame==frames-1;
+        bgfx::TextureRegion dst,src;
+        if(last){dst.init(readback);src.init(color);bgfx::blit(100,dst,src);}
+        bgfx::frame();
+        const auto* stats=bgfx::getStats();
+        if(frame>=warmup) {
+          out.sync+=sync;out.submit+=submit;++samples;out.draws=stats->numDraw;
+          out.render+=double(stats->cpuTimeEnd-stats->cpuTimeBegin)*1000.0/double(stats->cpuTimerFreq);
+        }
+        if(last) {
+          out.image.resize(size_t(width)*height*4);
+          const auto ready=bgfx::read(dst,out.image.data());
+          for(int i=0;i<16&&bgfx::frame()<ready;++i) {}
+        }
+      }
+      out.sync/=samples;out.submit/=samples;out.render/=samples;
+      out.uniform_sets=(b.uniform_sets_-u0)/frames;out.uniform_skips=(b.uniform_skips_-s0)/frames;
+      out.texture_sets=(b.texture_sets_-t0)/frames;out.texture_skips=(b.texture_skips_-k0)/frames;
+      out.residency_skips=b.residency_skips_-r0;
+      b.uniform_cache_=b.texture_cache_=b.residency_cache_=true;
+      return out;
+    };
+    const auto off=run(false,30,10);
+    const auto on=run(true,40,15);
+    for(const auto* r:{&off,&on})
+      std::printf("CITY FRAME %ux%u caches %s: sync_instances %.3f ms, world submission %.3f ms, render thread %.3f ms, "
+                  "%u draws, %zu instances, %zu batch slots; per frame %llu uniform sets / %llu skipped, "
+                  "%llu texture sets / %llu skipped; %llu residency skips\n",width,height,r==&on?"on ":"off",
+                  r->sync,r->submit,r->render,r->draws,b.instances_.size(),b.prop_batches_.size(),
+                  (unsigned long long)r->uniform_sets,(unsigned long long)r->uniform_skips,
+                  (unsigned long long)r->texture_sets,(unsigned long long)r->texture_skips,
+                  (unsigned long long)r->residency_skips);
+    const auto compare=[](const std::vector<uint8_t>& a,const std::vector<uint8_t>& c,int& worst) {
+      size_t differ=0;worst=0;
+      for(size_t i=0;i<a.size()&&i<c.size();++i){const int d=std::abs(int(a[i])-int(c[i]));differ+=d>0;worst=std::max(worst,d);}
+      return differ;
+    };
+    int worst=0;
+    const size_t differ=compare(off.image,on.image,worst);
+    uint64_t lit=0;for(size_t i=0;i<on.image.size();i+=4) lit+=on.image[i]+on.image[i+1]+on.image[i+2];
+    std::printf("CITY FRAME caches on vs off: %zu bytes differ, max %d (sum %llu)\n",differ,worst,(unsigned long long)lit);
+    SLRR_REQUIRE(differ==0);
+    SLRR_REQUIRE(lit>0);
+    SLRR_REQUIRE(on.uniform_skips>0&&on.texture_skips>0&&on.residency_skips>0);
+    SLRR_REQUIRE(off.uniform_skips==0&&off.texture_skips==0&&off.residency_skips==0);
+    // An earlier build's capture, when one was saved there (#254, #262).
+    if(FILE* in=std::fopen("build/city_frame_reference.bin","rb")) {
+      std::vector<uint8_t> base(on.image.size());
+      base.resize(std::fread(base.data(),1,base.size(),in));std::fclose(in);
+      std::printf("CITY FRAME vs reference capture: %zu bytes differ, max %d\n",compare(base,on.image,worst),worst);
+    }
+    bgfx::setViewMode(view_id,bgfx::ViewMode::Default);
+    b.sequential_views_.reset(view_id);
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.scenery_lamps_.clear();b.instances_.clear();b.prop_batches_.clear();b.outdoor_lighting_=false;
+    b.update_lamp_shadows(VideoOptions{});
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    for(auto* child:std::vector<void*>(gameref_get(root)->children)) gameref_remove(child);
+    gameref_remove(root);scene_instances_set_resources(nullptr);
+    std::puts("PASS city frame cost recorded");
+  }
   static void reflection_occupants() {
     Fixture f;Object car,seat,person,pedestrian,world;
     auto* c=gameref_upsert(&car);c->vehicle_material=true;
@@ -2569,7 +2694,7 @@ struct SceneShadowRegression {
         if(bgfx::getCaps()->homogeneousDepth) for(int row:{2,6,10,14}) sloped_projection[row]=2*sloped_projection[row]-sloped_projection[row+1];
         bgfx::setViewTransform(0,identity,sloped_projection);
         const auto& part=b.instance_meshes_.at(geo.get());
-        const float params[4]={0,-1,0,0};bgfx::setUniform(b.u_static_shadow_params_,params);
+        const float params[4]={0,-1,0,0};b.set_uniform(b.u_static_shadow_params_,params);
         const float opaque[4]{};bgfx::setUniform(b.u_alpha_test_,opaque);bgfx::setUniform(b.u_aperture_params_,opaque);
         bgfx::setTransform(identity);bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh);
         bgfx::setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
@@ -2904,6 +3029,7 @@ int main() {
     SceneShadowRegression::car_lamp_shadows(backend);
     SceneShadowRegression::render_debug_overrides(backend);
     SceneShadowRegression::per_view_light_uniforms(backend);
+    SceneShadowRegression::city_submission(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

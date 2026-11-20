@@ -132,7 +132,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
         const float params[4] = {0, threshold, float(group.base_map.channel),
                                  0};
         const auto slot = group.texture_index;
-        bgfx::setUniform(u_static_shadow_params_, params);
+        set_uniform(u_static_shadow_params_, params);
         bgfx::setTexture(0, s_tex_,
                          slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                              ? part.tex[slot]
@@ -373,7 +373,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
                               : part.geo.info.version == 4 ? group.alpha_reference / 255.f
                                                            : .5f;
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
-      bgfx::setUniform(u_static_shadow_params_, params);
+      set_uniform(u_static_shadow_params_, params);
       const auto slot = group.texture_index;
       bgfx::setTexture(0, s_tex_, slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                                       ? part.tex[slot] : white_tex_);
@@ -509,7 +509,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
             const auto surface = scx_surface(part.geo.info.version, group);
             if (surface.blend) continue;
             const float params[4] = {0, -1.f, 0, 0};
-            bgfx::setUniform(u_static_shadow_params_, params);
+            set_uniform(u_static_shadow_params_, params);
             bgfx::setTexture(0, s_tex_, white_tex_);
             bgfx::setTransform(model);
             bgfx::setVertexBuffer(0, part.vbh);
@@ -860,7 +860,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
                                   ? group.alpha_reference / 255.f
                                   : .5f;
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
-      bgfx::setUniform(u_static_shadow_params_, params);
+      set_uniform(u_static_shadow_params_, params);
       bgfx::setUniform(u_aperture_params_, aperture_params);
       if (part.geo.ground_polygons) {
         bgfx::setUniform(u_aperture_matrices_, matrices.data(),
@@ -908,7 +908,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
       const auto& uv=group.base_map;
       const float transform[4]={uv.scale_u,uv.scale_v,uv.offset_u,uv.offset_v};
       bgfx::setUniform(u_alpha_test_,mode);
-      bgfx::setUniform(u_mesh_base_uv_,transform);
+      set_uniform(u_mesh_base_uv_,transform);
       bgfx::setTexture(0,s_tex_,window_texture);
       bgfx::setTransform(stamp.transform.data());
       bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
@@ -1035,7 +1035,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
                                       : .5f;
           const float params[4] = {0, threshold, float(group.base_map.channel),
                                    0};
-          bgfx::setUniform(u_static_shadow_params_, params);
+          set_uniform(u_static_shadow_params_, params);
           bgfx::setTexture(0, s_tex_, texture);
           bgfx::setTransform(matrix.data());
           bgfx::setVertexBuffer(0, part.vbh);
@@ -1224,7 +1224,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
                                         : .5f;
         const float params[4] = {
             0.f, threshold, static_cast<float>(group.base_map.channel), 0.f};
-        bgfx::setUniform(u_static_shadow_params_, params);
+        set_uniform(u_static_shadow_params_, params);
         bgfx::setTexture(0, s_tex_, tex);
         auto relative=instance.transform;
         for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
@@ -1263,7 +1263,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           const float threshold=!surface.cutout ? -1.f
                                 : part.geo.info.version==4 ? group.alpha_reference/255.f : .5f;
           const float params[4]={0.f,threshold,static_cast<float>(group.base_map.channel),0.f};
-          bgfx::setUniform(u_static_shadow_params_,params);
+          set_uniform(u_static_shadow_params_,params);
           const auto slot=group.texture_index;
           bgfx::setTexture(0,s_tex_,slot<part.tex.size() && bgfx::isValid(part.tex[slot])
                                         ? part.tex[slot] : white_tex_);
@@ -1345,7 +1345,7 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
     for (const auto& group : part.geo.groups) {
       if ((group.material_flags & 0x40000000u) || group.diffuse[3] < .99f) continue;
       const float opaque[4] = {0.f, -1.f, 0.f, 0.f};
-      bgfx::setUniform(u_static_shadow_params_, opaque);
+      set_uniform(u_static_shadow_params_, opaque);
       bgfx::setTexture(0, s_tex_, white_tex_);
       bgfx::setTransform(instance.transform.data());
       bgfx::setVertexBuffer(0, part.vbh);

@@ -149,6 +149,20 @@ class LibBgfxBackend final : public IRenderBackend {
   std::vector<Preview> previews_;
   std::unordered_map<const ScxGeometry*,ScenePart> instance_meshes_;
   std::unordered_map<void*, const ScxGeometry*> deformed_meshes_;
+  // What sync_instances marked used last time (#262). When the list, the
+  // revisions and the number of resident meshes are unchanged, nothing would
+  // be uploaded or released, so the used map and the sweep are skipped.
+  struct ResidencyUse {
+    const void* key = nullptr;
+    const void* owner = nullptr;
+    uint32_t revision = 0;
+    bool deformed = false;
+    bool operator==(const ResidencyUse&) const = default;
+  };
+  std::vector<ResidencyUse> residency_uses_, residency_scratch_;
+  size_t residency_count_ = SIZE_MAX;  // instance_meshes_.size() after the sweep
+  uint64_t residency_skips_ = 0;       // for tests
+  bool residency_cache_ = true;        // tests: false rebuilds every frame
 
   void cache_scene_mesh(const std::shared_ptr<const ScxGeometry>& source,
                         void* owner, bool map_prop);
@@ -187,6 +201,64 @@ class LibBgfxBackend final : public IRenderBackend {
            sequential_views_.test(binding_view_) && light_arrays_view_ == binding_view_ &&
            light_arrays_frame_ == frames_ && light_arrays_revision_ == light_uniform_revision_;
   }
+  // Per-view uniform values (#262), the same rule for the single-value sun,
+  // fog, sky, shadow, interior sun, point/local light, car depth, AO and
+  // count uniforms. Inside a BindingScope of a Sequential view a value equal
+  // to the one already set in that view this frame is skipped. A set outside
+  // such a scope forgets that handle; a scope that ends with values set after
+  // its last submit, or a submit bgfx drops (no indices), forgets them all,
+  // because those values reach whichever submit comes next, or none.
+  struct UniformSlot {
+    uint32_t generation = 0;
+    std::array<float, 16> value{};
+  };
+  std::vector<UniformSlot> uniform_values_;
+  uint32_t uniform_generation_ = 1;
+  uint16_t uniform_view_ = UINT16_MAX;
+  int32_t uniform_frame_ = -1;
+  bool uniform_cache_ = true;      // tests: false sets every value
+  bool uniform_pending_ = false;   // cached values set since the last submit
+  bool uniform_scope_ = false;     // inside a Sequential BindingScope
+  uint64_t uniform_sets_ = 0, uniform_skips_ = 0;  // for tests
+  void set_uniform(bgfx::UniformHandle handle, const float* value, uint16_t floats = 4);
+  void forget_uniforms() {
+    ++uniform_generation_;
+    light_arrays_view_ = UINT16_MAX;
+  }
+  // Texture stages kept across submits (#262). In the same scope, submits use
+  // BGFX_DISCARD_ALL without BGFX_DISCARD_BINDINGS, so a stage keeps its
+  // texture and only stages that change are set again. A draw that leaves a
+  // kept stage unset is submitted with a full discard, as before, so no draw
+  // samples a texture it did not ask for. The scope ends with
+  // discard(BGFX_DISCARD_BINDINGS): later code starts with no bindings.
+  struct TextureSlot {
+    bool valid = false;
+    uint16_t sampler = 0, texture = 0;
+    uint32_t flags = 0;
+  };
+  static constexpr size_t kTextureStages = 16;
+  static constexpr size_t kPropInstanceChunk = 1024;  // was 128 before #262
+  std::array<TextureSlot, kTextureStages> texture_bindings_{};
+  uint32_t texture_set_mask_ = 0;  // stages the current draw set
+  bool texture_run_ = false;
+  bool texture_cache_ = true;      // tests: false sets every stage
+  uint64_t texture_sets_ = 0, texture_skips_ = 0;  // for tests
+  void set_texture(uint8_t stage, bgfx::UniformHandle sampler, bgfx::TextureHandle texture,
+                   uint32_t flags = UINT32_MAX);
+  void forget_textures() {
+    for (auto& slot : texture_bindings_) slot.valid = false;
+  }
+  // Every submit inside a BindingScope goes through here.
+  void submit_bound(uint16_t view, bgfx::ProgramHandle program, uint32_t index_count);
+  // The view of the draw being bound (#246, #262): draw_instance and
+  // draw_prop_batches open one around their submits.
+  struct BindingScope {
+    LibBgfxBackend& backend;
+    BindingScope(LibBgfxBackend& b, uint16_t view);
+    ~BindingScope();
+    BindingScope(const BindingScope&) = delete;
+    BindingScope& operator=(const BindingScope&) = delete;
+  };
   void bind_scene_shadow(bool receive, uint8_t stage);
   void bind_fixture_lights(bool enabled, bool upload_arrays);
   // Per-frame light data texture (#254), see shaders/scene_shadow.sh.
