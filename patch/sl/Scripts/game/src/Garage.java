@@ -28,7 +28,7 @@ public class Garage extends Scene implements GameState
 	ResourceRef	[]	garageEnvMaps;
 
 	RenderRef	light, lighttype;
-	// OpenSLRR #235: g1 ceiling fittings as script lights (java.render.SpotLight).
+	// OpenSLRR #235: garage ceiling fittings as script lights (java.render.SpotLight).
 	SpotLight[]	fixtures;
 
 	// color constants
@@ -261,9 +261,8 @@ public class Garage extends Scene implements GameState
 		lighttype.duplicate( new RenderRef(misc.garage:0x001Dr) );
 		//lighttype.setLight( 0x00DC6464, 0x00646464, 0x00C8C8C8);
 		light = new RenderRef( map, lighttype, "neon" );
-		// OpenSLRR #235: explicit lights for the nine g1 ceiling fittings.
-		if( garageIndex == 0 )
-			createG1Fixtures();
+		// OpenSLRR #235: explicit lights for the ceiling fittings.
+		createFixtures( garageIndex );
 
 		osd.show();
 		GameLogic.setTimerText( daytxt, timetxt );
@@ -332,21 +331,60 @@ public class Garage extends Scene implements GameState
 
 	}
 
-	// OpenSLRR #235: one spot light per twin-tube fitting of the g1 garage.
-	// Positions are in the local space of the garage stuff mesh
-	// (garazs_01_targyak.scx), centred under each fitting's tube pair.
-	void createG1Fixtures()
+	// OpenSLRR #235: one spot light per twin-tube ceiling fitting. Positions are
+	// in the local space of each garage's stuff mesh, 8 cm below the lower tube
+	// of each pair (the rule of the engine's g1 fallback, legacy_neon.hpp).
+	// The ROC garage (index 3) is open-air and has no fittings.
+	void createFixtures( int index )
 	{
-		fixtures = new SpotLight[9];
-		fixtures[0] = createFixture( -14.05739, 6.43138,  5.03007 );
-		fixtures[1] = createFixture(  -8.68388, 6.43138,  5.03007 );
-		fixtures[2] = createFixture(  -3.03047, 6.43138,  5.03007 );
-		fixtures[3] = createFixture(   2.63350, 6.43138,  5.03007 );
-		fixtures[4] = createFixture(   8.82223, 6.43138,  5.03007 );
-		fixtures[5] = createFixture(   5.77201, 6.43138, -4.00419 );
-		fixtures[6] = createFixture(  -5.88736, 6.43138, -4.00419 );
-		fixtures[7] = createFixture(  12.71575, 6.43138,  1.23414 );
-		fixtures[8] = createFixture(  12.71575, 6.43138, -5.19158 );
+		if( index == 0 )
+		{
+			// garazs_01_targyak.scx, group texturak: 9 fittings
+			fixtures = new SpotLight[9];
+			fixtures[0] = createFixture( -14.05739, 6.43138,   5.03007 );
+			fixtures[1] = createFixture(  -8.68388, 6.43138,   5.03007 );
+			fixtures[2] = createFixture(  -3.03047, 6.43138,   5.03007 );
+			fixtures[3] = createFixture(   2.63350, 6.43138,   5.03007 );
+			fixtures[4] = createFixture(   8.82223, 6.43138,   5.03007 );
+			fixtures[5] = createFixture(   5.77201, 6.43138,  -4.00419 );
+			fixtures[6] = createFixture(  -5.88736, 6.43138,  -4.00419 );
+			fixtures[7] = createFixture(  12.71575, 6.43138,   1.23414 );
+			fixtures[8] = createFixture(  12.71575, 6.43138,  -5.19158 );
+		}
+		else
+		if( index == 1 )
+		{
+			// garazs2_targyak.scx, group neon: 10 fittings
+			fixtures = new SpotLight[10];
+			fixtures[0] = createFixture(  -7.04596, 5.42426,  -3.26745 );
+			fixtures[1] = createFixture(  -7.04596, 5.42426,   4.32187 );
+			fixtures[2] = createFixture(   0.02651, 5.42426,   4.32187 );
+			fixtures[3] = createFixture(   0.02651, 5.42426,  -3.26745 );
+			fixtures[4] = createFixture(   7.12191, 5.42426,   4.32187 );
+			fixtures[5] = createFixture(   7.12191, 5.42426,  -3.26745 );
+			fixtures[6] = createFixture(  14.09471, 5.42426,  -3.26745 );
+			fixtures[7] = createFixture(  14.09471, 5.42426,   4.32187 );
+			fixtures[8] = createFixture( -13.63311, 5.42426,  -3.26745 );
+			fixtures[9] = createFixture( -13.63311, 5.42426,   4.32187 );
+		}
+		else
+		if( index == 2 )
+		{
+			// garazs3targyak.scx, group Material #11345: 12 fittings
+			fixtures = new SpotLight[12];
+			fixtures[0] = createFixture( -12.53611, 5.69371,  -0.75343 );
+			fixtures[1] = createFixture(  20.72244, 5.52448,   6.01213 );
+			fixtures[2] = createFixture(  -6.72907, 6.41467,   9.38976 );
+			fixtures[3] = createFixture(  20.72244, 5.53801,  10.85484 );
+			fixtures[4] = createFixture( -12.53611, 5.69371,  -6.80128 );
+			fixtures[5] = createFixture(  -0.08248, 6.43135,  -3.24062 );
+			fixtures[6] = createFixture(  -0.08248, 6.43135,   1.71936 );
+			fixtures[7] = createFixture(   3.34185, 6.41467,   9.38976 );
+			fixtures[8] = createFixture(   9.71543, 6.43135,  -6.30282 );
+			fixtures[9] = createFixture(   9.71543, 6.43135,  -1.04061 );
+			fixtures[10] = createFixture(  13.13120, 6.41467,   9.38976 );
+			fixtures[11] = createFixture(  20.72244, 5.55018,   1.16555 );
+		}
 	}
 
 	SpotLight createFixture( float x, float y, float z )

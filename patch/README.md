@@ -74,11 +74,12 @@ Repeat after a second purchase and also check normal Exit Game saving.
 
 ## Garage lights (#235)
 
-`Garage.java` creates one `java.render.SpotLight` per twin-tube ceiling fitting
-of the first garage (nine lights, parented to the garage stuff mesh) and
-destroys them when leaving the garage. The engine draws them with the Enhanced
+`Garage.java` creates one `java.render.SpotLight` per twin-tube ceiling fitting,
+parented to the garage stuff mesh, and destroys them when leaving the garage:
+9 lights in the first garage, 10 in the second and 12 in the third. The ROC
+garage is outdoors and gets none. The engine draws them with the Enhanced
 local-light path, so **Local lights** must be on. Without the patched classes the
-engine keeps its built-in placement for the same fittings.
+engine keeps its built-in placement in the first garage only.
 
 | Class | Use |
 | --- | --- |
@@ -92,6 +93,6 @@ All three inherit `setPosition`, `setDirection` (parent-local, metres),
 Car lights stay engine-driven. Street lamps and other scenery lights do not use
 this API yet.
 
-In-game check: enter the first garage with Local lights on and compare the
-ceiling lighting with the previous build; leave and re-enter, then switch
-Local lights off and on.
+In-game check: with Local lights on, enter each club garage (first, second and
+third) and check that every ceiling fitting lights the floor under it; leave and
+re-enter, then switch Local lights off and on.

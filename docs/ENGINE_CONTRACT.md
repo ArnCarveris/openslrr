@@ -1202,7 +1202,8 @@ a spot. The first enabled point light becomes the point record and keeps the
 neon's ambient fill. Any registered light whose parent is in the drawn world,
 enabled or not, disables the stock g1 anchor adapter (`legacy_neon.hpp`), so a
 script can turn the garage dark. Without registry lights the adapter path is
-unchanged. The stock `misc.garage:0x001D` neon remains an ambient-only record
+unchanged. The patched Garage creates one spot per twin-tube fitting in garages
+1–3 (9, 10 and 12 lights); the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
 
 ## 13. Interface, input, and options

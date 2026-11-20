@@ -2619,7 +2619,25 @@ inventing new Java classes.
   the adapter's anchors can be pasted into Java unchanged.
 - g1 anchors: `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` finds
   nine fittings, all in `misc/garage/g1/garazs_01_targyak.scx` (the 0x42 stuff
-  mesh), none in the room mesh; y = 6.43138, x/z in `Garage.java:createG1Fixtures`.
+  mesh), none in the room mesh; y = 6.43138, x/z in `Garage.java:createFixtures`.
+- All garages use the same fitting: two 3.00 × 0.11 × 0.09–0.12 m tubes about
+  0.185 m apart. Anchors follow the adapter's rule (a tube is a connected
+  component 2–4 m long and under 0.25 m wide and tall; tubes pair within 0.4 m
+  horizontally and 0.1 m vertically; anchor = pair midpoint, 8 cm below the
+  lower tube's bottom). Run on the g1 group it reproduces the adapter exactly.
+  - g2 (`misc/garage/g2/garazs2_targyak.scx`, stuff 0x18): group `neon`
+    (texture `g2cucc.dds`, SCX4 emissive colour 0.53), 20 tubes → 10 fittings
+    along X, all at y = 5.42426, x = −13.633/−7.046/0.027/7.122/14.095,
+    z = −3.267/4.322. Ceiling 7.79 m.
+  - g3 (`misc/garage/g3/garazs3targyak.scx`, stuff 0x3c): group
+    `Material #11345` (texture `g3cucc.dds`, emissive colour 0.82), 24 tubes →
+    12 fittings, three along Z and nine along X, at y 5.52–6.43 (stepped
+    ceiling up to 8.80 m). Exactly the 12-fixture budget.
+  - ROC (`misc/garage/g4`, ground 0x2f, stuff 0x51): an open-air scene
+    (sand ground, tents, containers, stands); no ceiling fittings and no
+    emissive lamp group. No lights are created there.
+  - The adapter (`legacy_neon.hpp`) still matches only g1 (`garazs1.dds`), so
+    without the patch g2 and g3 keep the neon-only lighting.
 - Renderer: registry lights replace the adapter whenever one has a drawn parent,
   even when disabled. Limits: one point light, 12 fixtures, inner cone fixed at
   65° by `shaders/scene_shadow.sh`, fixture shadows all-or-nothing, rect drawn as
@@ -2627,17 +2645,22 @@ inventing new Java classes.
 - Garage source: `sources/sl/Scripts/game/src/Garage.java` is the only copy on
   disk and is the MWM version (jack, `Mirans_Mod_protection`). Every
   non-comment string literal appears in the original MWM class; the known code
-  difference was the #59 save order. The patch copy adds `createG1Fixtures`,
-  `createFixture` and `destroyFixtures` (called in `exit` before
-  `stuff.destroy`).
+  difference was the #59 save order. The patch copy adds `createFixtures`
+  (one table per garage index 0–2), `createFixture` and `destroyFixtures`
+  (called in `exit` before `stuff.destroy`).
 - Validation: `tests/test_script_lights.cpp` (constructors and inherited natives
   through the shipped classes, input validation, destroy/parent/GC/reset
   lifetime); `tests/test_scene_shadow_gpu.cpp` checks that nine script spots at
   the Garage.java anchors give the adapter's positions, directions and cones,
   that disabled lights darken the garage and that destroying them restores the
-  adapter; `tests/test_inventory_transition.cpp` runs the recompiled
-  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit). No
-  in-game validation yet.
+  adapter. Its `garage_fixtures` case loads g2 and g3, checks each Garage.java
+  anchor sits 8 cm under its lamp group's tubes, that the registry places all
+  10/12 spots there, and that they light the real floor (15,207 and 20,437 of
+  65,536 pixels); `tests/test_inventory_transition.cpp` runs the recompiled
+  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit).
+  Validated in game by the user in the g1 garage at `df7117f` (20 November
+  2026): the nine script fittings light the garage as before. g2 and g3 are
+  not validated in game yet.
 - Phase 2 (not done): stock light resources (type 13) and cfg `render` light
   children for street lamps and scenery objects; per-light spot shadows and inner
   cone; outside-garage rendering.

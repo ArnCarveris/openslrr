@@ -876,6 +876,153 @@ struct SceneShadowRegression {
     b.point_light_.reset();
     b.local_light_ = {};
   }
+  // #235: garages 2 and 3. Garage.java places one SpotLight per twin-tube
+  // fitting of the stuff mesh. Each anchor must sit 8 cm under its tubes, the
+  // registry must place it there, and the fittings must light the real floor.
+  static void garage_fixtures(LibBgfxBackend &b) {
+    struct Room { uint32_t ground, stuff; const char* lamps; std::vector<std::array<float,3>> anchors; };
+    const Room rooms[] = {
+      {0x06, 0x18, "neon", {{-7.04596f,5.42426f,-3.26745f},{-7.04596f,5.42426f,4.32187f},
+        {0.02651f,5.42426f,4.32187f},{0.02651f,5.42426f,-3.26745f},{7.12191f,5.42426f,4.32187f},
+        {7.12191f,5.42426f,-3.26745f},{14.09471f,5.42426f,-3.26745f},{14.09471f,5.42426f,4.32187f},
+        {-13.63311f,5.42426f,-3.26745f},{-13.63311f,5.42426f,4.32187f}}},
+      {0xc7, 0x3c, "Material #11345", {{-12.53611f,5.69371f,-0.75343f},{20.72244f,5.52448f,6.01213f},
+        {-6.72907f,6.41467f,9.38976f},{20.72244f,5.53801f,10.85484f},{-12.53611f,5.69371f,-6.80128f},
+        {-0.08248f,6.43135f,-3.24062f},{-0.08248f,6.43135f,1.71936f},{3.34185f,6.41467f,9.38976f},
+        {9.71543f,6.43135f,-6.30282f},{9.71543f,6.43135f,-1.04061f},{13.13120f,6.41467f,9.38976f},
+        {20.72244f,5.55018f,1.16555f}}}};
+    for (const auto& room : rooms) {
+      Fixture f;
+      f.packs.set_root(fs::absolute("game").string());
+      f.packs.open_all();
+      scene_instances_set_resources(&f.packs);
+      const auto pack = f.packs.open_lib("misc/garage.rpk");
+      Object root, stuff;
+      root.class_name = "java.util.resource.GroundRef";
+      gameref_upsert(&root, GameRefKind::GroundRef)->type_id = RpkIndex::make_full_id(pack, room.ground);
+      spawn_ground_shell(f.vm, f.packs, &root);
+      gameref_upsert(&stuff, GameRefKind::RenderRef)->type_id = RpkIndex::make_full_id(pack, room.stuff);
+      gameref_set_parent(&stuff, &root);
+      scene_instances_select(&root, nullptr, false, SceneEnvironment::Interior);
+      b.instances_ = scene_instances_collect();
+      const ScxGeometry* mesh = nullptr;
+      for (const auto& obj : b.instances_) if (obj.key == &stuff) mesh = obj.geometry.get();
+      SLRR_REQUIRE(mesh && mesh->ceiling_light_anchors.empty());
+      // Derivation check: the lamp group's tube faces lie 8 cm above each
+      // anchor, along a 3 m tube through it.
+      for (const auto& anchor : room.anchors) {
+        float lowest = 1e9f;
+        for (const auto& group : mesh->groups) if (group.name == room.lamps)
+          for (uint32_t i = group.index_start; i < group.index_start + group.index_count; ++i) {
+            const auto v = mesh->indices[i] * 3;
+            const float dx = std::abs(mesh->positions[v] * mesh->position_scale - anchor[0]);
+            const float dz = std::abs(mesh->positions[v + 2] * mesh->position_scale - anchor[2]);
+            if (std::max(dx, dz) < 1.6f && std::min(dx, dz) < .2f)
+              lowest = std::min(lowest, mesh->positions[v + 1] * mesh->position_scale);
+          }
+        SLRR_REQUIRE(std::abs(lowest - .08f - anchor[1]) < .002f);
+      }
+      std::vector<Object> lights(room.anchors.size());
+      for (size_t i = 0; i < lights.size(); ++i) {
+        SLRR_REQUIRE(script_lights_create(&lights[i], &stuff, ScriptLightKind::Spot));
+        script_lights_get(&lights[i])->position = room.anchors[i];
+      }
+      for (const auto& obj : b.instances_) b.cache_scene_mesh(obj.geometry, nullptr, false);
+      b.garage_ = true; b.outdoor_lighting_ = false;
+      const auto graphics = host_enhanced_graphics();
+      host_enhanced_graphics().local_lights = true;
+      b.update_local_light();
+      SLRR_REQUIRE(b.fixture_lights_.size() == room.anchors.size());
+      for (size_t i = 0; i < lights.size(); ++i) {
+        const auto& light = b.fixture_lights_[i];
+        SLRR_REQUIRE(light.owner == &lights[i] && light.valid() && light.direction[1] < -.99f);
+        SLRR_REQUIRE(std::abs(light.position[0] - room.anchors[i][0]) < 1e-3f &&
+                     std::abs(light.position[1] - room.anchors[i][1]) < 1e-3f &&
+                     std::abs(light.position[2] + room.anchors[i][2]) < 1e-3f);
+      }
+      // The fittings light the actual floor of this garage.
+      auto floor = std::make_shared<ScxGeometry>(*b.instances_.front().geometry);
+      floor->indices.clear(); floor->groups.clear();
+      const auto& source = *b.instances_.front().geometry;
+      for (auto group : source.groups) {
+        const auto first = group.index_start, count = group.index_count;
+        group.index_start = uint32_t(floor->indices.size());
+        for (uint32_t i = first; i + 2 < first + count; i += 3) {
+          bool flat = true;
+          for (int k = 0; k < 3; ++k) {
+            const auto v = source.indices[i + k] * 3;
+            flat &= std::abs(source.positions[v + 1] * source.position_scale) < .3f && source.normals[v + 1] > .5f;
+          }
+          if (flat) floor->indices.insert(floor->indices.end(), source.indices.begin() + i, source.indices.begin() + i + 3);
+        }
+        group.index_count = uint32_t(floor->indices.size()) - group.index_start;
+        if (group.index_count) floor->groups.push_back(group);
+      }
+      SLRR_REQUIRE(!floor->indices.empty());
+      b.cache_scene_mesh(floor, nullptr, false);
+      SceneInstance receiver;
+      receiver.geometry = floor;
+      bx::mtxIdentity(receiver.transform.data());
+      receiver.lighting.set = receiver.lighting.has_direction = true;
+      for (int i = 0; i < 3; ++i) { receiver.lighting.diffuse[i] = .8f; receiver.lighting.ambient[i] = .1f; }
+      constexpr uint16_t size = 256;
+      const auto color = bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT);
+      const auto depth = bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT);
+      const bgfx::TextureHandle attachments[] = {color, depth};
+      const auto fb = bgfx::createFrameBuffer(2, attachments, true);
+      const auto readback = bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::RGBA8,
+                                                  BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+      float identity[16];
+      bx::mtxIdentity(identity);
+      float projection[16]{};
+      projection[0] = projection[9] = .04f;
+      projection[6] = .01f;
+      projection[14] = .5f;
+      projection[15] = 1;
+      auto capture = [&]() {
+        b.static_shadow_active_ = false;
+        b.fixture_shadow_active_ = false;
+        bgfx::setViewFrameBuffer(5, fb);
+        bgfx::setViewRect(5, 0, 0, size, size);
+        bgfx::setViewClear(5, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, uint32_t(0xff), 0.f);
+        bgfx::setViewTransform(5, identity, projection);
+        b.draw_instance(5, receiver, identity, false, 0);
+        bgfx::TextureRegion dst, src;
+        dst.init(readback);
+        src.init(color);
+        bgfx::blit(100, dst, src);
+        bgfx::frame();
+        std::vector<uint8_t> bytes(size * size * 4);
+        auto ready = bgfx::read(dst, bytes.data());
+        for (int i = 0; i < 16; ++i)
+          if (bgfx::frame() >= ready) return bytes;
+        throw std::runtime_error("garage fixture readback timeout");
+      };
+      const auto lit = capture();
+      const auto fixtures = b.fixture_lights_;
+      b.fixture_lights_.clear();
+      const auto dark = capture();
+      b.fixture_lights_ = fixtures;
+      unsigned pixels = 0;
+      for (size_t i = 0; i < lit.size(); i += 4) if (int(lit[i]) - int(dark[i]) > 10) ++pixels;
+      std::printf("GARAGE 0x%x script fittings=%zu lit floor pixels=%u\n", room.ground, fixtures.size(), pixels);
+      SLRR_REQUIRE(pixels > 100);
+      host_enhanced_graphics() = graphics;
+      bgfx::destroy(readback);
+      bgfx::destroy(fb);
+      for (auto& light : lights) script_lights_destroy(&light);
+      auto children = gameref_get(&root)->children;
+      for (auto child : children) gameref_remove(child);
+      gameref_remove(&root);
+      scene_instances_set_resources(nullptr);
+      b.instances_.clear();
+      b.fixture_lights_.clear();
+      b.garage_ = false;
+      b.outdoor_lighting_ = true;
+      b.point_light_.reset();
+      b.local_light_ = {};
+    }
+  }
   static void addon_bounds(LibBgfxBackend& b) {
     if (!fs::exists("game/maps/Addon_Maps/Drag_Track.rpk")) {
       std::puts("SKIP optional Drag Track asset regression: addon not installed");
@@ -1502,6 +1649,7 @@ int main() {
     SceneShadowRegression::scene_environment(backend);
     SceneShadowRegression::reflection_occupants();
     SceneShadowRegression::garage_geometry(backend);
+    SceneShadowRegression::garage_fixtures(backend);
     SceneShadowRegression::vehicle_wall(backend);
     SceneShadowRegression::ambient_occlusion(backend);
     SceneShadowRegression::point_lifetime(backend);
