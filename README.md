@@ -142,6 +142,11 @@ cmake --build build --config Release --target slrr_host --parallel
 
 The executable is generated at `build/Release/slrr_host.exe`. The first build includes bgfx and its shader tools, so it may take a while.
 
+#### Faster builds
+
+- Every target compiles its files in parallel (`/MP`). Set `-DSLRR_COMPILE_JOBS=<n>` to cap the `cl.exe` processes per project; the default uses all logical processors. `slrr_host` also precompiles the standard headers most sources include.
+- The shader compiler `shaderc` (with glslang, SPIRV-Tools and Tint) is most of bgfx's build time and is the same for every checkout. To build it once and reuse it from any number of checkouts or worktrees, set `-DSLRR_TOOLS_CACHE_DIR=<dir>` or the environment variable of that name. The first build fills `<dir>/shaderc-<key>` under a lock while other builds wait; the key covers the revisions and uncommitted changes of bgfx.cmake, bgfx, bimg and bx and the compiler, so a changed pin, edit or toolchain builds a new copy. Leave it unset to build `shaderc` inside the build directory. See [AGENTS.md](AGENTS.md#build-speed-and-its-edge-cases) for edge cases.
+
 Dependency locations follow the paths selected by the pinned `bgfx.cmake`:
 its in-tree `bgfx`/`bimg`/`bx` checkouts, explicit `BGFX_DIR`/`BIMG_DIR`/`BX_DIR`,
 or FetchContent. A custom `FETCHCONTENT_BASE_DIR` is supported; the host uses
