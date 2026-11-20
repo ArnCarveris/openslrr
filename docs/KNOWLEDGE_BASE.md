@@ -2884,8 +2884,8 @@ city at night.
   7 car tiles 1.57–1.77 ms. In-game: `1df1452` worked but lamps popped
   in; `7c9d05f` accepted (intensity, no pop) without shadows; `cb90023` cast
   shadows that moved around the car when the camera turned; `d17976f`
-  (car-focused selection) still showed it; the car tiles are not validated
-  yet.
+  (car-focused selection) still showed it; `cd1e963` (car tiles from every
+  lamp reaching the car) accepted by the user in game (20 November 2026).
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).
