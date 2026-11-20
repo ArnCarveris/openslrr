@@ -2689,6 +2689,74 @@ inventing new Java classes.
   2026): the nine script fittings light the garage as before. g1, g2 and g3
   validated in game by the user at `2f904ac` (20 November 2026): glowing tubes
   and intensity 30 / range 26 m accepted (24 was too dim, 48 and 36 too bright).
-- Phase 2 (not done): stock light resources (type 13) and cfg `render` light
-  children for street lamps and scenery objects; per-light spot shadows and inner
-  cone; outside-garage rendering.
+- Phase 2: street lamps and scenery lights, see "Scenery lights and street
+  lamps (#237)" below. Still open: per-light spot shadows and inner cone.
+
+### Scenery lights and street lamps (#237)
+
+Phase 2 of #235: type-13 light resources placed by map objects now light the
+city at night.
+
+- Parser: `src/resources/light_resource.cpp:parse_light_resource` reads
+  `type` (`point`, `spot`, `directional`, `fakepoint`/`fake point`,
+  `fakespot`; none for base classes), `diffuse/specular/ambient a r g b`
+  (alpha dropped), `position`, `direction`, `range`, `attenuation c l q`,
+  `theta`, `phi`, `lit_dynamic`, and notes any `lf_*` flare keyword. Inline
+  `//` and `;` comments are stripped; malformed or negative values keep the
+  previous value. `src/resources/light_resource.cpp:load_light_resource`
+  parses only RPK entries whose `typeof` is 13
+  (`src/resources/light_resource.cpp:is_light_resource`); the light is never
+  guessed from keywords or aliases. All 89 stock payloads parse (2 point,
+  35 spot, 6 fake point, 27 fake spot, 15 directional, 4 untyped).
+- Placement: `src/resources/scene_instances.cpp:scene_instances_add_ground_props`
+  keeps every non-variant `render` child whose resource is typeof 13 before
+  the mesh filter drops it, composes `render` pose, resource `position` and
+  placement pose, and stores the shell-local list in `GroundPropMap::lights`
+  (`src/resources/scene_instances.cpp:scene_instances_ground_lights`). The cfg
+  `flags` after the render line is the light group. A dynamic placement's light
+  stays at its authored pose when the body is knocked over.
+- Ownership: `src/natives/natives_resref.cpp:spawn_ground_shell` attaches the
+  list to each new ground shell with
+  `src/resources/script_lights.cpp:scenery_lights_attach`. The registry keys it
+  by the shell's canonical GameRef; `script_lights_forget_parent` (called by
+  `gameref_remove`) and `script_lights_clear` drop it. Scenery lights hold no
+  Java object and are not GC roots; the list is shared with the cached map, so
+  revisiting a city attaches the same data again.
+- Valo City (`maps/city.rpk` id 1, two shells, 25,821 placements): 3,736
+  light children, 2,841 real (`objects.rpk` 0x1C7 street, group 4) and 895
+  glow-only (0x16 `fake point`). Drag Track has 318.
+- Rendering: `src/render/bgfx_lib_backend.cpp:update_scenery_lights`, called
+  by `update_local_light` outside garages when Local lights (option 4) is on.
+  The city group is enabled by `src/resources/scene_sun.cpp:scene_sun_is_night`
+  (before 06:00 or from 18:30, the night-facade window); other groups (car
+  brake/indicator bits) stay off; `fake*` lights never light the scene.
+  `src/resources/script_lights.cpp:scenery_lights_select` picks the nearest 12
+  within 250 m of the eye and fades each one over 30 m before the first
+  excluded light, so the set changes without pops (largest change per 5 cm of
+  eye travel in the test: 0.004).
+- Shader budget: the 12 lights reuse the fixture uniforms (`kFixtureLights`)
+  as omni lights: `SpotLight::omni`, direction w = -2 and xyz = attenuation.
+  `shaders/scene_shadow.sh` skips the cone and the fixture shadow for them and
+  uses the stock falloff 1/(c + l·d + q·d²) inside the range window
+  saturate(1 − (d²/r²)²)². Outside garages the fixture shadow atlas is never
+  built (`src/render/bgfx_shadows.cpp:update_fixture_shadows`), so the lights
+  are unshadowed. No new uniforms or programs.
+- Brightness (first pass, not yet validated in game): intensity 0.8 ×
+  authored diffuse, range capped at 45 m (authored street range is 500 m)
+  (`kSceneryLightIntensity`, `kSceneryLightMaxRange` in
+  `include/slrr/script_lights.hpp`). In the GPU test a lamp at 7.8 m over a
+  road with 0.08 ambient adds 161/255 red at its foot and 39 at a corner 30 m
+  away.
+- Cost: selection over all 3,736 Valo City lights takes about 7 µs per frame
+  (`tests/test_scenery_lights.cpp`, Release). The per-pixel cost is up to 12
+  unshadowed point evaluations in `fs_mesh`/`fs_vehicle`; frame time was not
+  measured in game because the bench writes to the installed game root.
+- Validation: `tests/test_scenery_lights.cpp` (parser, every stock payload,
+  Valo City registration count against an independent ICFG scan, kislampa
+  pose, shell removal and revisit, selection budget/groups/day/fade);
+  `tests/test_scene_shadow_gpu.cpp` case `scenery_lamps` (night lights the road
+  through `fs_mesh`, noon equals the unlit image, option 4 off and
+  glow-only/non-city lights select nothing). No in-game validation yet.
+- Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
+  scenery spots (drawn as omni), lights following knocked-over lamps,
+  `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).

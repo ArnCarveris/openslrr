@@ -356,6 +356,7 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_local_light_ = BGFX_INVALID_HANDLE;
   std::array<float, 4> local_light_{};
   void update_local_light();
+  void update_scenery_lights();
   void update_ambient_occlusion(const float* view,const float* projection,uint16_t width,uint16_t height,uint16_t world_view);
   void bind_ambient_occlusion(bool enabled);
   void destroy_ao_targets();

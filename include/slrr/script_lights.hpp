@@ -3,6 +3,9 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace slrr {
@@ -45,4 +48,54 @@ size_t script_lights_count();
 std::vector<const ScriptLight *> script_lights_all();
 // Keeps registered Java light objects alive until destroy or parent removal.
 void script_lights_visit_gc_roots(const GcRootVisitor &visit);
+
+// Scenery lights (#237): type-13 light resources placed as `render` children
+// of map objects (street lamps). They have no Java object; a list is owned by
+// one parent GameRef, the ground shell, and goes with it (gameref_remove,
+// gameref_clear). Positions and directions are in the parent's local script
+// space (metres, script Z), like ScriptLight.
+inline constexpr uint32_t kLightGroupCity = 4; // cfg `flags 4`: night lights
+struct SceneryLight {
+  std::array<float, 3> position{}, direction{}, color{1, 1, 1};
+  float range = 0.f;                               // authored, metres
+  std::array<float, 3> attenuation{1.f, 0.f, 0.f}; // 1/(c + l*d + q*d*d)
+  uint32_t group = 0;        // cfg `flags`
+  uint32_t resource = 0;     // type-13 full id
+  bool lights_scene = false; // point/spot; fake* are glow only
+  bool spot = false;
+};
+using SceneryLightList = std::shared_ptr<const std::vector<SceneryLight>>;
+// Replaces the parent's list. A parent without GameRef state, or an empty
+// list, attaches nothing.
+bool scenery_lights_attach(void *parent, SceneryLightList lights);
+size_t scenery_lights_count();
+// (canonical parent key, list) pairs; order is unspecified.
+std::vector<std::pair<void *, SceneryLightList>> scenery_lights_all();
+
+// Renderer selection for scenery lights outside garages. Eye and output
+// positions are render space (script Z flipped). `matrix` returns a parent's
+// drawn script matrix (scene_instances_render_matrix); parents without one
+// are skipped. Only lights that light the scene and whose group is enabled
+// (group & groups_on) are candidates; the nearest `budget` within
+// kSceneryLightMaxDistance win. Intensity fades to 0 as a light nears the
+// first excluded candidate or the distance limit, so the set changes without
+// pops.
+inline constexpr float kSceneryLightMaxDistance = 250.f;
+inline constexpr float kSceneryLightFadeBand = 30.f;
+// Lighting range cap: authored street ranges (500 m) would make each lamp
+// light the whole view; the shader window ends the light at this distance.
+inline constexpr float kSceneryLightMaxRange = 45.f;
+inline constexpr float kSceneryLightIntensity = .8f;
+struct SceneryLightPick {
+  std::array<float, 3> position{}, color{};
+  std::array<float, 3> attenuation{1.f, 0.f, 0.f};
+  float range = 0.f;     // capped
+  float intensity = 0.f; // kSceneryLightIntensity * fade
+  float distance = 0.f;  // to the eye
+  const SceneryLight *source = nullptr;
+};
+std::vector<SceneryLightPick>
+scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
+                      uint32_t groups_on,
+                      const std::function<bool(void *, float *)> &matrix);
 } // namespace slrr

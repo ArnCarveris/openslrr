@@ -97,7 +97,19 @@ Car lights stay engine-driven.
 `Garage.java` also saves only after a successful Choose Track, car dealer or
 car lot transition. A refused command (no car, undriveable car, dealer closed)
 stays in the garage and does not save. Street lamps and other scenery lights do not use
-this API yet.
+this API: the engine reads them from the map objects (#237).
+
+## Street lamps (#237)
+
+At night (18:30 to 06:00) the street lamps placed in the maps light the road
+around them. The engine reads the lamps' own light resources, so no class is
+patched. The nearest 12 lamps are lit and fade in and out with distance; lamps
+that only glow in the stock game (`fake point`) add no light. They need
+**Local lights**; switching it off turns them off.
+
+In-game check: in Valo City, set the clock to night and drive under lamp posts;
+the road should be lit around them. At noon they add no light. Switch Local
+lights off and on at night.
 
 In-game check: with Local lights on, enter each club garage (first, second and
 third) and check that every ceiling fitting lights the floor under it; leave and

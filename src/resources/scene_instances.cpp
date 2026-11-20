@@ -1,6 +1,7 @@
 #include "slrr/gc_roots.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/legacy_neon.hpp"
+#include "slrr/light_resource.hpp"
 
 #include "slrr/paint_texture.hpp"
 #include "slrr/scene_collision.hpp"
@@ -13,6 +14,7 @@
 #include "slrr/race_runtime.hpp"
 #include "slrr/rpk_index.hpp"
 #include "slrr/scene_ambience.hpp"
+#include "slrr/script_lights.hpp"
 #include "slrr/skeleton.hpp"
 #include "slrr/vehicle_dynamics.hpp"
 
@@ -21,6 +23,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -108,6 +111,9 @@ struct GroundPropMap {
   std::vector<uint32_t> resources;
   std::vector<StaticMesh> collision_meshes;
   collision::StaticIndex collision_shapes;
+  // Type-13 `render` children of the placements, shell-local (#237). Each
+  // new shell of this map attaches the same list to the light registry.
+  SceneryLightList lights;
 };
 std::unordered_map<uint32_t, GroundPropMap> g_ground_props;
 // The map is cached per render id and outlives its GroundRef: each visit to a
@@ -2227,11 +2233,7 @@ std::shared_ptr<const ScxGeometry> signal_geometry(GroundPropMap &map) {
   map.signal_stamp = stamp;
   return map.signal_geometry = merged;
 }
-bool night_props_visible() {
-  const float seconds = std::fmod(scene_sun_time(), 86400.f);
-  const float hour = (seconds < 0.f ? seconds + 86400.f : seconds) / 3600.f;
-  return hour < 6.f || hour >= 18.5f;
-}
+bool night_props_visible() { return scene_sun_is_night(); }
 }
 
 bool scene_instances_has_ground_props() {
@@ -2726,6 +2728,11 @@ void build_prop_batches(GroundPropCell& cell, const std::unordered_set<uint32_t>
 }
 }
 
+SceneryLightList scene_instances_ground_lights(uint32_t render_id) {
+  const auto found = g_ground_props.find(render_id);
+  return found == g_ground_props.end() ? nullptr : found->second.lights;
+}
+
 void scene_instances_add_ground_props(const GroundMapData& map) {
   if (!g_resources || map.placements.empty() || g_ground_props.contains(map.render_id))
     return;
@@ -2742,6 +2749,10 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
   };
   size_t props = 0;
   std::unordered_set<uint32_t> used_resources;
+  // Light children per object type, in the object's frame (#237). The RPK
+  // entry's typeof (13) marks a light; the mesh filter below would drop them.
+  std::unordered_map<uint32_t, std::vector<SceneryLight>> type_lights;
+  std::unordered_map<uint32_t, std::optional<LightResource>> light_resources;
   {
     // A type's CFG and collision meshes only read packs and files. Prepare
     // the map's types on the job pool, then place them in map order.
@@ -2760,6 +2771,30 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
     for (size_t i = 0; i < types.size(); ++i) {
       if (build[i]) g_native_collision.emplace(types[i], std::move(collisions[i]));
       auto& renders = (object_types[types[i]] = std::move(configs[i])).renders;
+      for (const auto& render : renders) {
+        if (!render.variants.empty() || !is_light_resource(*g_resources, render.resource))
+          continue;
+        auto [cached, unseen] = light_resources.try_emplace(render.resource);
+        if (unseen) cached->second = load_light_resource(*g_resources, render.resource);
+        if (!cached->second) continue;
+        const auto& resource = *cached->second;
+        const auto frame = part_pose_matrix(render.pose);
+        SceneryLight light;
+        light.position = transform_point(frame, resource.position);
+        const auto& d = resource.direction;
+        light.direction = {frame[0] * d[0] + frame[4] * d[1] + frame[8] * d[2],
+                           frame[1] * d[0] + frame[5] * d[1] + frame[9] * d[2],
+                           frame[2] * d[0] + frame[6] * d[1] + frame[10] * d[2]};
+        light.color = resource.diffuse;
+        light.range = resource.range;
+        light.attenuation = resource.attenuation;
+        light.group = render.flags;
+        light.resource = render.resource;
+        light.lights_scene = light_resource_lights_scene(resource.type);
+        light.spot = resource.type == LightResourceType::Spot ||
+                     resource.type == LightResourceType::FakeSpot;
+        type_lights[types[i]].push_back(light);
+      }
       std::erase_if(renders, [&](const PartRender& render) {
         return render.variants.empty() ? !is_visible(render.resource)
             : std::none_of(render.variants.begin(), render.variants.end(), is_visible);
@@ -2783,9 +2818,21 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
     PartMatrix pose;
   };
   std::vector<CollisionBake> bakes;
+  std::vector<SceneryLight> lights;
   for (const auto& placement : map.placements) {
     const auto type = object_types.find(placement.type);
     const auto pose = part_pose_matrix({placement.position, placement.rotation});
+    // A dynamic placement's light stays at the authored pose when it is
+    // knocked over; lights do not follow promoted bodies.
+    if (const auto found = type_lights.find(placement.type); found != type_lights.end())
+      for (auto light : found->second) {
+        const auto& d = light.direction;
+        light.direction = {pose[0] * d[0] + pose[4] * d[1] + pose[8] * d[2],
+                           pose[1] * d[0] + pose[5] * d[1] + pose[9] * d[2],
+                           pose[2] * d[0] + pose[6] * d[1] + pose[10] * d[2]};
+        light.position = transform_point(pose, light.position);
+        lights.push_back(light);
+      }
     const auto& collision = native_collision_data(*g_resources, placement.type,
                                                   &type->second);
     const auto& p = placement.position;
@@ -2855,6 +2902,11 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
     });
   }
   props_map.resources.assign(used_resources.begin(), used_resources.end());
+  if (!lights.empty()) {
+    props_map.lights = std::make_shared<const std::vector<SceneryLight>>(std::move(lights));
+    jobs_printf("[scene] ground 0x%x scenery lights=%zu\n", map.render_id,
+                props_map.lights->size());
+  }
   preload_meshes(props_map.resources);
   for (auto& [key, cell] : cells) {
     std::array<float, 3> lower, upper;

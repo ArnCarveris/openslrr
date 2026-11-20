@@ -1148,8 +1148,12 @@ void LibBgfxBackend::update_local_light() {
     fixture_lights_.clear();
     // Local lights are their own option (4). Map sunlight (option 3) only
     // controls scenery sunlight; it must not switch the garage lamps off.
-    if (!garage_ || !host_enhanced_graphics().local_lights)
+    if (!host_enhanced_graphics().local_lights)
       return;
+    if (!garage_) {
+      update_scenery_lights();
+      return;
+    }
     // Script lights (java.render.LightSource, #235) come first. Position and
     // direction are in the parent's local script space; S*M*S with S = diag
     // (1,1,-1) is the instance transform, so render space is S*(M*local).
@@ -1254,6 +1258,34 @@ void LibBgfxBackend::update_local_light() {
       point_light_ = script_point;
       local_light_ = {script_point->position[0], script_point->position[1],
                       script_point->position[2], script_point->range};
+    }
+}
+
+// Street lamps and other scenery lights (#237) outside garages. The city
+// group (cfg `flags 4`) is on at night only; fake* lights never light the
+// scene. The nearest kFixtureLights reuse the fixture uniforms as unshadowed
+// omni lights (update_fixture_shadows runs in garages only), so the shaders
+// and their uniform budget are unchanged; scenery_lights_select fades lights
+// near the cut so the set changes without pops.
+void LibBgfxBackend::update_scenery_lights() {
+    const uint32_t groups = scene_sun_is_night() ? kLightGroupCity : 0u;
+    if (!groups || !scenery_lights_count())
+      return;
+    // cull_eye_ is script space (sync_instances); the lights are render space.
+    const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
+    const auto picks = scenery_lights_select(eye, kFixtureLights, groups,
+        [](void* parent, float* matrix) {
+          return scene_instances_render_matrix(parent, matrix);
+        });
+    for (const auto& pick : picks) {
+      SpotLight light;
+      light.omni = true;
+      light.position = pick.position;
+      light.color = pick.color;
+      light.attenuation = pick.attenuation;
+      light.intensity = pick.intensity;
+      light.range = pick.range;
+      if (light.valid()) fixture_lights_.push_back(light);
     }
 }
 

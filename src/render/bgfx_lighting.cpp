@@ -135,7 +135,9 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
       const auto& light=fixture_lights_[i];
       positions[i]={light.position[0],light.position[1],light.position[2],light.range};
       colors[i]={light.color[0],light.color[1],light.color[2],light.intensity};
-      directions[i]={light.direction[0],light.direction[1],light.direction[2],light.outer_cos};
+      directions[i]=light.omni
+          ? std::array<float,4>{light.attenuation[0],light.attenuation[1],light.attenuation[2],-2.f}
+          : std::array<float,4>{light.direction[0],light.direction[1],light.direction[2],light.outer_cos};
     }
     bgfx::setUniform(u_fixture_positions_,positions.data(),uint16_t(count));
     bgfx::setUniform(u_fixture_colors_,colors.data(),uint16_t(count));

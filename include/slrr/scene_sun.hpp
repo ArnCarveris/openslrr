@@ -33,6 +33,9 @@ void scene_sun_set_resource(const float diffuse[3], const float ambient[3],
 SceneSun scene_sun();
 void scene_sun_set_time(float seconds);
 float scene_sun_time();
+// Night window shared by night facades and city lights (group 4):
+// before 06:00 or from 18:30.
+bool scene_sun_is_night();
 void scene_sun_apply_day_cycle(SceneSun& light);
 
 }  // namespace slrr

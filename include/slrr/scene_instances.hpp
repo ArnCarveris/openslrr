@@ -2,6 +2,7 @@
 
 #include "slrr/scx_mesh.hpp"
 #include "slrr/scene_sun.hpp"
+#include "slrr/script_lights.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -179,6 +180,10 @@ struct GroundMapData {
 };
 GroundMapData scene_instances_ground_map(const RpkIndex &rpk, uint32_t ground_id);
 void scene_instances_add_ground_props(const GroundMapData& map);
+// Light `render` children of the map's placements (type-13 resources, #237),
+// in the ground shell's local script space. Null when the map has none or its
+// props were not added. natives_resref attaches it to each new shell.
+SceneryLightList scene_instances_ground_lights(uint32_t render_id);
 // Drawn instead of the render object's .scx (a ground template is materials).
 void scene_instances_override_mesh(uint32_t id,
                                    std::shared_ptr<const ScxGeometry> geo);

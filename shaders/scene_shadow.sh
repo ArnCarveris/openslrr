@@ -17,6 +17,8 @@ vec2 clampReceiverGradient(vec2 gradient,float limit)
 }
 // Bounded ceiling emitters share one downward projection each, not six cube
 // faces per tube. The housing limits the direct source to its lower hemisphere.
+// A direction w below -1.5 marks an omni scenery light (#237): no cone, no
+// shadow, xyz = D3D attenuation (c, l, q) for 1/(c + l*d + q*d*d).
 uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
 uniform vec4 u_fixturePositions[12];
 uniform vec4 u_fixtureColors[12];
@@ -36,12 +38,18 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
         vec3 delta=u_fixturePositions[i].xyz-world;
         float d2=max(dot(delta,delta),0.001);
         vec3 toward=delta*inversesqrt(d2);
-        float cone=smoothstep(u_fixtureDirections[i].w,0.422618,
+        bool omni=u_fixtureDirections[i].w<-1.5;
+        float cone=omni?1.0:smoothstep(u_fixtureDirections[i].w,0.422618,
                              dot(-toward,u_fixtureDirections[i].xyz));
         float range=u_fixturePositions[i].w;
         float window=saturate(1.0-pow(d2/(range*range),2.0));
+        float falloff=1.0/max(d2,0.25);
+        if(omni) {
+            vec3 att=u_fixtureDirections[i].xyz;
+            falloff=1.0/max(att.x+att.y*sqrt(d2)+att.z*d2,0.25);
+        }
         float visibility=1.0;
-        if(u_fixtureParams.w>0.5) {
+        if(u_fixtureParams.w>0.5 && !omni) {
             vec4 clip=mul(u_fixtureMatrices[i],vec4(world+toward*0.015,1.0));
             vec3 p=clip.xyz/max(clip.w,0.0001);
             // Evaluate derivatives before the varying bounds branch. Compare
@@ -91,8 +99,8 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                 }
             }
         }
-        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
-                        max(d2,0.25))*cone*visibility;
+        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window*
+                        falloff)*cone*visibility;
         float facing=max(dot(n,toward),0.0);
         diffuse+=radiance*facing;
         if(specular) {

@@ -1195,7 +1195,8 @@ reset (`gameref_clear`, or a new VM registering the natives). Lights are not
 saved.
 
 Rendering. `LibBgfxBackend::update_local_light` reads the registry every frame,
-still only in the garage with Local lights (option 4) on. The parent's drawn
+only in the garage with Local lights (option 4) on (scenery lights outside
+garages are described under "Scenery lights (#237)"). The parent's drawn
 script matrix M gives the render-space position S·M·p (S flips Z), the same
 convention as the instance transform S·M·S applied to mesh vertices. Spot and
 rect lights become fixture `SpotLight`s, at most 12, in creation order; the
@@ -1211,6 +1212,27 @@ The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 1
 and 12 lights, intensity 30, range 26 m, set per garage in its fixture tables);
 the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
+
+### Scenery lights (#237)
+
+Map objects place stock light resources as `render <id> <pos> [<ypr>]`
+children followed by `flags <group>`. A resource is a light when its RPK entry
+has typeof 13 (`RESTYPE_RENDER_LIGHT`); never infer it from names or
+keywords. `parse_light_resource` reads the type-13 text payload. Point and
+spot light the scene; `fakepoint`/`fake point`/`fakespot` are glow only and
+never add scene lighting.
+
+Each ground shell owns the light children of its map's placements in its local
+script space (`scenery_lights_attach`). They leave the registry with the shell
+(`gameref_remove`) or on a world reset, have no Java object and are not saved.
+
+Outside garages, with Local lights (option 4) on, lights of the city group
+(bit 4) light the scene at night (`scene_sun_is_night`); other groups stay
+off. The renderer keeps the nearest 12 within 250 m and fades them near the
+cut. They use the 12 fixture slots as unshadowed omni lights with the stock
+D3D attenuation 1/(c + l·d + q·d²), range capped at 45 m and intensity 0.8 ×
+diffuse. Scenery spots are drawn as omni lights, and flares are not drawn.
+Garages keep the fixture path of #235 unchanged.
 
 ## 13. Interface, input, and options
 
