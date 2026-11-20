@@ -1384,6 +1384,8 @@ void install_cfg_stock(Jvm &jvm, Object *part, int depth = 0) {
 
 } // namespace
 
+int32_t part_controlled_vehicle() { return controlled_vehicle; }
+
 bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
   if (!(flags & 4u) || (flags & 0x40u) || !runtime)
     return false;

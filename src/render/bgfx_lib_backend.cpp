@@ -277,8 +277,10 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_shadow_params_=bgfx::createUniform("u_lampShadowParams",bgfx::UniformType::Vec4);
-    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampShadowSlots));
-    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampShadowSlots));
+    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
+    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
+    u_lamp_car_matrices_=bgfx::createUniform("u_lampCarMatrices",bgfx::UniformType::Mat4,uint16_t(kLampSpecial));
+    u_lamp_car_tiles_=bgfx::createUniform("u_lampCarTiles",bgfx::UniformType::Vec4,uint16_t(kLampSpecial));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -473,7 +475,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
           &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_,
           &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_,
-          &u_lamp_shadow_params_, &u_lamp_shadow_matrices_, &u_lamp_shadow_tiles_}) {
+          &u_lamp_shadow_params_, &u_lamp_shadow_matrices_, &u_lamp_shadow_tiles_,
+          &u_lamp_car_matrices_, &u_lamp_car_tiles_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -793,8 +796,16 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       const auto* position = car && scene_instances_render_matrix(car->key, car_matrix)
           ? car_matrix + 12 : world_cam ? world_eye : nullptr;
       // Street lamp shadows are chosen around the followed car (#237), so
-      // turning the camera does not move its shadows.
-      set_lamp_shadow_focus(position);
+      // turning the camera does not move its shadows. Without a following
+      // script camera (free or scripted views) the controlled car is used.
+      {
+        const auto* player = car ? car : gameref_find_live(part_controlled_vehicle());
+        float player_matrix[16];
+        if (player && scene_instances_render_matrix(player->key, player_matrix))
+          set_lamp_shadow_focus(player_matrix + 12);
+        else
+          set_lamp_shadow_focus(nullptr);
+      }
       update_lamp_shadows(video);
       update_interior_sun(video);
       if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
@@ -1295,7 +1306,7 @@ void LibBgfxBackend::update_scenery_lights() {
     const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
     const auto frustum = view_frustum(cull_view_, cull_proj_);
     // Leave room for shadowed lamps outside this set (update_lamp_shadows).
-    const auto picks = scenery_lights_select(eye, kSceneryLamps - kLampShadowSlots, groups,
+    const auto picks = scenery_lights_select(eye, kSceneryLamps - kLampSpecial, groups,
         [](void* parent, float* matrix) {
           return scene_instances_render_matrix(parent, matrix);
         }, &frustum);

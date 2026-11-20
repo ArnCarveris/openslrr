@@ -159,6 +159,9 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   lamp_shadow_count_ = 0;
   const auto free_slots = [&] {
     for (auto &slot : lamp_shadow_slots_) slot = {};
+    car_shadow_tiles_.clear();
+    car_shadow_stamps_.clear();
+    car_shadow_valid_ = false;
   };
   if (garage_ || !scene_sun_is_night() || !scenery_lights_count() || video.shadows == 0 ||
       !debug_overlay_.render_options().map_shadows ||
@@ -368,6 +371,139 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   };
   const float no_apertures[4]{};
   bgfx::setUniform(u_aperture_params_, no_apertures);
+  // Car tiles: every lamp whose light reaches the cover sphere around the
+  // followed car, nearest first, up to kCarShadowTiles. Strength fades over
+  // kCarShadowFade metres before the reach (or the first lamp past the
+  // budget), so a lamp gains or loses its car shadow where its light on the
+  // car is near zero.
+  const bool car_shadows = lamp_focus_valid_ && debug_overlay_.render_options().shadows;
+  const std::array<float, 3> car_center{focus[0], focus[1] + 1.f, focus[2]};
+  const auto covered_by_car_tiles = [&](const SceneInstance &instance) {
+    if (!car_shadows) return false;
+    float lower[3], upper[3];
+    if (!shadow_bounds_box(*instance.geometry, instance.transform, lower, upper)) return false;
+    float d2 = 0.f;
+    for (int axis = 0; axis < 3; ++axis) {
+      const float c = .5f * (lower[axis] + upper[axis]) - car_center[axis];
+      d2 += c * c;
+    }
+    return d2 < kCarShadowCover * kCarShadowCover;
+  };
+  car_shadow_tiles_.clear();
+  if (car_shadows) {
+    std::vector<const SceneryLightPick *> reach;
+    for (const auto &candidate : candidates) {
+      const float dx = candidate.position[0] - car_center[0];
+      const float dy = candidate.position[1] - car_center[1];
+      const float dz = candidate.position[2] - car_center[2];
+      const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (d < candidate.range + kCarShadowCover) reach.push_back(&candidate);
+    }
+    float cut = kSceneryLightMaxRange + kCarShadowCover;
+    if (reach.size() > kCarShadowTiles) {
+      cut = reach[kCarShadowTiles]->distance;
+      reach.resize(kCarShadowTiles);
+    }
+    for (const auto *candidate : reach) {
+      const float t = std::clamp((std::min(cut, candidate->range + kCarShadowCover) -
+                                  candidate->distance) / kCarShadowFade, 0.f, 1.f);
+      CarShadowTile tile;
+      tile.source = candidate->source;
+      tile.strength = t * t * (3.f - 2.f * t);
+      if (tile.strength <= 0.f) continue;
+      const bx::Vec3 eye{candidate->position[0], candidate->position[1], candidate->position[2]};
+      const bx::Vec3 at{car_center[0], car_center[1], car_center[2]};
+      const auto delta = bx::sub(at, eye);
+      const float d = bx::length(delta);
+      const auto dir = bx::normalize(delta);
+      const bx::Vec3 up = std::abs(dir.y) > .98f ? bx::Vec3{0, 0, 1} : bx::Vec3{0, 1, 0};
+      bx::mtxLookAt(tile.view.data(), eye, at, up);
+      const float half = d > kCarShadowCover ? std::asin(kCarShadowCover / d) : 1.48f;
+      bx::mtxProj(tile.proj.data(), std::min(2.f * half * 57.2957795f, 170.f), 1.f,
+                  std::max(.1f, d - kCarShadowCover), candidate->range, caps->homogeneousDepth);
+      float clip[16];
+      bx::mtxMul(clip, tile.view.data(), tile.proj.data());
+      bx::mtxMul(tile.sample.data(), clip, crop);
+      tile.lamp.position = candidate->position;
+      tile.lamp.color = candidate->color;
+      tile.lamp.attenuation = candidate->attenuation;
+      tile.lamp.intensity = candidate->intensity;
+      tile.lamp.range = candidate->range;
+      tile.lamp.source = candidate->source;
+      car_shadow_tiles_.push_back(tile);
+    }
+  }
+  if (!car_shadow_tiles_.empty()) {
+    // Casters: the vehicles in the cover sphere, all tiles together.
+    std::vector<const SceneInstance *> cars;
+    std::vector<ShadowCasterStamp> stamps;
+    for (const auto &instance : instances_) {
+      if (!instance.geometry || !instance.vehicle_material || instance.light_flags ||
+          instance.opacity < .99f || !covered_by_car_tiles(instance))
+        continue;
+      const auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end() || !bgfx::isValid(found->second.vbh) ||
+          !bgfx::isValid(found->second.ibh))
+        continue;
+      cars.push_back(&instance);
+      stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                        found->second.vbh.idx, found->second.ibh.idx, instance.transform});
+    }
+    // No vehicle in the sphere (car hidden, cockpit-only): no car tiles.
+    if (cars.empty()) car_shadow_tiles_.clear();
+    // The tile matrices are part of the cache key (lamp set and car pose).
+    for (const auto &tile : car_shadow_tiles_)
+      stamps.push_back({nullptr, 0, 0, 0, tile.sample});
+    if (!car_shadow_tiles_.empty() && (!car_shadow_valid_ || stamps != car_shadow_stamps_)) {
+      const uint16_t half = uint16_t(tile / 2);
+      bgfx::setViewFrameBuffer(kCarShadowView, fixture_shadow_fb_);
+      bgfx::setViewRect(kCarShadowView, 0, uint16_t(2 * tile), uint16_t(4 * tile), tile);
+      bgfx::setViewClear(kCarShadowView, BGFX_CLEAR_DEPTH, 0, 1.f);
+      float identity[16];
+      bx::mtxIdentity(identity);
+      bgfx::setViewTransform(kCarShadowView, identity, identity);
+      bgfx::touch(kCarShadowView);
+      for (size_t k = 0; k < car_shadow_tiles_.size(); ++k) {
+        const auto &tile_info = car_shadow_tiles_[k];
+        const int column = int(k % 8), row = int(k / 8);
+        // Clip remap into this quarter of the view rect, plus a scissor.
+        float remap[16];
+        bx::mtxIdentity(remap);
+        remap[0] = .125f;
+        remap[12] = -1.f + .125f + .25f * float(column);
+        remap[5] = .5f;
+        remap[13] = caps->originBottomLeft ? -.5f + float(row) : .5f - float(row);
+        float view_proj[16], to_tile[16];
+        bx::mtxMul(view_proj, tile_info.view.data(), tile_info.proj.data());
+        bx::mtxMul(to_tile, view_proj, remap);
+        for (const auto *instance : cars) {
+          float model[16];
+          bx::mtxMul(model, instance->transform.data(), to_tile);
+          const auto &part = instance_meshes_.at(instance->geometry.get());
+          for (const auto &group : part.shadow_groups) {
+            const auto surface = scx_surface(part.geo.info.version, group);
+            if (surface.blend) continue;
+            const float params[4] = {0, -1.f, 0, 0};
+            bgfx::setUniform(u_static_shadow_params_, params);
+            bgfx::setTexture(0, s_tex_, white_tex_);
+            bgfx::setTransform(model);
+            bgfx::setVertexBuffer(0, part.vbh);
+            bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+            bgfx::setScissor(uint16_t(column * half), uint16_t(2 * tile + row * half), half, half);
+            bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                           (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
+            bgfx::submit(kCarShadowView, static_shadow_program_);
+          }
+        }
+      }
+      car_shadow_stamps_ = std::move(stamps);
+      car_shadow_valid_ = true;
+      ++car_shadow_redraws_;
+    }
+  } else {
+    car_shadow_valid_ = false;
+    car_shadow_stamps_.clear();
+  }
   std::vector<size_t> shadowed; // slots
   for (size_t s = 0; s < kLampShadowSlots; ++s) {
     auto &slot = lamp_shadow_slots_[s];
@@ -401,7 +537,8 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
         stamps.back().revision ^= skin_palette_hash(instance.skin);
       } else if (instance.vehicle_material) {
         if (!debug_overlay_.render_options().shadows || !bgfx::isValid(found->second.vbh) ||
-            !shadow_bounds_visible(*instance.geometry, instance.transform, frustum))
+            !shadow_bounds_visible(*instance.geometry, instance.transform, frustum) ||
+            covered_by_car_tiles(instance))
           continue;
         stamps.push_back({instance.geometry.get(), instance.geometry->revision,
                           found->second.vbh.idx, found->second.ibh.idx, instance.transform});
@@ -437,21 +574,52 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   // their nearest-first order. A shadowed lamp outside the frustum-selected
   // set is added at full power (its light is near the car; the lit set
   // leaves kLampShadowSlots entries free for this).
+  // Car-tiled lamps follow (or share an entry with) the scenery-shadowed
+  // ones; together at most kLampSpecial entries.
   std::vector<LampLight> ordered;
-  ordered.reserve(scenery_lamps_.size() + shadowed.size());
+  ordered.reserve(scenery_lamps_.size() + shadowed.size() + car_shadow_tiles_.size());
   std::vector<char> taken(scenery_lamps_.size(), 0);
+  const auto car_tile_of = [&](const void *source) {
+    for (size_t k = 0; k < car_shadow_tiles_.size(); ++k)
+      if (car_shadow_tiles_[k].source == source) return int(k);
+    return -1;
+  };
+  const auto set_car_tile = [&](size_t entry, const void *source) {
+    const int k = car_tile_of(source);
+    if (k < 0) {
+      lamp_car_tiles_[entry] = {0.f, 0.f, 0.f, 0.f};
+      return;
+    }
+    const auto &tile = car_shadow_tiles_[size_t(k)];
+    lamp_car_matrices_[entry] = tile.sample;
+    lamp_car_tiles_[entry] = {float(k % 8) * .125f, 2.f / 3.f + float(k / 8) / 6.f,
+                              tile.strength, 0.f};
+  };
+  const auto push_lamp = [&](const void *source, const LampLight &fallback) {
+    const int index = find_lamp(source);
+    if (index >= 0) {
+      ordered.push_back(scenery_lamps_[size_t(index)]);
+      taken[size_t(index)] = 1;
+    } else {
+      ordered.push_back(fallback);
+    }
+  };
   for (const auto s : shadowed) {
     const auto &slot = lamp_shadow_slots_[s];
     lamp_shadow_matrices_[ordered.size()] = slot.sample;
     lamp_shadow_tiles_[ordered.size()] = {float(s % 4) * .25f, float(s / 4) / 3.f,
                                           slot.weight, 0.f};
-    const int index = find_lamp(slot.source);
-    if (index >= 0) {
-      ordered.push_back(scenery_lamps_[size_t(index)]);
-      taken[size_t(index)] = 1;
-    } else {
-      ordered.push_back(slot.lamp);
-    }
+    set_car_tile(ordered.size(), slot.source);
+    push_lamp(slot.source, slot.lamp);
+  }
+  for (const auto &tile : car_shadow_tiles_) {
+    if (std::any_of(shadowed.begin(), shadowed.end(), [&](size_t s) {
+          return lamp_shadow_slots_[s].source == tile.source;
+        }))
+      continue;
+    lamp_shadow_tiles_[ordered.size()] = {0.f, 0.f, 0.f, 0.f};
+    set_car_tile(ordered.size(), tile.source);
+    push_lamp(tile.source, tile.lamp);
   }
   lamp_shadow_count_ = ordered.size();
   for (size_t i = 0; i < scenery_lamps_.size(); ++i)

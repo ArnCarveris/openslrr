@@ -488,6 +488,29 @@ class LibBgfxBackend final : public IRenderBackend {
     std::array<float,16> sample{};
   };
   std::array<LampShadowSlot,kLampShadowSlots> lamp_shadow_slots_{};
+  // Car shadows (#237): every lamp whose light reaches the followed car gets
+  // a car-only tile (up to kCarShadowTiles), a narrow perspective from the
+  // lamp onto a kCarShadowCover sphere around the car, holding only the
+  // vehicles inside it. The 16 tiles are the half-size quarters of atlas
+  // tiles 8-11, drawn in one view with per-draw clip remapping and scissor.
+  // Scenery tiles then skip vehicles inside that sphere.
+  static constexpr size_t kCarShadowTiles=16, kLampSpecial=kLampShadowSlots+kCarShadowTiles;
+  static constexpr float kCarShadowCover=6.f, kCarShadowFade=10.f;
+  static constexpr uint16_t kCarShadowView=136;
+  struct CarShadowTile {
+    const void* source=nullptr;
+    std::array<float,16> view{}, proj{}, sample{};
+    float strength=0.f;
+    LampLight lamp{};
+  };
+  std::vector<CarShadowTile> car_shadow_tiles_;
+  std::vector<ShadowCasterStamp> car_shadow_stamps_;
+  bool car_shadow_valid_=false;
+  uint64_t car_shadow_redraws_=0;
+  std::array<std::array<float,16>,kLampSpecial> lamp_car_matrices_{};
+  std::array<std::array<float,4>,kLampSpecial> lamp_car_tiles_{};
+  bgfx::UniformHandle u_lamp_car_matrices_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_car_tiles_=BGFX_INVALID_HANDLE;
   size_t lamp_shadow_count_=0;  // shadowed lamps at the front of scenery_lamps_
   bool lamp_shadow_atlas_bound_=false;
   uint64_t lamp_shadow_redraws_=0;  // tiles drawn, for tests
@@ -502,8 +525,8 @@ class LibBgfxBackend final : public IRenderBackend {
   }
   float lamp_shadow_dt_override_=-1.f;  // tests: fixed fade step in seconds
   double lamp_shadow_clock_=-1.0;
-  std::array<std::array<float,16>,kLampShadowSlots> lamp_shadow_matrices_{};
-  std::array<std::array<float,4>,kLampShadowSlots> lamp_shadow_tiles_{};
+  std::array<std::array<float,16>,kLampSpecial> lamp_shadow_matrices_{};
+  std::array<std::array<float,4>,kLampSpecial> lamp_shadow_tiles_{};
   bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_lamp_shadow_matrices_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_lamp_shadow_tiles_=BGFX_INVALID_HANDLE;

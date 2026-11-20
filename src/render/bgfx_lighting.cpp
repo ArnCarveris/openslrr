@@ -129,7 +129,7 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   const bool shadows=count && fixture_shadow_active_;
   // Street lamp shadows (#237) use the same atlas outside garages.
   const size_t lamp_shadows=enabled && lamp_shadow_atlas_bound_
-      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampShadowSlots}) : size_t(0);
+      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampSpecial}) : size_t(0);
   const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
   bgfx::setUniform(u_fixture_params_,params);
   if(count) {
@@ -153,6 +153,8 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   if(lamp_shadows) {
     bgfx::setUniform(u_lamp_shadow_matrices_,lamp_shadow_matrices_.data(),uint16_t(lamp_shadows));
     bgfx::setUniform(u_lamp_shadow_tiles_,lamp_shadow_tiles_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_car_matrices_,lamp_car_matrices_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_car_tiles_,lamp_car_tiles_.data(),uint16_t(lamp_shadows));
   }
   // Scenery lamps (#237) follow the same enable as the fixtures: previews and
   // emissive lamp glass receive none.

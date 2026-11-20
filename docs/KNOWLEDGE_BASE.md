@@ -2806,6 +2806,40 @@ city at night.
     (geometry, revision, buffers, transform, skin palette hash) changes; static
     and dynamic casters are redrawn together because D3D11 cannot copy part
     of a depth texture.
+  - Car shadows (after the user still saw the car's shadow move around it at
+    `d17976f` and asked to always show it): every lamp whose light reaches a
+    6 m sphere around the player car gets a car-only tile, up to
+    `kCarShadowTiles` = 16, the half-size quarters of atlas tiles 8–11 (128,
+    256 or 512 px by Shadow quality), drawn in one view (136) with a per-draw
+    clip remap and scissor. Projection: a narrow perspective from the lamp onto
+    the sphere, near = distance − 6 m, far = the lamp range, so every receiver
+    whose ray from the lamp crosses the car falls in the tile. Casters: the
+    vehicles in the sphere (the player car, nearby traffic); the scenery tiles
+    then skip vehicles in the sphere, so they stay cached while the car moves.
+    Strength fades over 10 m before the lamp's reach (or the 17th lamp), so a
+    car shadow appears where that lamp's light on the car is near zero. Focus:
+    the car followed by the script camera, else
+    `src/resources/part_runtime.cpp:part_controlled_vehicle`; no car tiles
+    without a car. The shader multiplies the scenery and car visibilities per
+    lamp (`shaders/scene_shadow.sh:lampTileVisibility`); special lamps
+    (scenery or car tile) are the first 24 lamp entries and the frustum
+    selection keeps 40 of 64.
+  - Diagnosis of the moving car shadow (no in-game capture available here):
+    the shadow projections are fixed in world space (lamp position, straight
+    down; no camera term, re-centring or texel snapping), the lamp views
+    128–143 are ordered before the world view in `draw_previews` (no frame
+    lag), each receiver uses the matrix and tile of its own slot, the sun car
+    depth map is off at night (the night sun points upward and
+    `update_car_depth` returns), and the stock `shd_*` decal is not drawn. In
+    the harness a parked car seen from a fixed top-down camera keeps exactly
+    the same shadow pixels while the game camera orbits it. What changed with
+    the camera or the car was the 6-lamp budget: on the test street 7 lamps
+    reach the car and on crossings more, so at least one lit it unshadowed,
+    and while driving the 6 slots were reassigned every lamp spacing (19
+    assignments over 300 m), each one fading a car shadow out on one side and
+    in on another over 0.8 s, which reads as the shadow moving around the car.
+    With car tiles every lamp that lights the car shadows it; a lamp's shadow
+    still swings around the car as it is passed (correct for a point light).
   - No pop: a slot's weight fades 0 → 1 in 0.8 s (real time) when assigned
     and back to 0 when it is released (out of reach or replaced); the shader
     mixes visibility by that weight.
@@ -2839,10 +2873,19 @@ city at night.
   while a moved car causes one. `lamp_shadow_stability`: a parked car with
   the camera orbiting it twice keeps the same 6 lamps (0 changes, 0
   assignments); driving 300 m along a street with lamps every 15 m assigns
-  19 lamps, each exactly once. In-game: `1df1452` worked but lamps popped
+  19 lamps, each exactly once. `car_lamp_shadows`: a parked car on that
+  street gets 7 car tiles (all 7 lamps reaching it); seen from a fixed
+  top-down observer its shadow (2,112 pixels) is identical over two orbits of
+  the game camera, with no car tile redraw; driving 30 m at 3 m/s changes
+  car-tile strength by at most 0.0073 per frame, tiles enter and leave at
+  strength 0, and scenery tiles are redrawn only on new assignments. Cost
+  (1920×1080, 8 road layers, 50 lamps, car moving every frame, noisy between
+  runs): no lamp shadows 0.60–1.00 ms, 6 scenery tiles 1.06–1.12 ms, plus
+  7 car tiles 1.57–1.77 ms. In-game: `1df1452` worked but lamps popped
   in; `7c9d05f` accepted (intensity, no pop) without shadows; `cb90023` cast
-  shadows that moved around the car when the camera turned; the car-focused
-  selection is not validated yet.
+  shadows that moved around the car when the camera turned; `d17976f`
+  (car-focused selection) still showed it; the car tiles are not validated
+  yet.
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).

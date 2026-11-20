@@ -1246,7 +1246,11 @@ rim. Static scenery casts from a list collected when the lamp gets its slot
 cast every frame, and a tile is redrawn only when its casters change. A lamp
 keeps its shadow slot until a clearly nearer lamp (75 % of its distance and
 4 m nearer) has waited 1 s; shadow strength fades in and out over 0.8 s, so
-turning the camera never moves a car's shadows and no shadow pops. The intensity values above were accepted in game by the user.
+turning the camera never moves a car's shadows and no shadow pops. In
+addition, every lamp whose light reaches the player car (up to 16) casts the
+car's shadow from a small car-only tile holding just the vehicles within 6 m
+of it, so the car always has a shadow from each lamp that lights it; that
+shadow fades in over 10 m where the lamp's light on the car is near zero. The intensity values above were accepted in game by the user.
 
 ## 13. Interface, input, and options
 
