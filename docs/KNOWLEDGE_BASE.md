@@ -2469,3 +2469,28 @@ so `copy.id()` aliases the copy and the instance inherits its replacement.
 texture as a flat picture over the slot's hit box, and destroying the instance
 removes it. The button mesh itself is not drawn.
 Projection/preview behavior remains the host approximation described above.
+
+### AO silhouette streaks around cars and pedestrians (#201)
+
+Reported at `905dee4`: with HBAO or GTAO on, dark lines spread on the
+ground beside cars (rear wheel, bumper) and pedestrians' legs; AO Off removes
+them. Both methods in `shaders/fs_ao.sc` sampled every receiver at the same
+radial distances (`(k+0.75)/steps`), and only varied the direction rotation
+with interleaved gradient noise. That hash is built for temporal accumulation,
+which this AO does not have; on its own it varies slowly along diagonals. The
+5-tap Gaussian filter could not remove either pattern, so the occluder's
+outline appeared as shifted copies on the ground.
+
+The main pass now takes rotation and step offset from a 4x4 tile
+(`shaders/fs_ao.sc:hbao`, `shaders/fs_ao.sc:gtao`), and the separable filter
+uses [1,2,2,2,1]/8, one full tile period. This follows the HBAO+ approach
+(per-texel rotation and jitter from a small tile, then a matched blur).
+Assetto Corsa's Custom Shaders Patch, which the user named as a reference,
+documents SSAO or NVIDIA HBAO+ over a pre-pass with real scene normals and
+uses baked vertex AO for cars and tracks; it publishes no further algorithm
+details. This host still reconstructs normals from depth and has no baked AO.
+
+Limits: a numerical model of a box on a plane (ideal normals) did not show the
+streaks before or after, so the in-game cause is not proven by it. Confirm on
+the reported views in game. Pedestrians cast no sun shadow at all (#230); the
+contact darkening under them comes only from AO.
