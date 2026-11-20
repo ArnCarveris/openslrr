@@ -29,6 +29,7 @@ struct PointLight {
 struct LampLight {
   std::array<float, 3> position{}, color{1, 1, 1}, attenuation{1, 0, 0};
   float intensity = 1.f, range = 45.f;
+  const void *source = nullptr; // stable identity (the registry entry)
   bool valid() const {
     for (int i = 0; i < 3; ++i)
       if (!std::isfinite(position[i]) || !std::isfinite(color[i]) ||

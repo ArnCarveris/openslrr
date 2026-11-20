@@ -1237,6 +1237,15 @@ diffuse, evaluated in the mesh and vehicle shaders. Scenery spots are drawn as
 omni lights, and flares are not drawn. Garages keep the fixture path of #235
 unchanged.
 
+With shadows on, the 6 nearest visible lamps cast shadows: one downward
+150-degree perspective tile each in the fixture atlas (free outside garages),
+sized by Shadow quality and filtered like the fixtures, faded out at the tile
+rim. Static scenery casts from a list collected when the lamp gets its slot
+(not the ground POLY, not the lamp's own housing); vehicles and characters
+cast every frame, and a tile is redrawn only when its casters change. Shadow
+strength fades in and out over 0.4 s when lamps change slots, so no shadow
+pops. The intensity values above were accepted in game by the user.
+
 ## 13. Interface, input, and options
 
 OSD registries, script widgets, and picking rectangles must stay in sync.

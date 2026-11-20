@@ -373,6 +373,7 @@ class LibBgfxBackend final : public IRenderBackend {
   static constexpr size_t kFixtureLights=12;
   std::vector<SpotLight> fixture_lights_;
   void update_fixture_shadows(const VideoOptions& video);
+  void update_lamp_shadows(const VideoOptions& video);
   void bind_fixture_lights(bool enabled);
   bgfx::FrameBufferHandle fixture_shadow_fb_=BGFX_INVALID_HANDLE;
   bgfx::TextureHandle fixture_shadow_tex_=BGFX_INVALID_HANDLE;
@@ -461,6 +462,34 @@ class LibBgfxBackend final : public IRenderBackend {
   };
   std::vector<ShadowCasterStamp> fixture_shadow_casters_;
   std::vector<ShadowCasterStamp> interior_sun_casters_;
+  // Street lamp shadows (#237): the nearest kLampShadows lamps each get one
+  // downward 150-degree perspective tile in the fixture atlas (free outside
+  // garages). Static scenery is collected once per assignment; the tile is
+  // redrawn only when its lamp or a dynamic caster (vehicle, character)
+  // changes. Weights fade in/out so reassignment does not pop.
+  static constexpr size_t kLampShadows=6;
+  static constexpr float kLampShadowFov=150.f, kLampShadowNear=.3f, kLampShadowFade=.4f;
+  struct LampShadowSlot {
+    const void* source=nullptr;
+    std::array<float,3> position{};
+    float range=0.f, weight=0.f;
+    bool wanted=false, valid=false;
+    std::vector<SceneInstance> statics;
+    std::vector<SceneBatch> static_batches;
+    std::vector<ShadowCasterStamp> stamps;
+    std::array<float,16> sample{};
+  };
+  std::array<LampShadowSlot,kLampShadows> lamp_shadow_slots_{};
+  size_t lamp_shadow_count_=0;  // shadowed lamps at the front of scenery_lamps_
+  bool lamp_shadow_atlas_bound_=false;
+  uint64_t lamp_shadow_redraws_=0;  // tiles drawn, for tests
+  float lamp_shadow_dt_override_=-1.f;  // tests: fixed fade step in seconds
+  double lamp_shadow_clock_=-1.0;
+  std::array<std::array<float,16>,kLampShadows> lamp_shadow_matrices_{};
+  std::array<std::array<float,4>,kLampShadows> lamp_shadow_tiles_{};
+  bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_shadow_matrices_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_shadow_tiles_=BGFX_INVALID_HANDLE;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
   bool shadow_cache_valid_ = false;

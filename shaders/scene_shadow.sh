@@ -108,11 +108,84 @@ uniform vec4 u_lampParams;
 uniform vec4 u_lampPositions[64];   // render-space xyz, range (metres)
 uniform vec4 u_lampColors[64];      // rgb * intensity
 uniform vec4 u_lampAttenuation[64]; // D3D c, l, q: 1/(c + l*d + q*d*d)
+// Shadowed lamps (#237) are the first x entries; each samples one downward
+// perspective tile of s_fixtureShadow (free outside garages).
+uniform vec4 u_lampShadowParams;      // count, inverse atlas width/height
+uniform mat4 u_lampShadowMatrices[6]; // world -> tile-local uv, depth
+uniform vec4 u_lampShadowTiles[6];    // tile origin uv, shadow strength
+float lampShadowTap(vec2 uv,vec3 p,vec2 receiverUv,vec2 gradient)
+{
+    float depth=p.z+dot(gradient,(uv-receiverUv)*vec2(4.0,3.0))-0.000005;
+    return shadow2D(s_fixtureShadow,vec3(uv,depth));
+}
+float lampShadowVisibility(int i,vec3 world,vec3 toward)
+{
+    vec4 clip=mul(u_lampShadowMatrices[i],vec4(world+toward*0.03,1.0));
+    vec3 p=clip.xyz/max(clip.w,0.0001);
+    // Derivatives before the varying bounds branch, as for the fixtures.
+    vec2 gradient=shadowReceiverGradient(p);
+    float visibility=1.0;
+    if(clip.w>0.0 && all(greaterThan(p,vec3(0.0,0.0,0.0))) &&
+       all(lessThan(p,vec3(1.0,1.0,1.0)))) {
+        vec2 tile=u_lampShadowTiles[i].xy;
+        vec2 texel=u_lampShadowParams.yz;
+        vec2 receiverUv=tile+p.xy*vec2(0.25,1.0/3.0);
+        vec2 uv=clamp(receiverUv,tile+texel*1.5,tile+vec2(0.25,1.0/3.0)-texel*1.5);
+        vec2 grid=uv/texel-vec2(0.5,0.5);
+        vec2 base=(floor(grid)+vec2(0.5,0.5))*texel;
+        vec2 weight=fract(grid);
+        if(u_shadowFilter.x<0.5) weight=smoothstep(vec2(0.15,0.15),vec2(0.85,0.85),weight);
+        float shadow;
+        if(u_shadowFilter.x>1.5) {
+            shadow=0.0;
+            for(int fy=-1;fy<=2;++fy) for(int fx=-1;fx<=2;++fx) {
+                vec2 offset=vec2(float(fx),float(fy));
+                vec2 tent=max(vec2(2.0,2.0)-abs(offset-weight),vec2(0.0,0.0));
+                vec2 tap=clamp(base+offset*texel,tile+texel*0.5,
+                               tile+vec2(0.25,1.0/3.0)-texel*0.5);
+                shadow+=tent.x*tent.y*lampShadowTap(tap,p,receiverUv,gradient);
+            }
+            shadow*=0.0625;
+        } else {
+            shadow=mix(mix(lampShadowTap(base,p,receiverUv,gradient),
+                           lampShadowTap(base+vec2(texel.x,0.0),p,receiverUv,gradient),weight.x),
+                       mix(lampShadowTap(base+vec2(0.0,texel.y),p,receiverUv,gradient),
+                           lampShadowTap(base+texel,p,receiverUv,gradient),weight.x),weight.y);
+        }
+        // The tile covers a 150-degree cone; fade to unshadowed at its rim
+        // instead of a hard edge (the light there is about a tenth of the peak).
+        float rim=1.0-smoothstep(0.75,0.98,length(p.xy*2.0-vec2(1.0,1.0)));
+        visibility=mix(1.0,shadow,rim);
+    }
+    return mix(1.0,visibility,u_lampShadowTiles[i].z);
+}
+vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
+{
+    float r2=u_lampPositions[i].w*u_lampPositions[i].w;
+    if(d2>=r2) return vec3(0.0,0.0,0.0);
+    d2=max(d2,0.001);
+    float inv=inversesqrt(d2);
+    float facing=max(dot(n,delta*inv),0.0);
+    float window=saturate(1.0-(d2/r2)*(d2/r2));
+    vec3 a=u_lampAttenuation[i].xyz;
+    return u_lampColors[i].rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+}
 vec3 lampLighting(vec3 n,vec3 world)
 {
     vec3 sum=vec3(0.0,0.0,0.0);
+    // Shadowed lamps: no per-pixel early-out before the shadow lookup, whose
+    // receiver-plane derivatives need uniform control flow.
+    for(int s=0;s<6;++s) {
+        if(float(s)>=u_lampShadowParams.x) break;
+        vec3 delta=u_lampPositions[s].xyz-world;
+        float d2=dot(delta,delta);
+        vec3 toward=delta*inversesqrt(max(d2,0.001));
+        float visibility=lampShadowVisibility(s,world,toward);
+        sum+=lampRadiance(s,n,delta,d2)*visibility;
+    }
     for(int i=0;i<64;++i) {
         if(float(i)>=u_lampParams.x) break;
+        if(float(i)<u_lampShadowParams.x) continue;
         vec3 delta=u_lampPositions[i].xyz-world;
         float r2=u_lampPositions[i].w*u_lampPositions[i].w;
         float d2=dot(delta,delta);

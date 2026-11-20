@@ -7,6 +7,7 @@
 
 #include <bx/math.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -144,6 +145,264 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
   fixture_shadow_casters_ = std::move(stamps);
   fixture_cached_matrices_ = fixture_shadow_matrices_;
   ++fixture_shadow_revision_;
+}
+
+// Street lamp shadows (#237). Outside garages the fixture atlas is free: the
+// nearest kLampShadows scenery lamps each get one tile with a downward
+// 150-degree perspective projection. A lamp hangs above the street and lights
+// mostly downward, so one projection covers the ground out to about 3.7 times
+// its height (29 m for the 7.8 m lamp_base, where its light is about a tenth
+// of the peak) for one depth pass, instead of the five or six passes of a
+// cube. The shader fades the shadow out at the tile rim.
+void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
+  lamp_shadow_atlas_bound_ = false;
+  lamp_shadow_count_ = 0;
+  const auto free_slots = [&] {
+    for (auto &slot : lamp_shadow_slots_) slot = {};
+  };
+  if (garage_ || scenery_lamps_.empty() || video.shadows == 0 ||
+      !debug_overlay_.render_options().map_shadows ||
+      !host_enhanced_graphics().local_lights ||
+      !bgfx::isValid(static_shadow_program_)) {
+    free_slots();
+    lamp_shadow_clock_ = -1.0;
+    return;
+  }
+  perf::Scope perf_scope(perf::Zone::Shadows);
+  const uint16_t tile = local_shadow_resolution();
+  if (bgfx::isValid(fixture_shadow_fb_) && fixture_shadow_tile_ != tile) {
+    bgfx::destroy(fixture_shadow_fb_);
+    fixture_shadow_fb_ = BGFX_INVALID_HANDLE;
+    fixture_shadow_tex_ = BGFX_INVALID_HANDLE;
+    free_slots();
+  }
+  fixture_shadow_tile_ = tile;
+  if (!bgfx::isValid(fixture_shadow_fb_)) {
+    const auto depth = bgfx::createTexture2D(
+        uint16_t(tile * 4), uint16_t(tile * 3), false, 1, bgfx::TextureFormat::D32F,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (!bgfx::isValid(depth)) return;
+    fixture_shadow_fb_ = bgfx::createFrameBuffer(1, &depth, true);
+    if (!bgfx::isValid(fixture_shadow_fb_)) {
+      bgfx::destroy(depth);
+      return;
+    }
+    fixture_shadow_tex_ = depth;
+    free_slots();
+  }
+  // The garage fixtures may have drawn into the atlas since the last frame.
+  if (fixture_shadow_active_) free_slots();
+  // Fade step: real time, so the fade does not depend on the frame rate.
+  float dt = lamp_shadow_dt_override_;
+  if (dt < 0.f) {
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    dt = lamp_shadow_clock_ < 0.0 ? 0.f
+                                  : float(std::clamp(now - lamp_shadow_clock_, 0.0, .1));
+    lamp_shadow_clock_ = now;
+  }
+  const float step = dt / kLampShadowFade;
+  // Wanted: the nearest lamps of the visible set (scenery_lamps_ is sorted
+  // nearest first by scenery_lights_select).
+  const auto find_lamp = [&](const void *source) {
+    for (size_t i = 0; i < scenery_lamps_.size(); ++i)
+      if (scenery_lamps_[i].source == source) return int(i);
+    return -1;
+  };
+  for (auto &slot : lamp_shadow_slots_) {
+    if (!slot.source) continue;
+    const int index = find_lamp(slot.source);
+    // A lamp that left the visible set lights no visible pixel: drop it.
+    if (index < 0) { slot = {}; continue; }
+    slot.wanted = size_t(index) < kLampShadows;
+    slot.weight = std::clamp(slot.weight + (slot.wanted ? step : -step), 0.f, 1.f);
+    if (!slot.wanted && slot.weight <= 0.f) slot = {};
+  }
+  const auto *caps = bgfx::getCaps();
+  const float crop[16] = {.5f, 0, 0, 0,
+                          0, caps->originBottomLeft ? .5f : -.5f, 0, 0,
+                          0, 0, caps->homogeneousDepth ? .5f : 1.f, 0,
+                          .5f, .5f, caps->homogeneousDepth ? .5f : 0.f, 1};
+  const auto projection_of = [&](const std::array<float, 3> &p, float range,
+                                 float *view, float *proj) {
+    const bx::Vec3 position{p[0], p[1], p[2]};
+    bx::mtxLookAt(view, position, bx::add(position, bx::Vec3{0, -1, 0}),
+                  bx::Vec3{0, 0, 1});
+    bx::mtxProj(proj, kLampShadowFov, 1.f, kLampShadowNear, range,
+                caps->homogeneousDepth);
+  };
+  for (size_t i = 0; i < std::min(kLampShadows, scenery_lamps_.size()); ++i) {
+    const auto &lamp = scenery_lamps_[i];
+    const bool assigned = std::any_of(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+        [&](const LampShadowSlot &slot) { return slot.source == lamp.source; });
+    if (assigned || !lamp.source) continue;
+    const auto free = std::find_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+        [](const LampShadowSlot &slot) { return !slot.source; });
+    // Every slot busy: the wanted lamp waits until a fading slot frees.
+    if (free == lamp_shadow_slots_.end()) break;
+    LampShadowSlot slot;
+    slot.source = lamp.source;
+    slot.position = lamp.position;
+    slot.range = lamp.range;
+    slot.wanted = true;
+    slot.weight = std::min(step, 1.f); // fades in from zero: no pop
+    // Static scenery inside this lamp's projection, collected once. The
+    // ground POLY (city-wide, also buildings) does not cast: it would cost
+    // its whole mesh per lamp and its streets only receive. Meshes whose box
+    // holds the lamp are its own housing and pole, which would black it out.
+    float view[16], proj[16];
+    projection_of(slot.position, slot.range, view, proj);
+    const auto frustum = view_frustum(view, proj);
+    const auto holds_lamp = [&](const ScxGeometry &geo, const std::array<float, 16> &m) {
+      float lower[3], upper[3];
+      if (!shadow_bounds_box(geo, m, lower, upper)) return false;
+      for (int axis = 0; axis < 3; ++axis)
+        if (slot.position[axis] < lower[axis] - .5f || slot.position[axis] > upper[axis] + .5f)
+          return false;
+      return true;
+    };
+    for (auto &instance : scene_instances_collect(&frustum, nullptr, false)) {
+      if (!instance.geometry || instance.sky || instance.vehicle_material ||
+          instance.gpu_skin || instance.light_flags || instance.emissive_overlay ||
+          instance.geometry->ground_polygons || instance.opacity < .99f ||
+          holds_lamp(*instance.geometry, instance.transform) ||
+          !shadow_bounds_visible(*instance.geometry, instance.transform, frustum))
+        continue;
+      cache_scene_mesh(instance.geometry, nullptr, false);
+      slot.statics.push_back(std::move(instance));
+    }
+    std::vector<SceneBatch> batches;
+    scene_instances_collect_batches(&frustum, batches);
+    for (auto &batch : batches) {
+      if (!batch.geometry) continue;
+      SceneBatch kept;
+      kept.geometry = batch.geometry;
+      kept.lighting = batch.lighting;
+      for (const auto &instance : batch.instances)
+        if (!holds_lamp(*batch.geometry, instance.transform) &&
+            shadow_bounds_visible(*batch.geometry, instance.transform, frustum))
+          kept.instances.push_back(instance);
+      if (kept.instances.empty()) continue;
+      cache_scene_mesh(kept.geometry, nullptr, true);
+      slot.static_batches.push_back(std::move(kept));
+    }
+    *free = std::move(slot);
+  }
+  const bool conservative = (caps->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
+  const auto submit_groups = [&](uint16_t view, const ScenePart &part,
+                                 const std::array<float, 16> &transform,
+                                 const SceneInstance *skinned) {
+    for (const auto &group : part.shadow_groups) {
+      const auto surface = scx_surface(part.geo.info.version, group);
+      if (surface.blend) continue;
+      const float threshold = !surface.cutout ? -1.f
+                              : part.geo.info.version == 4 ? group.alpha_reference / 255.f
+                                                           : .5f;
+      const float params[4] = {0, threshold, float(group.base_map.channel), 0};
+      bgfx::setUniform(u_static_shadow_params_, params);
+      const auto slot = group.texture_index;
+      bgfx::setTexture(0, s_tex_, slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                                      ? part.tex[slot] : white_tex_);
+      bgfx::setTransform(transform.data());
+      if (skinned) {
+        bgfx::setUniform(u_skin_bones_, skinned->skin.data(), 48);
+        bgfx::setVertexBuffer(0, part.skin_vbh);
+      } else {
+        bgfx::setVertexBuffer(0, part.vbh);
+      }
+      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                     (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
+      bgfx::submit(view, skinned ? ao_skin_depth_program_ : static_shadow_program_);
+    }
+  };
+  const float no_apertures[4]{};
+  bgfx::setUniform(u_aperture_params_, no_apertures);
+  std::vector<std::pair<size_t, size_t>> shadowed; // slot, lamp index
+  for (size_t s = 0; s < kLampShadows; ++s) {
+    auto &slot = lamp_shadow_slots_[s];
+    if (!slot.source) continue;
+    const int index = find_lamp(slot.source);
+    if (index < 0) continue;
+    float view[16], proj[16], clip[16];
+    projection_of(slot.position, slot.range, view, proj);
+    bx::mtxMul(clip, view, proj);
+    bx::mtxMul(slot.sample.data(), clip, crop);
+    const auto frustum = view_frustum(view, proj);
+    // Dynamic casters from the main view: vehicles (the player car too) and
+    // characters with complete palettes. Their stamps decide the redraw.
+    std::vector<ShadowCasterStamp> stamps;
+    std::vector<const SceneInstance *> dynamic;
+    for (const auto &instance : instances_) {
+      if (!instance.geometry || instance.sky || instance.light_flags ||
+          instance.emissive_overlay || instance.opacity < .99f)
+        continue;
+      const auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end() || !bgfx::isValid(found->second.ibh)) continue;
+      if (instance.gpu_skin) {
+        if (instance.skin.size() < 48u * 16u || !bgfx::isValid(found->second.skin_vbh) ||
+            !bgfx::isValid(ao_skin_depth_program_))
+          continue;
+        // Skinned bounds are the rest pose: cull by distance instead.
+        const float dx = instance.transform[12] - slot.position[0];
+        const float dy = instance.transform[13] - slot.position[1];
+        const float dz = instance.transform[14] - slot.position[2];
+        if (dx * dx + dy * dy + dz * dz > (slot.range + 3.f) * (slot.range + 3.f)) continue;
+        stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                          found->second.skin_vbh.idx, found->second.ibh.idx, instance.transform});
+        stamps.back().revision ^= skin_palette_hash(instance.skin);
+      } else if (instance.vehicle_material) {
+        if (!debug_overlay_.render_options().shadows || !bgfx::isValid(found->second.vbh) ||
+            !shadow_bounds_visible(*instance.geometry, instance.transform, frustum))
+          continue;
+        stamps.push_back({instance.geometry.get(), instance.geometry->revision,
+                          found->second.vbh.idx, found->second.ibh.idx, instance.transform});
+      } else {
+        continue;
+      }
+      dynamic.push_back(&instance);
+    }
+    shadowed.emplace_back(s, size_t(index));
+    if (slot.valid && stamps == slot.stamps) continue;
+    const uint16_t view_id = uint16_t(128 + s);
+    bgfx::setViewFrameBuffer(view_id, fixture_shadow_fb_);
+    bgfx::setViewRect(view_id, uint16_t(s % 4 * tile), uint16_t(s / 4 * tile), tile, tile);
+    bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f);
+    bgfx::setViewTransform(view_id, view, proj);
+    bgfx::touch(view_id);
+    for (const auto &instance : slot.statics) {
+      const auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end() || !bgfx::isValid(found->second.vbh) ||
+          !bgfx::isValid(found->second.ibh))
+        continue;
+      submit_groups(view_id, found->second, instance.transform, nullptr);
+    }
+    draw_prop_batches(view_id, slot.static_batches, true, conservative);
+    for (const auto *instance : dynamic)
+      submit_groups(view_id, instance_meshes_.at(instance->geometry.get()), instance->transform,
+                    instance->gpu_skin ? instance : nullptr);
+    slot.stamps = std::move(stamps);
+    slot.valid = true;
+    ++lamp_shadow_redraws_;
+  }
+  // Shadowed lamps go first in the lamp array, in slot order; the rest keep
+  // their nearest-first order.
+  std::vector<LampLight> ordered;
+  ordered.reserve(scenery_lamps_.size());
+  std::vector<char> taken(scenery_lamps_.size(), 0);
+  for (const auto &[s, index] : shadowed) {
+    const auto &slot = lamp_shadow_slots_[s];
+    lamp_shadow_matrices_[ordered.size()] = slot.sample;
+    lamp_shadow_tiles_[ordered.size()] = {float(s % 4) * .25f, float(s / 4) / 3.f,
+                                          slot.weight, 0.f};
+    ordered.push_back(scenery_lamps_[index]);
+    taken[index] = 1;
+  }
+  lamp_shadow_count_ = ordered.size();
+  for (size_t i = 0; i < scenery_lamps_.size(); ++i)
+    if (!taken[i]) ordered.push_back(scenery_lamps_[i]);
+  scenery_lamps_ = std::move(ordered);
+  lamp_shadow_atlas_bound_ = lamp_shadow_count_ > 0;
 }
 
 // A separate directional field: punctual shadow visibility must never occlude

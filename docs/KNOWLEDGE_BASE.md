@@ -2751,7 +2751,8 @@ city at night.
   stock falloff 1/(c + l·d + q·d²) inside the window saturate(1 − (d²/r²)²)²,
   and an early `continue` when the pixel is outside a lamp's range. Garage
   fixtures (12, shadowed) are unchanged and never hold scenery lamps.
-- Brightness (first pass, not yet validated in game): intensity 0.8 ×
+- Brightness: accepted in game by the user at `7c9d05f` (20 November 2026,
+  "l'intensité top"); keep these values. Intensity 0.8 ×
   authored diffuse, range capped at 45 m (authored street range is 500 m)
   (`kSceneryLightIntensity`, `kSceneryLightMaxRange` in
   `include/slrr/script_lights.hpp`). In the GPU test a lamp at 7.8 m over a
@@ -2765,6 +2766,49 @@ city at night.
   lamps all in range of every pixel 0.46 and 1.50 ms. Per million shaded
   pixels that is about 0.08 ms for 64 street lamps and 0.16 ms worst case. Not
   measured in game because the bench writes to the installed game root.
+- Shadows (after the user noted at `7c9d05f` that lamps cast none):
+  `src/render/bgfx_shadows.cpp:update_lamp_shadows`. Budget
+  `kLampShadows` = 6: the 6 nearest lamps of the visible set, each one tile
+  of the fixture atlas (4 × 3 tiles of `local_shadow_resolution`, 256/512/1024
+  by Shadow quality; outside garages it is otherwise unused) with view ids
+  128–133. Projection: one downward perspective, 150° field, near 0.3 m, far
+  = the 45 m range. A lamp lights mostly downward; at the tile rim (3.7 × the
+  lamp height, 29 m for the 7.8 m `lamp_base`) its ground light is about a
+  tenth of the peak, and the shader fades the shadow to none over the outer
+  part of the tile, so one depth pass per lamp replaces a five- or six-face
+  cube. A paraboloid would need tessellated casters (large ground and prop
+  triangles warp), so it was not used.
+  - Casters: static scenery (props, instanced batches, trees, poles, world
+    meshes) is collected once when a lamp gets a slot, with the lamp's frustum
+    (`scene_instances_collect`, `scene_instances_collect_batches`). Excluded:
+    the ground POLY (city-wide; it also holds buildings, which therefore cast
+    no lamp shadow; its streets only receive), and meshes whose box holds the
+    lamp (its own housing and pole, which would black it out). Dynamic casters
+    come from the main-view instances each frame: vehicles including the
+    player car (when vehicle shadows are on) and skinned characters
+    (`ao_skin_depth_program_`, culled by distance like the cascades). A tile
+    is redrawn only when its lamp is newly assigned or a dynamic caster stamp
+    (geometry, revision, buffers, transform, skin palette hash) changes; static
+    and dynamic casters are redrawn together because D3D11 cannot copy part
+    of a depth texture.
+  - No pop: a slot's weight fades 0 → 1 in 0.4 s (real time) when assigned
+    and back to 0 when its lamp is no longer among the 6 nearest; a wanted
+    lamp waits for a free slot. The shader mixes visibility by that weight. A
+    lamp leaving the visible set frees its slot at once (its light no longer
+    reaches a visible pixel).
+  - Sampling: `shaders/scene_shadow.sh:lampShadowVisibility`, the fixture
+    filtering (receiver-plane depth gradient, aligned 2×2 taps, 4×4 tent for
+    the very-soft Shadow smoothing), 3 cm normal offset toward the lamp.
+    Shadowed lamps are the first `u_lampShadowParams.x` lamp entries; their
+    loop has no per-pixel early-out before the lookup because the gradient
+    needs uniform control flow.
+  - Gates: Local lights, the global shadow toggle (`VideoOptions::shadows`),
+    Map shadows in the debug panel, night, outside garages.
+  - Cost (`scene_shadow_gpu` case `lamp_shadows`, this machine, 1024 tiles,
+    1920×1080 with 8 road layers ≈ 8 M shaded pixels, 10 lamps): unshadowed
+    0.37 ms, 6 shadowed lamps with cached tiles 0.68 ms, with all 6 tiles
+    redrawn every frame (moving car) 0.79 ms. The test scene has few casters;
+    redraw cost grows with the casters in each lamp's cone.
 - Validation: `tests/test_scenery_lights.cpp` (parser, every stock payload,
   Valo City registration count against an independent ICFG scan, kislampa
   pose, shell removal and revisit, selection budget/groups/day/fade);
@@ -2773,8 +2817,15 @@ city at night.
   non-city and behind-camera lights select nothing, a zero-power or
   out-of-range lamp leaves the image unchanged) and `lamp_cost` (timing).
   `selection_frustum_and_distance` checks frustum culling, the 500 m street
-  and that a lamp entering far ahead has no power. In-game: `1df1452` worked
-  but lamps popped in; the 64-lamp version is not validated yet.
+  and that a lamp entering far ahead has no power. `lamp_shadows` checks that
+  a static block and a car under a lamp darken the road at night (304
+  darkened pixels of 19,200), that the ground POLY does not cast, that
+  shadows off and daytime give no lamp shadows, the 6-lamp budget goes to the
+  nearest lamps, a newly assigned lamp starts at zero strength (image equal
+  to unshadowed) and fades in, and that unchanged casters cause no redraw
+  while a moved car causes one. In-game: `1df1452` worked but lamps popped
+  in; `7c9d05f` accepted (intensity, no pop) without shadows; the shadowed
+  version is not validated yet.
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).

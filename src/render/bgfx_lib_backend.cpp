@@ -276,6 +276,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_lamp_positions_=bgfx::createUniform("u_lampPositions",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_shadow_params_=bgfx::createUniform("u_lampShadowParams",bgfx::UniformType::Vec4);
+    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampShadows));
+    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampShadows));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -469,7 +472,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
           &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
           &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_,
-          &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_}) {
+          &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_,
+          &u_lamp_shadow_params_, &u_lamp_shadow_matrices_, &u_lamp_shadow_tiles_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -783,6 +787,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
       update_fixture_shadows(video);
+      update_lamp_shadows(video);
       update_interior_sun(video);
       if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
       else destroy_ao_targets();
@@ -1096,6 +1101,11 @@ void LibBgfxBackend::cache_scene_mesh(
     std::sort(previews_.begin(),previews_.end(),[](const Preview&a,const Preview&b){return a.viewport.vp_pri!=b.viewport.vp_pri?a.viewport.vp_pri<b.viewport.vp_pri:a.viewport.vp_x<b.viewport.vp_x;});
     std::unordered_map<const ScxGeometry*,bool> used;
     for (const auto* mesh : shadow_meshes_) used[mesh] = true;
+    // Cached street-lamp shadow casters (#237) stay resident with their slot.
+    for (const auto& slot : lamp_shadow_slots_) {
+      for (const auto& caster : slot.statics) used[caster.geometry.get()] = true;
+      for (const auto& batch : slot.static_batches) used[batch.geometry.get()] = true;
+    }
     std::unordered_map<void*, const ScxGeometry*> current_deformed;
     auto cache = [&](const std::shared_ptr<const ScxGeometry>& source, void* owner,
                      bool map_prop = false) {
@@ -1292,6 +1302,7 @@ void LibBgfxBackend::update_scenery_lights() {
       lamp.attenuation = pick.attenuation;
       lamp.intensity = pick.intensity;
       lamp.range = pick.range;
+      lamp.source = pick.source;
       if (lamp.valid()) scenery_lamps_.push_back(lamp);
     }
 }

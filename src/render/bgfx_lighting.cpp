@@ -127,6 +127,9 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
 void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   const auto count=enabled?std::min(fixture_lights_.size(),kFixtureLights):size_t(0);
   const bool shadows=count && fixture_shadow_active_;
+  // Street lamp shadows (#237) use the same atlas outside garages.
+  const size_t lamp_shadows=enabled && lamp_shadow_atlas_bound_
+      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampShadows}) : size_t(0);
   const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
   bgfx::setUniform(u_fixture_params_,params);
   if(count) {
@@ -142,8 +145,15 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
     bgfx::setUniform(u_fixture_directions_,directions.data(),uint16_t(count));
     bgfx::setUniform(u_fixture_matrices_,fixture_shadow_matrices_.data(),uint16_t(count));
   }
-  bgfx::setTexture(7,s_fixture_shadow_,shadows?fixture_shadow_tex_:depth_white_,
+  bgfx::setTexture(7,s_fixture_shadow_,shadows||lamp_shadows?fixture_shadow_tex_:depth_white_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
+  const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
+                                     1.f/(fixture_shadow_tile_*3),0.f};
+  bgfx::setUniform(u_lamp_shadow_params_,lamp_shadow_params);
+  if(lamp_shadows) {
+    bgfx::setUniform(u_lamp_shadow_matrices_,lamp_shadow_matrices_.data(),uint16_t(lamp_shadows));
+    bgfx::setUniform(u_lamp_shadow_tiles_,lamp_shadow_tiles_.data(),uint16_t(lamp_shadows));
+  }
   // Scenery lamps (#237) follow the same enable as the fixtures: previews and
   // emissive lamp glass receive none.
   const auto lamps=enabled?std::min(scenery_lamps_.size(),kSceneryLamps):size_t(0);
