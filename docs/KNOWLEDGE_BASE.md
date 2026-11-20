@@ -2547,6 +2547,6 @@ Fixes from the `antomys` review of PR #202:
 - Some docs held raw 0x96 bytes (Windows-1252 en dash), which is invalid UTF-8.
   Check with `grep -P '\x96'` before committing.
 
-Validated in game by the user at `bbcb39c` (20 November 2026): garage lamps stay
-with Map sunlight off, props receive AO, and no new shadow fringes near poles or
-kerbs. No `--perf-log` measurement exists for these changes.
+Validated in game by the user at `bbcb39c` (20 November 2026), after checking
+the garage with Map sunlight off, prop AO and shadow edges near poles and kerbs.
+No `--perf-log` measurement exists for these changes.
