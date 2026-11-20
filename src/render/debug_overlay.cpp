@@ -184,11 +184,44 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     {perf::Zone::Present, "Present wait"},
 };
 
+// Session state the snapshot header reports (set by draw_render).
+struct DumpContext {
+  const DebugOverlay::RenderOptions* options = nullptr;
+  uint16_t width = 0, height = 0;
+};
+DumpContext& dump_context() {
+  static DumpContext context;
+  return context;
+}
+
 std::string render_timing_dump() {
   auto& t = render_timings();
   const auto& s = render_debug_stats();
   std::string out;
   char line[512];
+  // Header: what was overridden, so a snapshot can be compared later.
+  {
+    const auto& context = dump_context();
+    const DebugOverlay::RenderOptions defaults;
+    const auto* options = context.options ? context.options : &defaults;
+    std::snprintf(line, sizeof(line),
+                  "resolution %u x %u | VSync %s | frame cap none (VSync only)\noverrides:\n",
+                  unsigned(context.width), unsigned(context.height), options->vsync ? "on" : "off");
+    out += line;
+    std::string changed = render_debug_overrides_text(render_debug());
+    const auto flag = [&](const char* name, bool value, bool fallback) {
+      if (value != fallback) changed += std::string("  ") + name + " = " + (value ? "on" : "off") + "\n";
+    };
+    flag("map shadows", options->map_shadows, defaults.map_shadows);
+    flag("vehicle casters", options->shadows, defaults.shadows);
+    flag("game OSD", options->game_osd, defaults.game_osd);
+    flag("sun flare", options->sun_flare, defaults.sun_flare);
+    if (options->reflection_faces != defaults.reflection_faces) {
+      std::snprintf(line, sizeof(line), "  reflection faces per frame = %d\n", options->reflection_faces);
+      changed += line;
+    }
+    out += changed.empty() ? "  none\n" : changed;
+  }
   std::snprintf(line, sizeof(line),
                 "frame %.2f ms (min %.2f max %.2f) | GPU %.2f ms | render thread %.2f ms\n"
                 "draws %.0f | primitives %.0f | instances %u | batches %u (%u placements)\n"
@@ -415,6 +448,7 @@ void draw_render_options(DebugOverlay::RenderOptions& options, const char* refle
 void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& options,
                  Jvm* vm, const char* reflection_status) {
   sample_render_timings();
+  dump_context() = {&options, width, height};
   ImGui::Text("%s | %u x %u", bgfx::getRendererName(bgfx::getRendererType()), width, height);
   // Each section has its own ID scope: some labels repeat across sections.
   const auto section = [](const char* title, ImGuiTreeNodeFlags flags, const auto& body) {

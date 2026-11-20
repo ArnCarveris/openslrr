@@ -955,6 +955,17 @@ struct SceneShadowRegression {
                                       bx::Vec3{0,2.5f,-7}))<=60.f+LibBgfxBackend::kLampShadowReach);
     o.local_shadow_tile=256;SLRR_REQUIRE(local_shadow_resolution()==256);
     o.cascade_scale=2.f;SLRR_REQUIRE(cascade_radii()[0]==64.f);
+    {
+      // Snapshot header (#243): only overrides that differ from the defaults.
+      const auto text=render_debug_overrides_text(o);
+      std::printf("RENDER DEBUG overrides header:\n%s",text.c_str());
+      SLRR_REQUIRE(text.find("shadowed lamps = 2")!=std::string::npos);
+      SLRR_REQUIRE(text.find("car lamp tiles budget = 3")!=std::string::npos);
+      SLRR_REQUIRE(text.find("lamp distance = 60 m")!=std::string::npos);
+      SLRR_REQUIRE(text.find("cascade radius scale = 2x")!=std::string::npos);
+      SLRR_REQUIRE(text.find("ambient occlusion")==std::string::npos);
+      SLRR_REQUIRE(render_debug_overrides_text(RenderDebugOverrides{}).empty());
+    }
     o={};SLRR_REQUIRE(render_debug()==RenderDebugOverrides{});
     run(5);
     bgfx::setDebug(BGFX_DEBUG_NONE);

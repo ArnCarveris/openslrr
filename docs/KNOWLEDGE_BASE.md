@@ -2917,6 +2917,11 @@ city at night.
   text). Log prints to stdout and appends to
   `perf/renderer_debug_YYYYMMDD_HHMMSS.txt` beside the executable
   (`src/render/debug_overlay.cpp:write_render_dump`); the menu shows the path.
+- Snapshot header: resolution, VSync (there is no frame cap besides VSync),
+  then `overrides:` with one line per debug override that differs from its
+  default (`src/render/render_debug.hpp:render_debug_overrides_text`, plus the
+  overlay's map/vehicle shadows, OSD, flare and reflection faces), or `none`.
+  Saved Enhanced options are not listed.
 - CPU zones added to `include/slrr/frame_profiler.hpp` (also new `--perf-log`
   CSV columns): `CollectBatches` (inside Collect), `SunShadows`, `CarDepth`,
   `LampShadows` (inside Shadows), `FixtureShadows`, `LampSelect`,
