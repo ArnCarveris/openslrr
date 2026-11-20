@@ -13,6 +13,7 @@
 #include "slrr/render_backend.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/scene_light.hpp"
+#include "render_debug.hpp"
 #include "slrr/scene_sun.hpp"
 #include <optional>
 
@@ -158,9 +159,10 @@ class LibBgfxBackend final : public IRenderBackend {
   // Diffuse * baked lightmap, the way the exe draws a map. No lightmap
   // (OSD, FMV, a mesh without the slot) keeps the existing shading.
   uint32_t world_sampler() const {
-    return host_enhanced_graphics().anisotropic_filtering
+    return host_enhanced_graphics().anisotropic_filtering && render_debug().anisotropic
         ? BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC : BGFX_SAMPLER_NONE;
   }
+  void publish_debug_stats();
   void bind_scene_shadow(bool receive, uint8_t stage);
   void bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex,

@@ -1,5 +1,7 @@
 #pragma once
+#include "render_debug.hpp"
 #include "slrr/scene_instances.hpp"
+#include <algorithm>
 #include <array>
 #include <bx/math.h>
 #include <cmath>
@@ -8,6 +10,12 @@ namespace slrr {
 // Camera-centred distance cascades: useful also for cubemap views around the
 // car.
 inline constexpr std::array<float, 4> shadow_radii{32.f, 100.f, 320.f, 1000.f};
+// The radii in use: shadow_radii times the debug cascade scale (#243).
+inline std::array<float, 4> cascade_radii() {
+  const float scale = std::clamp(render_debug().cascade_scale, .25f, 4.f);
+  return {shadow_radii[0] * scale, shadow_radii[1] * scale, shadow_radii[2] * scale,
+          shadow_radii[3] * scale};
+}
 inline constexpr std::array<uint16_t, 4> shadow_views{0, 2, 3, 4};
 // World-space box of a mesh under an instance transform (same convention as
 // shadow_bounds_visible). False when the bounds are unusable.

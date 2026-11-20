@@ -10,20 +10,24 @@
 #include "slrr/scene_presentation.hpp"
 #include "slrr/section_machine.hpp"
 #include "slrr/tire_model.hpp"
+#include "render_debug.hpp"
 
 #include <imgui/imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace slrr {
 namespace {
 constexpr bgfx::ViewId kDebugView = 71;
 constexpr double kDegrees = 57.29577951308232;
 
-void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& options,
-                 Jvm* vm, const char* reflection_status) {
-  ImGui::Text("%s | %u x %u", bgfx::getRendererName(bgfx::getRendererType()), width, height);
+void draw_render_session(Jvm* vm) {
   if (const auto* stats = bgfx::getStats()) {
     const auto ms = [](int64_t ticks, int64_t frequency) {
       return frequency > 0 ? ticks * 1000. / frequency : 0.;
@@ -64,23 +68,6 @@ void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& o
   const auto audio = host_sfx_stats();
   ImGui::Text("SFX voices: %u | Coalesced: %llu", audio.active,
               static_cast<unsigned long long>(audio.coalesced));
-  ImGui::Separator();
-  auto& enhanced = host_enhanced_graphics();
-  const auto previous_enhanced = enhanced;
-  ImGui::Checkbox("VSync", &options.vsync);
-  ImGui::Checkbox("Vehicle shadows", &options.shadows);
-  ImGui::Checkbox("Map shadows", &options.map_shadows);
-  ImGui::Checkbox("Anisotropic filtering (hardware max)", &enhanced.anisotropic_filtering);
-  ImGui::Checkbox("Map sunlight", &enhanced.dynamic_lighting);
-  ImGui::Checkbox("Local lights", &enhanced.local_lights);
-  ImGui::Combo("Ambient occlusion",&enhanced.ao_method,"Off\0HBAO\0GTAO\0");
-  ImGui::Combo("AO quality",&enhanced.ao_quality,"Low\0Medium\0High\0");
-  ImGui::SliderInt("AO strength (%)",&enhanced.ao_strength,0,200);
-  ImGui::SliderInt("AO radius (cm)",&enhanced.ao_radius,25,300);
-  ImGui::Combo("Shadow quality",&enhanced.shadow_quality,"Low\0Medium\0High\0");
-  ImGui::Combo("Shadow smoothing",&enhanced.shadow_smoothing,"Sharp\0Soft\0Very soft\0");
-  ImGui::Checkbox("Dynamic reflections", &enhanced.dynamic_reflections);
-  ImGui::Text("Reflection capture: %s", reflection_status);
   if (vm) {
     float hour = std::fmod(scene_sun_time(), 86400.f) / 3600.f;
     const int minutes = static_cast<int>(hour * 60.f);
@@ -95,16 +82,319 @@ void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& o
     if (ImGui::SliderFloat("Clock speed", &rate, 0.f, 240.f, "%.1fx"))
       vm->set_static("java.game.GameLogic", "timeFactor", Value::make_float(rate));
   }
-  ImGui::SliderInt("Reflection faces per frame", &options.reflection_faces, 1, 6);
+}
+
+// Rolling window for the renderer timings (#243): 120 frames.
+struct Rolling {
+  std::array<float, 120> values{};
+  int count = 0, head = 0;
+  void add(float value) {
+    values[size_t(head)] = value;
+    head = (head + 1) % int(values.size());
+    count = std::min(count + 1, int(values.size()));
+  }
+  float average() const {
+    float sum = 0.f;
+    for (int i = 0; i < count; ++i) sum += values[size_t(i)];
+    return count ? sum / float(count) : 0.f;
+  }
+  float minimum() const {
+    float out = count ? values[0] : 0.f;
+    for (int i = 1; i < count; ++i) out = std::min(out, values[size_t(i)]);
+    return out;
+  }
+  float maximum() const {
+    float out = count ? values[0] : 0.f;
+    for (int i = 1; i < count; ++i) out = std::max(out, values[size_t(i)]);
+    return out;
+  }
+};
+
+struct RenderTimings {
+  bool frozen = false;
+  Rolling frame, gpu, render_thread, draws, triangles;
+  struct View {
+    std::string name;
+    Rolling gpu, cpu;
+    uint32_t last_frame = 0;
+  };
+  std::map<uint16_t, View> views;
+  uint32_t frames = 0;
+  int64_t texture_memory = -1, target_memory = -1;
+  uint32_t textures = 0, frame_buffers = 0;
+};
+
+RenderTimings& render_timings() {
+  static RenderTimings timings;
+  return timings;
+}
+
+void sample_render_timings() {
+  auto& t = render_timings();
+  const auto* stats = bgfx::getStats();
+  if (!stats || t.frozen) return;
+  const auto ms = [](int64_t ticks, int64_t frequency) {
+    return frequency > 0 ? float(double(ticks) * 1000. / double(frequency)) : 0.f;
+  };
+  ++t.frames;
+  t.frame.add(ms(stats->cpuTimeFrame, stats->cpuTimerFreq));
+  t.gpu.add(ms(stats->gpuTimeEnd - stats->gpuTimeBegin, stats->gpuTimerFreq));
+  t.render_thread.add(ms(stats->cpuTimeEnd - stats->cpuTimeBegin, stats->cpuTimerFreq));
+  t.draws.add(float(stats->numDraw));
+  uint64_t prims = 0;
+  for (const auto count : stats->numPrims) prims += count;
+  t.triangles.add(float(prims));
+  t.texture_memory = stats->textureMemoryUsed;
+  t.target_memory = stats->rtMemoryUsed;
+  t.textures = stats->numTextures;
+  t.frame_buffers = stats->numFrameBuffers;
+  for (uint16_t i = 0; i < stats->numViews; ++i) {
+    const auto& view = stats->viewStats[i];
+    auto& entry = t.views[view.view];
+    entry.name = view.name[0] ? view.name : render_debug_view_name(view.view);
+    entry.gpu.add(ms(view.gpuTimeEnd - view.gpuTimeBegin, stats->gpuTimerFreq));
+    entry.cpu.add(ms(view.cpuTimeEnd - view.cpuTimeBegin, stats->cpuTimerFreq));
+    entry.last_frame = t.frames;
+  }
+  // A view not submitted this frame (pass switched off) reads as 0.
+  for (auto& [id, entry] : t.views)
+    if (entry.last_frame != t.frames) {
+      entry.gpu.add(0.f);
+      entry.cpu.add(0.f);
+    }
+}
+
+constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
+    {perf::Zone::Collect, "Scene collection + residency"},
+    {perf::Zone::CollectBatches, "  instanced prop batches"},
+    {perf::Zone::LampSelect, "Street lamp selection"},
+    {perf::Zone::Shadows, "Shadow updates (all)"},
+    {perf::Zone::SunShadows, "  sun cascades / point"},
+    {perf::Zone::CarDepth, "  vehicle depth (sun)"},
+    {perf::Zone::LampShadows, "  lamp + car lamp tiles"},
+    {perf::Zone::FixtureShadows, "Garage fixture shadows"},
+    {perf::Zone::AmbientOcclusion, "Ambient occlusion"},
+    {perf::Zone::Reflections, "Reflections"},
+    {perf::Zone::World, "World submission"},
+    {perf::Zone::Osd, "OSD + debug submission"},
+    {perf::Zone::Present, "Present wait"},
+};
+
+std::string render_timing_dump() {
+  auto& t = render_timings();
+  const auto& s = render_debug_stats();
+  std::string out;
+  char line[512];
+  std::snprintf(line, sizeof(line),
+                "frame %.2f ms (min %.2f max %.2f) | GPU %.2f ms | render thread %.2f ms\n"
+                "draws %.0f | primitives %.0f | instances %u | batches %u (%u placements)\n"
+                "lamps %u registered, %u lit, %u shadowed, %u car tiles\n",
+                t.frame.average(), t.frame.minimum(), t.frame.maximum(), t.gpu.average(),
+                t.render_thread.average(), t.draws.average(), t.triangles.average(), s.instances,
+                s.batches, s.batch_instances, s.lamps_registered, s.lamps_lit, s.lamps_shadowed,
+                s.car_tiles);
+  out += line;
+  out += "view | name | GPU avg/min/max ms | CPU avg ms\n";
+  for (const auto& [id, view] : t.views) {
+    std::snprintf(line, sizeof(line), "%3u | %s | %.3f / %.3f / %.3f | %.3f\n", unsigned(id),
+                  view.name.c_str(), view.gpu.average(), view.gpu.minimum(), view.gpu.maximum(),
+                  view.cpu.average());
+    out += line;
+  }
+  const auto timing = perf::snapshot();
+  if (timing.ready)
+    for (const auto& [zone, name] : kRenderZones) {
+      std::snprintf(line, sizeof(line), "CPU %s: %.3f ms\n", name,
+                    timing.zones[static_cast<size_t>(zone)]);
+      out += line;
+    }
+  return out;
+}
+
+void draw_render_timings() {
+  auto& t = render_timings();
+  ImGui::Checkbox("Freeze", &t.frozen);
+  ImGui::SameLine();
+  if (ImGui::Button("Copy to clipboard")) ImGui::SetClipboardText(render_timing_dump().c_str());
+  ImGui::SameLine();
+  if (ImGui::Button("Log")) std::printf("[render-debug]\n%s", render_timing_dump().c_str());
+  ImGui::SameLine();
+  if (ImGui::Button("Clear")) t = {};
+  ImGui::Text("Frame %.2f ms (min %.2f, max %.2f) | GPU %.2f ms | render thread %.2f ms",
+              t.frame.average(), t.frame.minimum(), t.frame.maximum(), t.gpu.average(),
+              t.render_thread.average());
+  const auto& s = render_debug_stats();
+  ImGui::Text("Draws %.0f | primitives %.0f | instances %u | batches %u (%u placements)",
+              t.draws.average(), t.triangles.average(), s.instances, s.batches,
+              s.batch_instances);
+  ImGui::Text("Textures %u (%.1f MB) | render targets %u (%.1f MB)", t.textures,
+              t.texture_memory >= 0 ? t.texture_memory / 1048576. : 0., t.frame_buffers,
+              t.target_memory >= 0 ? t.target_memory / 1048576. : 0.);
+  ImGui::Text("Lamps %u registered, %u lit, %u shadowed, %u car tiles | tile redraws %llu / %llu",
+              s.lamps_registered, s.lamps_lit, s.lamps_shadowed, s.car_tiles,
+              static_cast<unsigned long long>(s.lamp_tile_redraws),
+              static_cast<unsigned long long>(s.car_tile_redraws));
+  if (ImGui::BeginTable("render-views", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                                               ImGuiTableFlags_Sortable |
+                                               ImGuiTableFlags_SizingStretchProp)) {
+    for (const char* name : {"View", "Pass", "GPU avg ms", "GPU min / max", "CPU ms"})
+      ImGui::TableSetupColumn(name);
+    ImGui::TableHeadersRow();
+    std::vector<std::pair<uint16_t, const RenderTimings::View*>> rows;
+    for (const auto& [id, view] : t.views) rows.push_back({id, &view});
+    // Most expensive first.
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+      return a.second->gpu.average() > b.second->gpu.average();
+    });
+    for (const auto& [id, view] : rows) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn(); ImGui::Text("%u", unsigned(id));
+      ImGui::TableNextColumn(); ImGui::TextUnformatted(view->name.c_str());
+      ImGui::TableNextColumn(); ImGui::Text("%.3f", view->gpu.average());
+      ImGui::TableNextColumn(); ImGui::Text("%.3f / %.3f", view->gpu.minimum(), view->gpu.maximum());
+      ImGui::TableNextColumn(); ImGui::Text("%.3f", view->cpu.average());
+    }
+    ImGui::EndTable();
+  }
+  const auto timing = perf::snapshot();
+  if (timing.ready) {
+    ImGui::SeparatorText("CPU frame phases (1 s average)");
+    for (const auto& [zone, name] : kRenderZones)
+      ImGui::Text("%-32s %.3f ms", name, timing.zones[static_cast<size_t>(zone)]);
+  }
+}
+
+void draw_render_passes(DebugOverlay::RenderOptions& options) {
+  auto& o = render_debug();
+  ImGui::TextDisabled("Debug overrides: not saved, reset on restart.");
+  ImGui::Checkbox("Ambient occlusion pass", &o.ambient_occlusion);
+  for (int i = 0; i < 4; ++i) {
+    char label[48];
+    std::snprintf(label, sizeof(label), "Sun cascade %d", i);
+    if (i) ImGui::SameLine();
+    ImGui::Checkbox(label, &o.sun_cascades[size_t(i)]);
+  }
+  ImGui::Checkbox("Shadow caching (off: redraw every frame)", &o.shadow_caching);
+  ImGui::Checkbox("Map shadows", &options.map_shadows);
+  ImGui::Checkbox("Vehicle shadow casters", &options.shadows);
+  ImGui::Checkbox("Character shadow casters", &o.skinned_casters);
+  ImGui::Checkbox("Garage fixture shadows", &o.fixture_shadows);
+  ImGui::Checkbox("Street lamp lighting", &o.lamp_lighting);
+  ImGui::Checkbox("Street lamp shadows", &o.lamp_shadows);
+  ImGui::Checkbox("Car lamp shadow tiles", &o.car_lamp_tiles);
+  ImGui::Checkbox("Reflections", &o.reflections);
+  ImGui::Checkbox("Sky", &o.sky);
+  ImGui::SameLine();
+  ImGui::Checkbox("Clouds", &o.clouds);
+  ImGui::SameLine();
+  ImGui::Checkbox("Fog", &o.fog);
+  ImGui::Checkbox("MSAA", &o.msaa);
+  ImGui::SameLine();
+  ImGui::Checkbox("Anisotropic", &o.anisotropic);
+  ImGui::Checkbox("Map props / foliage", &o.map_props);
+  ImGui::SameLine();
+  ImGui::Checkbox("Vehicles", &o.vehicles);
+  ImGui::SameLine();
+  ImGui::Checkbox("Characters", &o.characters);
+  ImGui::Checkbox("Game OSD", &options.game_osd);
+  ImGui::SameLine();
+  ImGui::Checkbox("Sun flare", &options.sun_flare);
+}
+
+void draw_render_budgets(DebugOverlay::RenderOptions& options) {
+  auto& o = render_debug();
+  const auto budget_slider = [](const char* label, int& value, int fallback, int maximum) {
+    int shown = value < 0 ? fallback : value;
+    if (ImGui::SliderInt(label, &shown, 0, maximum)) value = shown;
+  };
+  budget_slider("Lit street lamps", o.lamp_budget, 40, 40);
+  float distance = o.lamp_distance > 0.f ? o.lamp_distance : 500.f;
+  if (ImGui::SliderFloat("Lamp distance (m)", &distance, 50.f, 2000.f, "%.0f"))
+    o.lamp_distance = distance;
+  budget_slider("Shadowed lamps", o.shadowed_lamps, 6, 6);
+  budget_slider("Car lamp tiles", o.car_tiles, 16, 16);
+  // The combos show sizes; the overrides store the size (0 = from quality).
+  const auto size_combo = [](const char* label, int& size, int base, const char* items) {
+    int index = 0;
+    for (int i = 1; i <= 4; ++i)
+      if (size == base << (i - 1)) index = i;
+    if (ImGui::Combo(label, &index, items)) size = index <= 0 ? 0 : base << (index - 1);
+  };
+  size_combo("Local shadow tile", o.local_shadow_tile, 128,
+             "From Shadow quality\0" "128\0" "256\0" "512\0" "1024\0");
+  size_combo("Sun cascade tile", o.sun_shadow_size, 512,
+             "From Shadow quality\0" "512\0" "1024\0" "2048\0" "4096\0");
+  ImGui::SliderFloat("Cascade radius scale", &o.cascade_scale, .25f, 4.f, "%.2fx");
+  ImGui::SliderFloat("AO resolution scale", &o.ao_resolution_scale, .25f, 1.f, "%.2fx");
+  ImGui::SliderInt("Reflection faces per frame (0 freezes)", &options.reflection_faces, 0, 6);
+  if (ImGui::Button("Reset debug overrides")) o = {};
+}
+
+void draw_render_views() {
+  const auto& s = render_debug_stats();
+  const float width = std::max(64.f, ImGui::GetContentRegionAvail().x);
+  if (bgfx::isValid(s.fixture_atlas_texture) && s.fixture_atlas) {
+    ImGui::Text("Fixture / lamp atlas (tile %u px; row 3 = car lamp tiles)", s.fixture_tile);
+    ImGui::Image(s.fixture_atlas_texture, ImVec2(width, width * .75f));
+  } else {
+    ImGui::TextDisabled("Fixture / lamp atlas inactive.");
+  }
+  if (bgfx::isValid(s.sun_atlas_texture) && s.sun_cascades) {
+    ImGui::Text("Sun cascade atlas (%u px)", s.sun_atlas_size);
+    ImGui::Image(s.sun_atlas_texture, ImVec2(width * .5f, width * .5f));
+  } else {
+    ImGui::TextDisabled("Sun cascades inactive.");
+  }
+  if (bgfx::isValid(s.ao_texture) && s.ao) {
+    ImGui::Text("AO buffer (%u x %u)", s.ao_width, s.ao_height);
+    const float aspect = s.ao_width ? float(s.ao_height) / float(s.ao_width) : .5625f;
+    ImGui::Image(s.ao_texture, ImVec2(width, width * aspect));
+  } else {
+    ImGui::TextDisabled("AO inactive.");
+  }
+}
+
+void draw_render_options(DebugOverlay::RenderOptions& options, const char* reflection_status) {
+  auto& enhanced = host_enhanced_graphics();
+  const auto previous_enhanced = enhanced;
+  ImGui::Checkbox("VSync", &options.vsync);
+  ImGui::Checkbox("Anisotropic filtering (hardware max)", &enhanced.anisotropic_filtering);
+  ImGui::Checkbox("Map sunlight", &enhanced.dynamic_lighting);
+  ImGui::Checkbox("Local lights", &enhanced.local_lights);
+  ImGui::Combo("Ambient occlusion",&enhanced.ao_method,"Off\0HBAO\0GTAO\0");
+  ImGui::Combo("AO quality",&enhanced.ao_quality,"Low\0Medium\0High\0");
+  ImGui::SliderInt("AO strength (%)",&enhanced.ao_strength,0,200);
+  ImGui::SliderInt("AO radius (cm)",&enhanced.ao_radius,25,300);
+  ImGui::Combo("Shadow quality",&enhanced.shadow_quality,"Low\0Medium\0High\0");
+  ImGui::Combo("Shadow smoothing",&enhanced.shadow_smoothing,"Sharp\0Soft\0Very soft\0");
+  ImGui::Checkbox("Dynamic reflections", &enhanced.dynamic_reflections);
+  ImGui::Text("Reflection capture: %s", reflection_status);
   ImGui::Checkbox("Volumetric clouds", &enhanced.volumetric_clouds);
   ImGui::Combo("Anti-aliasing", &enhanced.msaa, "Off\0MSAA 2x\0MSAA 4x\0MSAA 8x\0");
-  ImGui::Checkbox("Sun flare", &options.sun_flare);
-  ImGui::Checkbox("Game OSD", &options.game_osd);
   if (ImGui::Button("Reset render options")) {
     options = {};
     enhanced = {};
   }
   if (enhanced != previous_enhanced) host_save_graphics_options();
+}
+
+void draw_render(uint16_t width, uint16_t height, DebugOverlay::RenderOptions& options,
+                 Jvm* vm, const char* reflection_status) {
+  sample_render_timings();
+  ImGui::Text("%s | %u x %u", bgfx::getRendererName(bgfx::getRendererType()), width, height);
+  // Each section has its own ID scope: some labels repeat across sections.
+  const auto section = [](const char* title, ImGuiTreeNodeFlags flags, const auto& body) {
+    if (!ImGui::CollapsingHeader(title, flags)) return;
+    ImGui::PushID(title);
+    body();
+    ImGui::PopID();
+  };
+  section("Timings", ImGuiTreeNodeFlags_DefaultOpen, [&] { draw_render_timings(); });
+  section("Passes (debug overrides)", 0, [&] { draw_render_passes(options); });
+  section("Budgets and quality (debug overrides)", 0, [&] { draw_render_budgets(options); });
+  section("Buffers", 0, [&] { draw_render_views(); });
+  section("Session and host", 0, [&] { draw_render_session(vm); });
+  section("Options (saved)", 0, [&] { draw_render_options(options, reflection_status); });
 }
 
 void draw_tuning(Jvm* vm) {

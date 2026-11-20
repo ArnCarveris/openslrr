@@ -39,13 +39,15 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                                               uint16_t world_view) {
   const auto &options = host_enhanced_graphics();
   if (options.ao_method <= 0 || options.ao_strength <= 0 || !width || !height ||
-      !bgfx::isValid(ao_program_)) {
+      !bgfx::isValid(ao_program_) || !render_debug().ambient_occlusion) {
     destroy_ao_targets();
     return;
   }
   const int quality = std::clamp(options.ao_quality, 0, 2);
-  const uint16_t aw = quality == 2 ? width : uint16_t((width + 1) / 2);
-  const uint16_t ah = quality == 2 ? height : uint16_t((height + 1) / 2);
+  // Debug resolution scale (#243) on top of the quality's full/half size.
+  const float scale = std::clamp(render_debug().ao_resolution_scale, .25f, 1.f);
+  const uint16_t aw = uint16_t(std::max(16.f, (quality == 2 ? width : (width + 1) / 2) * scale));
+  const uint16_t ah = uint16_t(std::max(16.f, (quality == 2 ? height : (height + 1) / 2) * scale));
   if (ao_screen_width_ != width || ao_screen_height_ != height ||
       ao_width_ != aw || ao_height_ != ah)
     destroy_ao_targets();

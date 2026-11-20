@@ -31,6 +31,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
   bool was_active = fixture_shadow_active_;
   fixture_shadow_active_ = false;
   if (fixture_lights_.empty() || !garage_ || video.shadows == 0 ||
+      !render_debug().fixture_shadows ||
       !debug_overlay_.render_options().map_shadows) {
     fixture_shadow_casters_.clear();
     return;
@@ -101,7 +102,8 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
                       part.vbh.idx, part.ibh.idx, instance.transform});
   }
   fixture_shadow_active_ = true;
-  if (was_active && fixture_cached_matrices_ == fixture_shadow_matrices_ &&
+  if (was_active && render_debug().shadow_caching &&
+      fixture_cached_matrices_ == fixture_shadow_matrices_ &&
       stamps == fixture_shadow_casters_)
     return;
   const float no_apertures[4]{};
@@ -164,6 +166,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     car_shadow_valid_ = false;
   };
   if (garage_ || !scene_sun_is_night() || !scenery_lights_count() || video.shadows == 0 ||
+      !render_debug().lamp_shadows || !render_debug().lamp_lighting ||
       !debug_overlay_.render_options().map_shadows ||
       !host_enhanced_graphics().local_lights ||
       !bgfx::isValid(static_shadow_program_)) {
@@ -172,6 +175,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     return;
   }
   perf::Scope perf_scope(perf::Zone::Shadows);
+  perf::Scope detail_scope(perf::Zone::LampShadows);
   const uint16_t tile = local_shadow_resolution();
   if (bgfx::isValid(fixture_shadow_fb_) && fixture_shadow_tile_ != tile) {
     bgfx::destroy(fixture_shadow_fb_);
@@ -223,13 +227,28 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       if (candidates[i].source == source) return int(i);
     return -1;
   };
+  // Debug budget (#243): fewer shadowed lamps; extra held slots fade out.
+  const size_t shadow_budget = size_t(render_debug_budget(render_debug().shadowed_lamps,
+      int(kLampShadows), int(kLampShadows)));
   // 1. Held lamps keep their slot while their light still reaches the focus.
   for (auto &slot : lamp_shadow_slots_) {
     if (!slot.source) continue;
     slot.hold += dt;
     const int index = find_candidate(slot.source);
-    if (index < 0) slot.wanted = false;
+    if (index < 0 || shadow_budget == 0) slot.wanted = false;
     else slot.distance = candidates[size_t(index)].distance;
+  }
+  // A smaller (debug) budget releases the farthest held lamps.
+  for (;;) {
+    LampShadowSlot *farthest = nullptr;
+    size_t wanted = 0;
+    for (auto &slot : lamp_shadow_slots_)
+      if (slot.source && slot.wanted) {
+        ++wanted;
+        if (!farthest || slot.distance > farthest->distance) farthest = &slot;
+      }
+    if (wanted <= shadow_budget || !farthest) break;
+    farthest->wanted = false;
   }
   // 2. Priority with hysteresis: replace the farthest held lamp only by a
   //    clearly nearer one, after a minimum hold, one swap per frame.
@@ -246,7 +265,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       }
     const size_t wanted = size_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
         [](const LampShadowSlot &slot) { return slot.source && slot.wanted; }));
-    if (worst && best && wanted >= kLampShadows && worst->hold >= kLampShadowHold &&
+    if (worst && best && wanted >= shadow_budget && worst->hold >= kLampShadowHold &&
         best->distance < kLampShadowSwitchRatio * worst->distance &&
         worst->distance - best->distance > kLampShadowSwitchMargin)
       worst->wanted = false;
@@ -275,7 +294,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   for (const auto &candidate : candidates) {
     const size_t wanted = size_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
         [](const LampShadowSlot &slot) { return slot.source && slot.wanted; }));
-    if (wanted >= kLampShadows) break;
+    if (wanted >= shadow_budget) break;
     const bool assigned = std::any_of(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
         [&](const LampShadowSlot &slot) { return slot.source == candidate.source; });
     if (assigned || !candidate.source) continue;
@@ -376,7 +395,10 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   // kCarShadowFade metres before the reach (or the first lamp past the
   // budget), so a lamp gains or loses its car shadow where its light on the
   // car is near zero.
-  const bool car_shadows = lamp_focus_valid_ && debug_overlay_.render_options().shadows;
+  const size_t car_budget = size_t(render_debug_budget(render_debug().car_tiles,
+      int(kCarShadowTiles), int(kCarShadowTiles)));
+  const bool car_shadows = lamp_focus_valid_ && debug_overlay_.render_options().shadows &&
+                           render_debug().car_lamp_tiles && car_budget > 0;
   const std::array<float, 3> car_center{focus[0], focus[1] + 1.f, focus[2]};
   const auto covered_by_car_tiles = [&](const SceneInstance &instance) {
     if (!car_shadows) return false;
@@ -400,9 +422,9 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       if (d < candidate.range + kCarShadowCover) reach.push_back(&candidate);
     }
     float cut = kSceneryLightMaxRange + kCarShadowCover;
-    if (reach.size() > kCarShadowTiles) {
-      cut = reach[kCarShadowTiles]->distance;
-      reach.resize(kCarShadowTiles);
+    if (reach.size() > car_budget) {
+      cut = reach[car_budget]->distance;
+      reach.resize(car_budget);
     }
     for (const auto *candidate : reach) {
       const float t = std::clamp((std::min(cut, candidate->range + kCarShadowCover) -
@@ -454,7 +476,8 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     // The tile matrices are part of the cache key (lamp set and car pose).
     for (const auto &tile : car_shadow_tiles_)
       stamps.push_back({nullptr, 0, 0, 0, tile.sample});
-    if (!car_shadow_tiles_.empty() && (!car_shadow_valid_ || stamps != car_shadow_stamps_)) {
+    if (!car_shadow_tiles_.empty() && (!car_shadow_valid_ || stamps != car_shadow_stamps_ ||
+                                       !render_debug().shadow_caching)) {
       const uint16_t half = uint16_t(tile / 2);
       bgfx::setViewFrameBuffer(kCarShadowView, fixture_shadow_fb_);
       bgfx::setViewRect(kCarShadowView, 0, uint16_t(2 * tile), uint16_t(4 * tile), tile);
@@ -525,7 +548,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       if (found == instance_meshes_.end() || !bgfx::isValid(found->second.ibh)) continue;
       if (instance.gpu_skin) {
         if (instance.skin.size() < 48u * 16u || !bgfx::isValid(found->second.skin_vbh) ||
-            !bgfx::isValid(ao_skin_depth_program_))
+            !bgfx::isValid(ao_skin_depth_program_) || !render_debug().skinned_casters)
           continue;
         // Skinned bounds are the rest pose: cull by distance instead.
         const float dx = instance.transform[12] - slot.position[0];
@@ -548,7 +571,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       dynamic.push_back(&instance);
     }
     shadowed.push_back(s);
-    if (slot.valid && stamps == slot.stamps) continue;
+    if (slot.valid && stamps == slot.stamps && render_debug().shadow_caching) continue;
     const uint16_t view_id = uint16_t(128 + s);
     bgfx::setViewFrameBuffer(view_id, fixture_shadow_fb_);
     bgfx::setViewRect(view_id, uint16_t(s % 4 * tile), uint16_t(s / 4 * tile), tile, tile);
@@ -902,6 +925,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   const uint16_t point_shadow_width=point_shadow_tile*3,point_shadow_height=point_shadow_tile*2;
   const uint16_t resolution=scenery_shadow_resolution();
   perf::Scope perf_scope(perf::Zone::Shadows);
+  perf::Scope detail_scope(perf::Zone::SunShadows);
   const float no_apertures[4]{};
   bgfx::setUniform(u_aperture_params_, no_apertures);
   static_shadow_active_ = false;
@@ -962,7 +986,8 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
     const bool same_light = cached_point_light_ &&
                             cached_point_light_->position == light.position &&
                             cached_point_light_->range == light.range;
-    if (shadow_cache_valid_ && same_light && stamps == shadow_cached_casters_)
+    if (shadow_cache_valid_ && same_light && stamps == shadow_cached_casters_ &&
+        render_debug().shadow_caching)
       return;
     const auto *caps = bgfx::getCaps();
     for (unsigned face = 0; face < 6; ++face) {
@@ -1072,7 +1097,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   }
   shadow_rebase_origin(shadow_origin_,focus,direction,resolution);
   const float relative_focus[3]={focus[0]-shadow_origin_[0],focus[1]-shadow_origin_[1],focus[2]-shadow_origin_[2]};
-  const auto outer = shadow_projection(relative_focus,direction,shadow_radii.back(),resolution,
+  const auto outer = shadow_projection(relative_focus,direction,cascade_radii().back(),resolution,
       caps->homogeneousDepth,caps->originBottomLeft);
   auto outer_world_view=outer.view;
   for(int row=0;row<3;++row) for(int axis=0;axis<3;++axis)
@@ -1113,7 +1138,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   std::array<ShadowProjection,4> projections;
   bool same_projection=shadow_cached_origin_==shadow_origin_;
   for(size_t i=0;i<4;++i) {
-    projections[i]=shadow_projection(relative_focus,direction,shadow_radii[i],resolution,
+    projections[i]=shadow_projection(relative_focus,direction,cascade_radii()[i],resolution,
         caps->homogeneousDepth,caps->originBottomLeft);
     same_projection=same_projection && projections[i].sample==shadow_cascade_matrices_[i];
   }
@@ -1136,11 +1161,12 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
       stamps.back().revision^=skin_palette_hash(instance->skin);
     }
   }
-  const bool unchanged=shadow_cache_valid_ && same_projection && stamps==shadow_cached_casters_;
+  const bool unchanged=shadow_cache_valid_ && same_projection && stamps==shadow_cached_casters_ &&
+                       render_debug().shadow_caching;
   if(unchanged) {
     static_shadow_active_=true;shadow_cascades_active_=true;return;
   }
-  for (size_t cascade = 0; cascade < shadow_radii.size(); ++cascade) {
+  for (size_t cascade = 0; cascade < size_t(4); ++cascade) {
     const auto& projection=projections[cascade];
     shadow_cascade_matrices_[cascade] = projection.sample;
     auto world_view=projection.view;
@@ -1156,6 +1182,8 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
     bgfx::setViewTransform(view_id, projection.view.data(),
                            projection.projection.data());
     bgfx::touch(view_id);
+    // Debug toggle (#243): an off cascade stays cleared (fully lit).
+    if (!render_debug().sun_cascades[cascade]) continue;
     for (const auto &instance : casters) {
       // Vehicles retain their separate nearby depth map. The scenery depth
       // shader has no skin palette; skinned casters need their own path.
@@ -1212,11 +1240,11 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
       if(!filtered.instances.empty()) shadow_batches.push_back(std::move(filtered));
     }
     draw_prop_batches(view_id, shadow_batches, true, conservative);
-    if(bgfx::isValid(ao_skin_depth_program_))
+    if(bgfx::isValid(ao_skin_depth_program_) && render_debug().skinned_casters)
       for(size_t i=0;i<skinned_casters.size();++i) {
         // Skinned bounds describe the rest pose, not the animated limbs. Cull
         // by the camera-centred cascade radius instead (plus a body margin).
-        if(skinned_distance[i]>shadow_radii[cascade]+3.f) continue;
+        if(skinned_distance[i]>cascade_radii()[cascade]+3.f) continue;
         const auto* instance=skinned_casters[i];
         const auto& part=instance_meshes_.at(instance->geometry.get());
         auto relative=instance->transform;
@@ -1244,7 +1272,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
   ++shadow_atlas_revision_;
   shadow_cached_casters_=std::move(stamps);
   shadow_cached_origin_=shadow_origin_;shadow_cache_valid_=same_projection;
-  static_shadow_distance_ = shadow_radii.back();
+  static_shadow_distance_ = cascade_radii().back();
   static_shadow_matrix_ = shadow_cascade_matrices_[0];
   static_shadow_active_ = true;
   shadow_cascades_active_ = true;
@@ -1252,6 +1280,7 @@ void LibBgfxBackend::update_static_shadow(const float *eye,
 
 void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions& video) {
   perf::Scope perf_scope(perf::Zone::Shadows);
+  perf::Scope detail_scope(perf::Zone::CarDepth);
   car_depth_active_ = false;
   if (!position || video.shadows == 0 || !debug_overlay_.render_options().shadows ||
       !bgfx::isValid(static_shadow_program_)) return;

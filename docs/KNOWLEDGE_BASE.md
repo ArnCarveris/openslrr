@@ -2889,3 +2889,47 @@ city at night.
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).
+
+### Renderer debug menu (#243)
+
+- Overrides and statistics: `src/render/render_debug.hpp:render_debug`
+  (`RenderDebugOverrides`, defaults = normal renderer, never saved) and
+  `src/render/render_debug.hpp:render_debug_stats`, filled each frame by
+  `src/render/bgfx_lib_backend.cpp:publish_debug_stats` just before the overlay
+  draws. That function also turns the bgfx profiler (`BGFX_DEBUG_PROFILER`) on
+  only while the overlay is open; per-view GPU times need it.
+- Menu: `src/render/debug_overlay.cpp:draw_render` with sections Timings
+  (`draw_render_timings`, rolling 120 frames per view, views missing in a
+  frame count as 0, sorted by GPU time; dump via `render_timing_dump`),
+  Passes (`draw_render_passes`), Budgets (`draw_render_budgets`), Buffers
+  (`draw_render_views`, `ImGui::Image` of the D32F atlases and the R8 AO
+  buffer), Session and host, Options (saved). View names come from
+  `src/render/render_debug.hpp:render_debug_view_name`; views 128–135 are the
+  fixture or lamp tiles, 136 the car lamp tiles, 140–143 AO.
+- CPU zones added to `include/slrr/frame_profiler.hpp` (also new `--perf-log`
+  CSV columns): `CollectBatches` (inside Collect), `SunShadows`, `CarDepth`,
+  `LampShadows` (inside Shadows), `FixtureShadows`, `LampSelect`,
+  `AmbientOcclusion`.
+- Where each override acts: AO in `update_ambient_occlusion` (targets
+  destroyed); cascades in the `update_static_shadow` cascade loop (an off
+  cascade is cleared, i.e. lit); shadow caching in the sun, point, fixture,
+  lamp and car-tile cache checks; character casters in the cascade and lamp
+  tile caster loops; fixture shadows in `update_fixture_shadows`; lamp lighting
+  in `update_scenery_lights`; lamp shadows and car tiles in
+  `update_lamp_shadows`; reflections in `update_reflections`; clouds and fog at
+  their uniforms; MSAA and anisotropy in the reset flags and `world_sampler`;
+  map props, vehicles, characters and sky by removing their records right
+  after collection in `sync_instances` (so draw, shadows and AO all lose them;
+  `SceneInstance::ground_prop` marks single props). Budgets: lit lamps and
+  distance (`scenery_lights_select` got a distance parameter), shadowed lamps
+  (a lower budget now also releases the farthest held slots), car tiles,
+  `local_shadow_resolution` / `scenery_shadow_resolution` and
+  `src/render/shadow_cascades.hpp:cascade_radii` (radius scale), AO buffer
+  scale, reflection faces (0 freezes the cube).
+- Validation: `tests/test_scene_shadow_gpu.cpp` case `render_debug_overrides`
+  checks the defaults, that cached lamp tiles are not resubmitted, that lamp
+  shadows, car tiles, AO and lamp lighting toggles remove their views (0 ms)
+  and restore them, and the budgets. First harness look (1280×720, 50 lamps,
+  caching off, HBAO, one road and one car): world 0.13 ms, AO 0.10 ms
+  (pass 1 0.07), six lamp tiles 0.014 ms, car tiles 0.005 ms. The harness
+  scene is tiny; real costs need the menu in game.

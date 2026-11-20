@@ -1252,6 +1252,20 @@ car's shadow from a small car-only tile holding just the vehicles within 6 m
 of it, so the car always has a shadow from each lamp that lights it; that
 shadow fades in over 10 m where the lamp's light on the car is near zero. The intensity values above were accepted in game by the user.
 
+### Renderer debug overrides (#243)
+
+The OpenSLRR Debug menu (Ctrl+F12, Renderer tab) can switch renderer passes
+off and change budgets for performance work. These overrides live in
+`render_debug()` (`src/render/render_debug.hpp`), default to the normal
+renderer, are never saved and reset on restart. The renderer must read them
+where the pass is decided, so that an override removes the pass's view (no GPU
+time) rather than drawing it empty. Options that already exist (Enhanced
+graphics such as AO method, shadow quality, MSAA, clouds; the overlay's map
+and vehicle shadows, OSD, flare and reflection faces) are edited in place: the
+Enhanced ones are saved as before, the overrides only further disable them.
+A new pass should get a toggle, a named view in `render_debug_view_name` and a
+profiler zone when it has measurable CPU cost.
+
 ## 13. Interface, input, and options
 
 OSD registries, script widgets, and picking rectangles must stay in sync.

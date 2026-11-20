@@ -29,6 +29,7 @@ struct SceneInstance {
   std::string paint_texture;
   std::vector<std::pair<size_t, std::string>> texture_replacements;
   bool vehicle_material = false;
+  bool ground_prop = false;  // a map placement (debug toggle, #243)
   uint32_t light_flags = 0;
   // Render-object id. Carries `flags` (dynamic shadow caster) and `shd_*`.
   int32_t type_id = 0;

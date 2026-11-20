@@ -637,9 +637,12 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     sc.height = static_cast<uint32_t>(height_);
     const uint32_t msaa[] = {BGFX_RESET_NONE, BGFX_RESET_MSAA_X2,
                              BGFX_RESET_MSAA_X4, BGFX_RESET_MSAA_X8};
+    // Debug overrides (#243) switch MSAA / anisotropy off without saving.
+    const auto& overrides = render_debug();
     const uint32_t flags = (debug_render.vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE)
-                           | msaa[host_enhanced_graphics().msaa]
-                           | (host_enhanced_graphics().anisotropic_filtering ? BGFX_RESET_MAXANISOTROPY : 0);
+                           | (overrides.msaa ? msaa[std::clamp(host_enhanced_graphics().msaa, 0, 3)] : BGFX_RESET_NONE)
+                           | (host_enhanced_graphics().anisotropic_filtering && overrides.anisotropic
+                                  ? BGFX_RESET_MAXANISOTROPY : 0);
     if (width_ != old_width || height_ != old_height || flags != reset_flags_) {
       bgfx::reset(flags, &sc);
       reset_flags_ = flags;
@@ -789,7 +792,10 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     if (!covered) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
-      update_fixture_shadows(video);
+      {
+        perf::Scope fixture_scope(perf::Zone::FixtureShadows);
+        update_fixture_shadows(video);
+      }
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
       float car_matrix[16];
@@ -808,7 +814,10 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       }
       update_lamp_shadows(video);
       update_interior_sun(video);
-      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
+      if(world_cam && !world_inset) {
+        perf::Scope ao_scope(perf::Zone::AmbientOcclusion);
+        update_ambient_occlusion(view,proj,ww,hh,world_view);
+      }
       else destroy_ao_targets();
       update_car_depth(garage_ ? nullptr : position, video);
       // Every world camera reflects its scene. The car dealers have a map and a
@@ -894,6 +903,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
           : !reflection_scene_ ? "no world camera"
           : reflection_ready_ ? "live cubemap"
           : bgfx::isValid(reflection_cubes_[0]) ? "capturing" : "waiting for render target";
+      publish_debug_stats();
       debug_overlay_.draw(hwnd_, ww, hh, capture, vehicles);
     }
     debug_was_visible_ = show_debug;
@@ -1095,7 +1105,22 @@ void LibBgfxBackend::cache_scene_mesh(
     std::vector<std::shared_ptr<const ScxGeometry>> resident_props;
     instances_ = scene_instances_collect(&frustum, &resident_props);
     prop_batches_.clear();
-    scene_instances_collect_batches(&frustum, prop_batches_);
+    {
+      perf::Scope batch_scope(perf::Zone::CollectBatches);
+      if (render_debug().map_props)
+        scene_instances_collect_batches(&frustum, prop_batches_);
+    }
+    // Debug toggles (#243): removing the records removes every pass they feed.
+    {
+      const auto& overrides = render_debug();
+      if (!overrides.map_props || !overrides.vehicles || !overrides.characters || !overrides.sky)
+        std::erase_if(instances_, [&](const SceneInstance& instance) {
+          return (!overrides.map_props && instance.ground_prop) ||
+                 (!overrides.vehicles && instance.vehicle_material) ||
+                 (!overrides.characters && instance.gpu_skin) ||
+                 (!overrides.sky && instance.sky);
+        });
+    }
     scene_instances_set_size_filter(nullptr, nullptr);
     previews_.clear();
     for(const auto* camera:gameref_active_cameras()) {
@@ -1297,19 +1322,59 @@ void LibBgfxBackend::update_local_light() {
 // frustum get their own unshadowed lamp array (garage fixtures untouched);
 // scenery_lights_select fades lamps near the cut so the set changes without
 // pops.
+// Numbers and texture handles for the OpenSLRR Debug renderer menu (#243).
+// Per-view GPU times need the bgfx profiler, on only while the menu is open.
+void LibBgfxBackend::publish_debug_stats() {
+    static bool profiler = false;
+    if (profiler != debug_overlay_.visible()) {
+      profiler = debug_overlay_.visible();
+      bgfx::setDebug(profiler ? BGFX_DEBUG_PROFILER : BGFX_DEBUG_NONE);
+    }
+    auto& stats = render_debug_stats();
+    stats.instances = uint32_t(instances_.size());
+    stats.batches = uint32_t(prop_batches_.size());
+    stats.batch_instances = 0;
+    for (const auto& batch : prop_batches_) stats.batch_instances += uint32_t(batch.instances.size());
+    stats.lamps_registered = uint32_t(scenery_lights_count());
+    stats.lamps_lit = uint32_t(scenery_lamps_.size());
+    stats.lamps_shadowed = uint32_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+        [](const LampShadowSlot& slot) { return slot.source != nullptr; }));
+    stats.car_tiles = uint32_t(car_shadow_tiles_.size());
+    stats.lamp_tile_redraws = lamp_shadow_redraws_;
+    stats.car_tile_redraws = car_shadow_redraws_;
+    stats.sun_atlas_redraws = shadow_atlas_revision_;
+    stats.sun_cascades = shadow_cascades_active_;
+    stats.fixture_atlas = fixture_shadow_active_ || lamp_shadow_atlas_bound_;
+    stats.ao = ao_active_;
+    stats.reflections = reflection_ready_;
+    stats.fixture_atlas_texture = fixture_shadow_tex_;
+    stats.sun_atlas_texture = static_shadow_tex_;
+    stats.ao_texture = ao_raw_tex_;
+    stats.fixture_tile = fixture_shadow_tile_;
+    stats.sun_atlas_size = static_shadow_size_;
+    stats.ao_width = ao_width_;
+    stats.ao_height = ao_height_;
+}
+
 void LibBgfxBackend::update_scenery_lights() {
+    perf::Scope lamp_scope(perf::Zone::LampSelect);
     const uint32_t groups = scene_sun_is_night() ? kLightGroupCity : 0u;
-    if (!groups || !scenery_lights_count())
+    if (!groups || !scenery_lights_count() || !render_debug().lamp_lighting)
       return;
     // cull_eye_ is script space (sync_instances); the lights are render space,
     // like the frustum planes of the culled view.
     const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
     const auto frustum = view_frustum(cull_view_, cull_proj_);
     // Leave room for shadowed lamps outside this set (update_lamp_shadows).
-    const auto picks = scenery_lights_select(eye, kSceneryLamps - kLampSpecial, groups,
+    const auto& overrides = render_debug();
+    const int budget = render_debug_budget(overrides.lamp_budget,
+        int(kSceneryLamps - kLampSpecial), int(kSceneryLamps - kLampSpecial));
+    const float distance = overrides.lamp_distance > 0.f
+        ? std::min(overrides.lamp_distance, 2000.f) : kSceneryLightMaxDistance;
+    const auto picks = scenery_lights_select(eye, size_t(budget), groups,
         [](void* parent, float* matrix) {
           return scene_instances_render_matrix(parent, matrix);
-        }, &frustum);
+        }, &frustum, distance);
     for (const auto& pick : picks) {
       LampLight lamp;
       lamp.position = pick.position;
@@ -1341,7 +1406,8 @@ void LibBgfxBackend::destroy_reflections() {
 
 void LibBgfxBackend::update_reflections(const float* eye) {
     perf::Scope perf_scope(perf::Zone::Reflections);
-    if (!eye || !reflection_scene_ || !host_enhanced_graphics().dynamic_reflections) {
+    if (!eye || !reflection_scene_ || !host_enhanced_graphics().dynamic_reflections ||
+        !render_debug().reflections) {
       reflection_world_ = nullptr;
       reflection_face_ = 0;
       reflection_ready_ = false;
@@ -1503,7 +1569,7 @@ void LibBgfxBackend::draw_sky(uint16_t view_id, const float* view, const float* 
     auto sun = scene_instances_light();
     if (!outdoor_lighting_) scene_sun_apply_day_cycle(sun);
     const float sky[4] = {camera[12], camera[13], camera[14],
-                          host_enhanced_graphics().volumetric_clouds ? 2.f : 1.f};
+                          host_enhanced_graphics().volumetric_clouds && render_debug().clouds ? 2.f : 1.f};
     bind_baked_light(nullptr, nullptr, BGFX_INVALID_HANDLE, false, &sun, sky);
     const float sky_mode[4]={0,1,0,0};bgfx::setUniform(u_alpha_test_,sky_mode);
     bgfx::setTransform(identity);
