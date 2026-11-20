@@ -277,8 +277,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
     u_lamp_shadow_params_=bgfx::createUniform("u_lampShadowParams",bgfx::UniformType::Vec4);
-    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampShadows));
-    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampShadows));
+    u_lamp_shadow_matrices_=bgfx::createUniform("u_lampShadowMatrices",bgfx::UniformType::Mat4,uint16_t(kLampShadowSlots));
+    u_lamp_shadow_tiles_=bgfx::createUniform("u_lampShadowTiles",bgfx::UniformType::Vec4,uint16_t(kLampShadowSlots));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -787,15 +787,18 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
       update_fixture_shadows(video);
-      update_lamp_shadows(video);
-      update_interior_sun(video);
-      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
-      else destroy_ao_targets();
       const auto* car = script_camera && script_camera->follow_vehicle
           ? gameref_find_live(script_camera->follow_vehicle) : nullptr;
       float car_matrix[16];
       const auto* position = car && scene_instances_render_matrix(car->key, car_matrix)
           ? car_matrix + 12 : world_cam ? world_eye : nullptr;
+      // Street lamp shadows are chosen around the followed car (#237), so
+      // turning the camera does not move its shadows.
+      set_lamp_shadow_focus(position);
+      update_lamp_shadows(video);
+      update_interior_sun(video);
+      if(world_cam && !world_inset) update_ambient_occlusion(view,proj,ww,hh,world_view);
+      else destroy_ao_targets();
       update_car_depth(garage_ ? nullptr : position, video);
       // Every world camera reflects its scene. The car dealers have a map and a
       // script camera but neither the garage flag nor a followed car, so their
@@ -1291,7 +1294,8 @@ void LibBgfxBackend::update_scenery_lights() {
     // like the frustum planes of the culled view.
     const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
     const auto frustum = view_frustum(cull_view_, cull_proj_);
-    const auto picks = scenery_lights_select(eye, kSceneryLamps, groups,
+    // Leave room for shadowed lamps outside this set (update_lamp_shadows).
+    const auto picks = scenery_lights_select(eye, kSceneryLamps - kLampShadowSlots, groups,
         [](void* parent, float* matrix) {
           return scene_instances_render_matrix(parent, matrix);
         }, &frustum);

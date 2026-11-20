@@ -111,8 +111,8 @@ uniform vec4 u_lampAttenuation[64]; // D3D c, l, q: 1/(c + l*d + q*d*d)
 // Shadowed lamps (#237) are the first x entries; each samples one downward
 // perspective tile of s_fixtureShadow (free outside garages).
 uniform vec4 u_lampShadowParams;      // count, inverse atlas width/height
-uniform mat4 u_lampShadowMatrices[6]; // world -> tile-local uv, depth
-uniform vec4 u_lampShadowTiles[6];    // tile origin uv, shadow strength
+uniform mat4 u_lampShadowMatrices[8]; // world -> tile-local uv, depth
+uniform vec4 u_lampShadowTiles[8];    // tile origin uv, shadow strength
 float lampShadowTap(vec2 uv,vec3 p,vec2 receiverUv,vec2 gradient)
 {
     float depth=p.z+dot(gradient,(uv-receiverUv)*vec2(4.0,3.0))-0.000005;
@@ -175,7 +175,7 @@ vec3 lampLighting(vec3 n,vec3 world)
     vec3 sum=vec3(0.0,0.0,0.0);
     // Shadowed lamps: no per-pixel early-out before the shadow lookup, whose
     // receiver-plane derivatives need uniform control flow.
-    for(int s=0;s<6;++s) {
+    for(int s=0;s<8;++s) {
         if(float(s)>=u_lampShadowParams.x) break;
         vec3 delta=u_lampPositions[s].xyz-world;
         float d2=dot(delta,delta);

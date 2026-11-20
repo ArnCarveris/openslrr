@@ -96,6 +96,52 @@ std::vector<std::pair<void *, SceneryLightList>> scenery_lights_all() {
 }
 
 std::vector<SceneryLightPick>
+scenery_lights_near(const std::array<float, 3> &focus, float reach,
+                    uint32_t groups_on,
+                    const std::function<bool(void *, float *)> &matrix) {
+  std::vector<SceneryLightPick> out;
+  if (!groups_on || !matrix || !(reach > 0.f))
+    return out;
+  for (const auto &[parent, list] : g_scenery_lights) {
+    float m[16];
+    if (!matrix(parent, m))
+      continue;
+    for (const auto &light : *list) {
+      if (!light.lights_scene || !(light.group & groups_on))
+        continue;
+      const auto &l = light.position;
+      const std::array<float, 3> p{
+          m[0] * l[0] + m[4] * l[1] + m[8] * l[2] + m[12],
+          m[1] * l[0] + m[5] * l[1] + m[9] * l[2] + m[13],
+          -(m[2] * l[0] + m[6] * l[1] + m[10] * l[2] + m[14])};
+      const float d = std::sqrt((p[0] - focus[0]) * (p[0] - focus[0]) +
+                                (p[1] - focus[1]) * (p[1] - focus[1]) +
+                                (p[2] - focus[2]) * (p[2] - focus[2]));
+      const float range = std::min(light.range, kSceneryLightMaxRange);
+      if (!(d < reach) || !(range > .1f))
+        continue;
+      SceneryLightPick pick;
+      pick.position = p;
+      pick.color = light.color;
+      pick.attenuation = light.attenuation;
+      pick.range = range;
+      pick.intensity = kSceneryLightIntensity;
+      pick.distance = d;
+      pick.source = &light;
+      out.push_back(pick);
+    }
+  }
+  std::sort(out.begin(), out.end(), [](const SceneryLightPick &a, const SceneryLightPick &b) {
+    if (a.distance != b.distance)
+      return a.distance < b.distance;
+    if (a.position != b.position)
+      return a.position < b.position;
+    return a.source < b.source;
+  });
+  return out;
+}
+
+std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
                       uint32_t groups_on,
                       const std::function<bool(void *, float *)> &matrix,

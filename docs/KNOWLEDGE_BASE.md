@@ -2768,10 +2768,25 @@ city at night.
   measured in game because the bench writes to the installed game root.
 - Shadows (after the user noted at `7c9d05f` that lamps cast none):
   `src/render/bgfx_shadows.cpp:update_lamp_shadows`. Budget
-  `kLampShadows` = 6: the 6 nearest lamps of the visible set, each one tile
+  `kLampShadows` = 6 wanted lamps in `kLampShadowSlots` = 8 slots (two spare
+  so a new lamp fades in while the one it replaces fades out), each one tile
   of the fixture atlas (4 × 3 tiles of `local_shadow_resolution`, 256/512/1024
   by Shadow quality; outside garages it is otherwise unused) with view ids
-  128–133. Projection: one downward perspective, 150° field, near 0.3 m, far
+  128–135.
+  - Selection (after the user saw the car's shadow "turn around the car" at
+    `cb90023`): the first version took the 6 nearest lamps of the
+    frustum-selected set by camera distance, so orbiting the chase camera
+    around a parked car changed the shadowed set (4 changes in two orbits in
+    `lamp_shadow_stability`) and its shadows cross-faded between directions.
+    Now `src/resources/script_lights.cpp:scenery_lights_near` lists lamps
+    within 55 m of the focus, the followed car (`set_lamp_shadow_focus`, from
+    the same car matrix as `update_car_depth`), else the camera position,
+    with no frustum. Held lamps keep their slot while within reach; the
+    farthest held lamp is replaced only by a candidate at most 75 % as far and
+    4 m nearer, after 1 s of hold, one swap per frame; free slots take the
+    nearest candidates. A shadowed lamp outside the frustum-selected lit set
+    is added to it at full power (the lit selection keeps 8 of its 64 entries
+    free for this). Projection: one downward perspective, 150° field, near 0.3 m, far
   = the 45 m range. A lamp lights mostly downward; at the tile rim (3.7 × the
   lamp height, 29 m for the 7.8 m `lamp_base`) its ground light is about a
   tenth of the peak, and the shader fades the shadow to none over the outer
@@ -2791,11 +2806,9 @@ city at night.
     (geometry, revision, buffers, transform, skin palette hash) changes; static
     and dynamic casters are redrawn together because D3D11 cannot copy part
     of a depth texture.
-  - No pop: a slot's weight fades 0 → 1 in 0.4 s (real time) when assigned
-    and back to 0 when its lamp is no longer among the 6 nearest; a wanted
-    lamp waits for a free slot. The shader mixes visibility by that weight. A
-    lamp leaving the visible set frees its slot at once (its light no longer
-    reaches a visible pixel).
+  - No pop: a slot's weight fades 0 → 1 in 0.8 s (real time) when assigned
+    and back to 0 when it is released (out of reach or replaced); the shader
+    mixes visibility by that weight.
   - Sampling: `shaders/scene_shadow.sh:lampShadowVisibility`, the fixture
     filtering (receiver-plane depth gradient, aligned 2×2 taps, 4×4 tent for
     the very-soft Shadow smoothing), 3 cm normal offset toward the lamp.
@@ -2823,9 +2836,13 @@ city at night.
   shadows off and daytime give no lamp shadows, the 6-lamp budget goes to the
   nearest lamps, a newly assigned lamp starts at zero strength (image equal
   to unshadowed) and fades in, and that unchanged casters cause no redraw
-  while a moved car causes one. In-game: `1df1452` worked but lamps popped
-  in; `7c9d05f` accepted (intensity, no pop) without shadows; the shadowed
-  version is not validated yet.
+  while a moved car causes one. `lamp_shadow_stability`: a parked car with
+  the camera orbiting it twice keeps the same 6 lamps (0 changes, 0
+  assignments); driving 300 m along a street with lamps every 15 m assigns
+  19 lamps, each exactly once. In-game: `1df1452` worked but lamps popped
+  in; `7c9d05f` accepted (intensity, no pop) without shadows; `cb90023` cast
+  shadows that moved around the car when the camera turned; the car-focused
+  selection is not validated yet.
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).

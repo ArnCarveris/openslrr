@@ -106,7 +106,8 @@ around them. The engine reads the lamps' own light resources, so no class is
 patched. Up to 64 lamps in view, out to 500 m, are lit and fade in with distance; lamps
 that only glow in the stock game (`fake point`) add no light. They need
 **Local lights**; switching it off turns them off. With shadows on, the six
-nearest lamps cast shadows of cars, people, trees and poles (Shadow quality
+lamps nearest your car cast shadows of cars, people, trees and poles; turning
+the camera does not change them (Shadow quality
 sets their resolution); buildings cast no lamp shadow.
 
 In-game check: in Valo City, set the clock to night and drive under lamp posts;

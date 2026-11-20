@@ -160,7 +160,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   const auto free_slots = [&] {
     for (auto &slot : lamp_shadow_slots_) slot = {};
   };
-  if (garage_ || scenery_lamps_.empty() || video.shadows == 0 ||
+  if (garage_ || !scene_sun_is_night() || !scenery_lights_count() || video.shadows == 0 ||
       !debug_overlay_.render_options().map_shadows ||
       !host_enhanced_graphics().local_lights ||
       !bgfx::isValid(static_shadow_program_)) {
@@ -202,19 +202,55 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     lamp_shadow_clock_ = now;
   }
   const float step = dt / kLampShadowFade;
-  // Wanted: the nearest lamps of the visible set (scenery_lamps_ is sorted
-  // nearest first by scenery_lights_select).
   const auto find_lamp = [&](const void *source) {
     for (size_t i = 0; i < scenery_lamps_.size(); ++i)
       if (scenery_lamps_[i].source == source) return int(i);
     return -1;
   };
+  // Candidates: lamps whose light reaches the focus (the followed car, else
+  // the camera), nearest first. Not the camera frustum and not the camera
+  // direction: a car's shadows must stay put while the camera turns.
+  const std::array<float, 3> focus =
+      lamp_focus_valid_ ? std::array<float, 3>{lamp_focus_[0], lamp_focus_[1], -lamp_focus_[2]}
+                        : std::array<float, 3>{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
+  const auto candidates = scenery_lights_near(focus, kLampShadowReach, kLightGroupCity,
+      [](void *parent, float *matrix) { return scene_instances_render_matrix(parent, matrix); });
+  const auto find_candidate = [&](const void *source) {
+    for (size_t i = 0; i < candidates.size(); ++i)
+      if (candidates[i].source == source) return int(i);
+    return -1;
+  };
+  // 1. Held lamps keep their slot while their light still reaches the focus.
   for (auto &slot : lamp_shadow_slots_) {
     if (!slot.source) continue;
-    const int index = find_lamp(slot.source);
-    // A lamp that left the visible set lights no visible pixel: drop it.
-    if (index < 0) { slot = {}; continue; }
-    slot.wanted = size_t(index) < kLampShadows;
+    slot.hold += dt;
+    const int index = find_candidate(slot.source);
+    if (index < 0) slot.wanted = false;
+    else slot.distance = candidates[size_t(index)].distance;
+  }
+  // 2. Priority with hysteresis: replace the farthest held lamp only by a
+  //    clearly nearer one, after a minimum hold, one swap per frame.
+  {
+    LampShadowSlot *worst = nullptr;
+    for (auto &slot : lamp_shadow_slots_)
+      if (slot.source && slot.wanted && (!worst || slot.distance > worst->distance)) worst = &slot;
+    const SceneryLightPick *best = nullptr;
+    for (const auto &candidate : candidates)
+      if (std::none_of(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+                       [&](const LampShadowSlot &slot) { return slot.source == candidate.source; })) {
+        best = &candidate;
+        break;
+      }
+    const size_t wanted = size_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+        [](const LampShadowSlot &slot) { return slot.source && slot.wanted; }));
+    if (worst && best && wanted >= kLampShadows && worst->hold >= kLampShadowHold &&
+        best->distance < kLampShadowSwitchRatio * worst->distance &&
+        worst->distance - best->distance > kLampShadowSwitchMargin)
+      worst->wanted = false;
+  }
+  // 3. Fade: wanted lamps toward full strength, released ones toward zero.
+  for (auto &slot : lamp_shadow_slots_) {
+    if (!slot.source) continue;
     slot.weight = std::clamp(slot.weight + (slot.wanted ? step : -step), 0.f, 1.f);
     if (!slot.wanted && slot.weight <= 0.f) slot = {};
   }
@@ -231,11 +267,22 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     bx::mtxProj(proj, kLampShadowFov, 1.f, kLampShadowNear, range,
                 caps->homogeneousDepth);
   };
-  for (size_t i = 0; i < std::min(kLampShadows, scenery_lamps_.size()); ++i) {
-    const auto &lamp = scenery_lamps_[i];
+  // 4. Fill: the nearest unassigned candidates while fewer than kLampShadows
+  //    lamps are wanted and a slot is free.
+  for (const auto &candidate : candidates) {
+    const size_t wanted = size_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
+        [](const LampShadowSlot &slot) { return slot.source && slot.wanted; }));
+    if (wanted >= kLampShadows) break;
     const bool assigned = std::any_of(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
-        [&](const LampShadowSlot &slot) { return slot.source == lamp.source; });
-    if (assigned || !lamp.source) continue;
+        [&](const LampShadowSlot &slot) { return slot.source == candidate.source; });
+    if (assigned || !candidate.source) continue;
+    LampLight lamp;
+    lamp.position = candidate.position;
+    lamp.color = candidate.color;
+    lamp.attenuation = candidate.attenuation;
+    lamp.intensity = candidate.intensity;
+    lamp.range = candidate.range;
+    lamp.source = candidate.source;
     const auto free = std::find_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
         [](const LampShadowSlot &slot) { return !slot.source; });
     // Every slot busy: the wanted lamp waits until a fading slot frees.
@@ -246,6 +293,8 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     slot.range = lamp.range;
     slot.wanted = true;
     slot.weight = std::min(step, 1.f); // fades in from zero: no pop
+    slot.distance = candidate.distance;
+    slot.lamp = lamp;
     // Static scenery inside this lamp's projection, collected once. The
     // ground POLY (city-wide, also buildings) does not cast: it would cost
     // its whole mesh per lamp and its streets only receive. Meshes whose box
@@ -287,6 +336,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       slot.static_batches.push_back(std::move(kept));
     }
     *free = std::move(slot);
+    ++lamp_shadow_assignments_;
   }
   const bool conservative = (caps->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
   const auto submit_groups = [&](uint16_t view, const ScenePart &part,
@@ -318,12 +368,10 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   };
   const float no_apertures[4]{};
   bgfx::setUniform(u_aperture_params_, no_apertures);
-  std::vector<std::pair<size_t, size_t>> shadowed; // slot, lamp index
-  for (size_t s = 0; s < kLampShadows; ++s) {
+  std::vector<size_t> shadowed; // slots
+  for (size_t s = 0; s < kLampShadowSlots; ++s) {
     auto &slot = lamp_shadow_slots_[s];
     if (!slot.source) continue;
-    const int index = find_lamp(slot.source);
-    if (index < 0) continue;
     float view[16], proj[16], clip[16];
     projection_of(slot.position, slot.range, view, proj);
     bx::mtxMul(clip, view, proj);
@@ -362,7 +410,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       }
       dynamic.push_back(&instance);
     }
-    shadowed.emplace_back(s, size_t(index));
+    shadowed.push_back(s);
     if (slot.valid && stamps == slot.stamps) continue;
     const uint16_t view_id = uint16_t(128 + s);
     bgfx::setViewFrameBuffer(view_id, fixture_shadow_fb_);
@@ -386,17 +434,24 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     ++lamp_shadow_redraws_;
   }
   // Shadowed lamps go first in the lamp array, in slot order; the rest keep
-  // their nearest-first order.
+  // their nearest-first order. A shadowed lamp outside the frustum-selected
+  // set is added at full power (its light is near the car; the lit set
+  // leaves kLampShadowSlots entries free for this).
   std::vector<LampLight> ordered;
-  ordered.reserve(scenery_lamps_.size());
+  ordered.reserve(scenery_lamps_.size() + shadowed.size());
   std::vector<char> taken(scenery_lamps_.size(), 0);
-  for (const auto &[s, index] : shadowed) {
+  for (const auto s : shadowed) {
     const auto &slot = lamp_shadow_slots_[s];
     lamp_shadow_matrices_[ordered.size()] = slot.sample;
     lamp_shadow_tiles_[ordered.size()] = {float(s % 4) * .25f, float(s / 4) / 3.f,
                                           slot.weight, 0.f};
-    ordered.push_back(scenery_lamps_[index]);
-    taken[index] = 1;
+    const int index = find_lamp(slot.source);
+    if (index >= 0) {
+      ordered.push_back(scenery_lamps_[size_t(index)]);
+      taken[size_t(index)] = 1;
+    } else {
+      ordered.push_back(slot.lamp);
+    }
   }
   lamp_shadow_count_ = ordered.size();
   for (size_t i = 0; i < scenery_lamps_.size(); ++i)

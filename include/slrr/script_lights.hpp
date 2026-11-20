@@ -97,6 +97,13 @@ struct SceneryLightPick {
   float distance = 0.f;  // to the eye
   const SceneryLight *source = nullptr;
 };
+// Lamps whose distance to `focus` (render space) is below `reach`, nearest
+// first, full intensity, no frustum and no budget: the shadow candidates,
+// which must not depend on where the camera looks.
+std::vector<SceneryLightPick>
+scenery_lights_near(const std::array<float, 3> &focus, float reach,
+                    uint32_t groups_on,
+                    const std::function<bool(void *, float *)> &matrix);
 using SceneryLightFrustum = std::array<std::array<float, 4>, 6>;
 std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,

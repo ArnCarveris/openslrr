@@ -8,6 +8,7 @@
 #include "slrr/script_lights.hpp"
 #include <bx/math.h>
 #include <limits>
+#include <map>
 namespace slrr {
 void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
 }
@@ -443,7 +444,7 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(capture()==unshadowed);
     b.lamp_shadow_dt_override_=.1f;
     b.update_local_light();b.update_lamp_shadows(video);
-    SLRR_REQUIRE(std::abs(b.lamp_shadow_slots_[0].weight-.25f)<1e-5f);
+    SLRR_REQUIRE(std::abs(b.lamp_shadow_slots_[0].weight-.1f/LibBgfxBackend::kLampShadowFade)<1e-5f);
     const auto partial=capture();
     const unsigned partial_count=darker(partial,unshadowed,0,width);
     SLRR_REQUIRE(partial_count>0 && partial_count<left+right);
@@ -515,6 +516,96 @@ struct SceneShadowRegression {
     gameref_remove(&prop);gameref_remove(&shell);SLRR_REQUIRE(scenery_lights_count()==0);
     gameref_remove(&world);scene_instances_set_resources(nullptr);
     std::puts("PASS street lamp shadows: static and car casters at night, none by day, budget, fade-in, caching");
+  }
+  // #237 follow-up: the shadowed lamps must not depend on where the camera
+  // looks. A stationary car with the chase camera orbiting it must keep the
+  // same shadowed lamps; driving along a street reassigns only as lamps are
+  // passed.
+  static void lamp_shadow_stability(LibBgfxBackend& b) {
+    Fixture f;scene_instances_set_resources(&f.packs);
+    Object world,shell;
+    gameref_upsert(&world)->flags=kWorldTreeRoot;
+    gameref_upsert(&shell,GameRefKind::RenderRef)->empty=false;
+    gameref_set_parent(&shell,&world);gameref_make_live(&shell);gameref_set_matrix(&shell,0,0,0,0,0,0);
+    scene_instances_select(&world,nullptr,false,SceneEnvironment::Exterior);
+    // A straight street along script Z: lamps every 30 m on both sides.
+    auto lights=std::make_shared<std::vector<SceneryLight>>();
+    for(int i=-20;i<=20;++i) for(float side:{-8.f,8.f}) {
+      SceneryLight lamp;lamp.position={side,7.8f,30.f*i+(side>0?15.f:0.f)};lamp.color={.972f,.888f,.615f};
+      lamp.range=500;lamp.attenuation={1,.03f,0};lamp.group=kLightGroupCity;lamp.lights_scene=true;
+      lights->push_back(lamp);
+    }
+    SLRR_REQUIRE(scenery_lights_attach(&shell,lights));
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().shadow_quality=0;
+    b.garage_=false;b.outdoor_lighting_=true;b.fixture_shadow_active_=false;b.fixture_lights_.clear();
+    b.instances_.clear();
+    scene_sun_set_time(22*3600.f);
+    VideoOptions video;video.shadows=2;
+    b.lamp_shadow_dt_override_=1.f/60.f;
+    const auto aspect=16.f/9.f;
+    // Chase camera: 7 m behind/around the car, 2.5 m up, looking at it.
+    const auto place_camera=[&](const std::array<float,3>& car,float yaw) {
+      const float ex=car[0]+7.f*std::sin(yaw),ez=car[2]-7.f*std::cos(yaw);
+      b.cull_eye_[0]=ex;b.cull_eye_[1]=2.5f;b.cull_eye_[2]=ez;
+      bx::mtxLookAt(b.cull_view_,{ex,2.5f,-ez},{car[0],1.f,-car[2]});
+      bx::mtxProj(b.cull_proj_,60.f,aspect,.05f,2000.f,bgfx::getCaps()->homogeneousDepth);
+    };
+    const auto shadowed=[&] {
+      std::vector<const void*> out;
+      for(size_t i=0;i<b.lamp_shadow_count_;++i) out.push_back(b.scenery_lamps_[i].source);
+      std::sort(out.begin(),out.end());
+      return out;
+    };
+    const auto frame=[&](const std::array<float,3>& car,float yaw) {
+      place_camera(car,yaw);
+      b.set_lamp_shadow_focus(car.data());
+      b.update_local_light();b.update_lamp_shadows(video);
+    };
+    // Settle with the car still, then orbit the camera twice around it.
+    const std::array<float,3> parked{0,0,3};
+    for(int i=0;i<120;++i) frame(parked,0.f);
+    const auto settled=shadowed();
+    const auto assignments=b.lamp_shadow_assignments_;
+    size_t changes=0;auto previous=settled;
+    for(int step=0;step<=720;++step) {
+      frame(parked,float(step)*3.14159265f/180.f);
+      const auto now=shadowed();
+      if(now!=previous) ++changes;
+      previous=now;
+    }
+    std::printf("LAMP SHADOW orbit: shadowed=%zu set changes=%zu new assignments=%llu\n",
+                settled.size(),changes,(unsigned long long)(b.lamp_shadow_assignments_-assignments));
+    SLRR_REQUIRE(settled.size()==LibBgfxBackend::kLampShadows);
+    SLRR_REQUIRE(changes==0 && b.lamp_shadow_assignments_==assignments);
+    // Every shadowed lamp lights, wherever the camera looks.
+    for(size_t i=0;i<b.lamp_shadow_count_;++i) SLRR_REQUIRE(b.scenery_lamps_[i].intensity>0.f);
+    // Drive 300 m at 20 m/s (60 fps): lamps are passed every 15 m, so about
+    // 20 lamps come into the near set; with hysteresis each one is assigned
+    // once, never swapped back and forth.
+    const auto before=b.lamp_shadow_assignments_;
+    std::map<const void*,int> assigned_count;
+    std::vector<const void*> last=shadowed();
+    for(int i=0;i<=900;++i) {
+      const std::array<float,3> car{0,0,3.f+i*(20.f/60.f)};
+      frame(car,0.f);
+      const auto now=shadowed();
+      for(const auto* source:now)
+        if(!std::binary_search(last.begin(),last.end(),source)) ++assigned_count[source];
+      last=now;
+    }
+    int repeats=0;for(const auto& [source,count]:assigned_count) repeats=std::max(repeats,count);
+    std::printf("LAMP SHADOW drive 300 m: new assignments=%llu lamps newly shadowed=%zu max per lamp=%d\n",
+                (unsigned long long)(b.lamp_shadow_assignments_-before),assigned_count.size(),repeats);
+    SLRR_REQUIRE(repeats==1);
+    SLRR_REQUIRE(b.lamp_shadow_assignments_-before<=assigned_count.size()+LibBgfxBackend::kLampShadows);
+    SLRR_REQUIRE(assigned_count.size()>=15 && assigned_count.size()<=30);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.scenery_lamps_.clear();b.lamp_shadow_dt_override_=-1.f;b.set_lamp_shadow_focus(nullptr);
+    b.update_lamp_shadows(VideoOptions{});b.outdoor_lighting_=false;
+    gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
+    std::puts("PASS lamp shadows ignore camera rotation and reassign with hysteresis while driving");
   }
   static void reflection_occupants() {
     Fixture f;Object car,seat,person,pedestrian,world;
@@ -2115,6 +2206,7 @@ int main() {
     SceneShadowRegression::scenery_lamps(backend);
     SceneShadowRegression::lamp_cost(backend);
     SceneShadowRegression::lamp_shadows(backend);
+    SceneShadowRegression::lamp_shadow_stability(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");
