@@ -137,13 +137,19 @@ current gaps to SLRR_rev code are in
   by frame and each CSV row is one simulated second. `--bench-shots DIR`
   writes window captures every 10 simulated seconds
   (`src/boot/boot.cpp:boot_game`).
-- Environment variables: `SLRR_GAME_ROOT` and `SLRR_VLC_DIR`
-  (`src/platform/video_fmv_vlc.cpp`). There are no others.
-- There is no test target on `main`. `main` had a CTest suite (added in
-  `8637eae` with PR #3's `System.arraycopy`, PTX and dyno regressions) until
-  `b907b6b` deleted it. A Windows CI workflow only ever existed on the PR #3
-  branch. The probes are the only automated checks: `--probe` and
-  `--probe-gc` need a game root, `--probe-dyno` and `--probe-pacejka` do not.
+- Runtime environment variables: `SLRR_GAME_ROOT` (`src/main.cpp`),
+  `SLRR_VLC_DIR` (`src/platform/video_fmv_vlc.cpp`) and `SLRR_AMBIENCE_LOG`
+  (`src/resources/scene_ambience.cpp`, debug logging of random ambience
+  requests). `SLRR_FMOD_SDK_DIR` and `SLRR_TOOLS_CACHE_DIR` are build-time
+  only (see README.md).
+- Automated checks on `main`: the only CTest target is `audio_recovery`
+  (`-DBUILD_TESTING=ON`, `CMakeLists.txt`). Every other regression is a
+  standalone `tests/test_<name>.cpp` built and run by
+  `scripts/run_save_io_tests.ps1 -Suite <name>` (suite list in its
+  `ValidateSet`); `tests/*.py` run with Python. The older CTest suite from
+  PR #3 (`8637eae`) was deleted by `b907b6b`, and no CI workflow exists in
+  the repository. The probes `--probe` and `--probe-gc` need a game root;
+  `--probe-dyno` and `--probe-pacejka` do not.
 - Ctrl+F12 opens the ImGui debug panel (`src/render/debug_overlay.cpp:handle_message`).
   Its FPS readout is `1000 / cpuTimeFrame`, and VSync defaults to on
   (`src/render/debug_overlay.hpp:RenderOptions`).
@@ -747,7 +753,6 @@ reads, and `Part.setSfxLoopParams` stores values without applying them.
 
 | Statement | Code reality |
 | --- | --- |
-| HOST_NATIVE_UTILITIES: engine-loop audio not yet implemented | `update_engine_audio` runs every physics frame |
 | Stale comments: "no green-thread budget yet" in `src/boot/mainloop.cpp`, "240 Hz tick" in `src/resources/scene_instances.cpp` | Fibers have budgets, physics is 120/60 Hz |
 
 ## 10. Open risk register
@@ -772,11 +777,11 @@ lifetime and sampling, and the `Vehicle.getHorn` / `hasCrime` registrations.
 
 These are entry points, not fixes. Each needs its own reproduction.
 
-- **#15 HUD too small** (PR #20 open). Every stock HUD element comes from the
+- **#15 HUD too small** (closed; PR #20 merged). Every stock HUD element comes from the
   table in `src/render/bgfx_osd.cpp:draw_vehicle_hud`. Speed, gear and
   mileage are drawn left-aligned at their anchor, so centring needs the
   string width. CFG `osd_*` overrides take separate branches.
-- **#16 car drives through trees (PR #22).** `ground_prop_config` now keeps
+- **#16 car drives through trees** (closed; PR #22 merged). `ground_prop_config` now keeps
   native CFG bodies. Placements use cached triangle and exact box/sphere
   collision paths, including a full chassis volume test for thin trunks.
   `PhysicsRef` has its seven missing signatures, and `setActiveCollision`
