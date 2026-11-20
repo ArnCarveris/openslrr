@@ -3148,3 +3148,22 @@ city at night.
   the screen (400 m ground, 400 boxes): pass 1 1.61–1.93 ms → 0.57–0.74 ms;
   the new geometry pass costs 0.02–0.03 ms and the filters 0.09–0.15 ms.
   The old numbers match the 1.8 ms Elias measured in game.
+
+### Measured in game after the renderer performance stack (#246–#257)
+
+Elias, 2560×1440, night city, his settings (MSAA 8x, GTAO High, 3 m AO
+radius, shadow quality High, Very soft smoothing), debug snapshot:
+
+| | Before the stack | After the stack |
+| --- | --- | --- |
+| GPU | 13.34 ms | 7.63 ms |
+| bgfx render thread | 12.11 ms | 5.62 ms |
+| World view | 9.31 ms | 5.40 ms |
+| AO pass 1 | 2.60 ms | 0.62 ms |
+
+The frame is still about 11.2 ms with present wait 0.03 ms: the main thread
+is now the bottleneck (scene collection + residency 3.87 ms, of which
+instanced prop batches 1.56 ms; world submission 2.91 ms; OSD + debug 0.62;
+reflections 0.5; AO 0.25; shadows 0.2). The renderer snapshot does not list
+the script, traffic, physics and GC zones, which make up most of the
+remaining ~2.8 ms (they are in the menu's "Session and host" section).
