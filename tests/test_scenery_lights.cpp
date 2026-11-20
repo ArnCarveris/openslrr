@@ -238,12 +238,12 @@ SLRR_TEST(valo_city_lamps_registered_with_their_shell) {
     const auto start = std::chrono::steady_clock::now();
     constexpr int runs = 500;
     for (int i = 0; i < runs; ++i)
-      picked += scenery_lights_select(eye, 12, kLightGroupCity, matrix).size();
+      picked += scenery_lights_select(eye, 64, kLightGroupCity, matrix).size();
     const double us = std::chrono::duration<double, std::micro>(
                           std::chrono::steady_clock::now() - start).count() / runs;
     std::printf("Valo City selection: %.1f us per frame, %zu lights picked\n", us,
                 picked / runs);
-    SLRR_REQUIRE(picked / runs > 0 && picked / runs <= 12);
+    SLRR_REQUIRE(picked / runs > 12 && picked / runs <= 64);
   }
   // A second visit (cached props, new shell) attaches the same lights again.
   for (auto *child : shells) gameref_remove(child);
@@ -294,7 +294,7 @@ SLRR_TEST(selection_budget_groups_and_fade) {
   brake.group = 1;
   lights->push_back(brake);
   SceneryLight distant = lights->front();
-  distant.position = {0.f, 5.f, -400.f};
+  distant.position = {0.f, 5.f, -700.f};
   lights->push_back(distant);
   SLRR_REQUIRE(!scenery_lights_attach(&r.parent, nullptr));
   SLRR_REQUIRE(!scenery_lights_attach(nullptr, lights));
@@ -346,12 +346,80 @@ SLRR_TEST(selection_budget_groups_and_fade) {
   script_lights_clear();
   SLRR_REQUIRE(scenery_lights_count() == 0);
 }
+SLRR_TEST(selection_frustum_and_distance) {
+  Registry r;
+  auto lights = std::make_shared<std::vector<SceneryLight>>();
+  // A straight street: a lamp every 30 m on both sides, 1.2 km long, centred
+  // on the eye, so half of it is behind the camera.
+  for (int i = -20; i <= 20; ++i)
+    for (float side : {-8.f, 8.f}) {
+      SceneryLight light;
+      light.position = {side, 7.8f, -30.f * i}; // render z = 30 * i
+      light.range = 500.f;
+      light.group = kLightGroupCity;
+      light.lights_scene = true;
+      lights->push_back(light);
+    }
+  SLRR_REQUIRE(scenery_lights_attach(&r.parent, lights));
+  const auto matrix = [&](void *parent, float *m) { return identity(parent, m, &r.hidden); };
+  // Looking down +z (render): one plane z >= 0, the others accept everything.
+  SceneryLightFrustum frustum{};
+  for (auto &plane : frustum) plane = {0.f, 0.f, 0.f, 1.f};
+  frustum[0] = {0.f, 0.f, 2.f, 0.f}; // not normalised on purpose
+  const auto all = scenery_lights_select({0, 2, 0}, 64, kLightGroupCity, matrix);
+  const auto ahead = scenery_lights_select({0, 2, 0}, 64, kLightGroupCity, matrix, &frustum);
+  size_t behind_spheres = 0;
+  for (const auto &pick : ahead) {
+    // Only lamps whose 45 m sphere reaches the visible half-space.
+    SLRR_REQUIRE(pick.position[2] >= -kSceneryLightMaxRange);
+    if (pick.position[2] < 0.f) ++behind_spheres;
+  }
+  std::printf("street: %zu lamps without frustum, %zu with; farthest ahead %.0f m\n",
+              all.size(), ahead.size(), ahead.empty() ? 0.f : ahead.back().distance);
+  // Without the frustum the budget is spent on both directions (lamps tied
+  // with the cut fade to 0 and are dropped).
+  SLRR_REQUIRE(all.size() > 56 && all.size() <= 64 && ahead.size() < all.size());
+  SLRR_REQUIRE(behind_spheres == 2 * 1); // the pair at z = -30 still reaches z >= 0
+  // The whole visible street fits: every lamp ahead out to the distance limit.
+  size_t expected = 0;
+  for (const auto &light : *lights)
+    if (-light.position[2] >= -kSceneryLightMaxRange &&
+        std::hypot(light.position[0], light.position[1] - 2.f, light.position[2]) <
+            kSceneryLightMaxDistance)
+      ++expected;
+  SLRR_REQUIRE(ahead.size() == expected);
+  // Near lamps are at full power; the last ones fade to ~0 before 500 m.
+  SLRR_REQUIRE(close_to(ahead.front().intensity, kSceneryLightIntensity));
+  SLRR_REQUIRE(ahead.back().distance > 400.f && ahead.back().intensity < .05f);
+  // Driving along the street: a lamp entering from far ahead has no power.
+  std::map<const SceneryLight *, float> previous;
+  float entering = 0.f;
+  for (float z = -100.f; z <= 100.f; z += .1f) {
+    auto moved = frustum;
+    moved[0][3] = -2.f * z;
+    std::map<const SceneryLight *, float> now;
+    for (const auto &pick : scenery_lights_select({0, 2, z}, 64, kLightGroupCity, matrix, &moved))
+      now[pick.source] = pick.intensity;
+    if (z > -100.f)
+      for (const auto &[light, value] : now)
+        if (!previous.contains(light)) {
+          // Entering from far ahead must be faded out; entering from behind
+          // (sphere crossing the view plane) lights nothing visible yet.
+          if (light->position[2] * -1.f > z + kSceneryLightMaxRange)
+            entering = std::max(entering, value);
+        }
+    previous = std::move(now);
+  }
+  std::printf("largest power of a lamp entering far ahead: %.4f\n", entering);
+  SLRR_REQUIRE(entering < .01f);
+  script_lights_clear();
+}
 } // namespace
 
 int main() {
   const standalone::Test tests[] = {
       parser_keywords_and_comments, parser_rejects_malformed_values,
       stock_light_resources, valo_city_lamps_registered_with_their_shell,
-      selection_budget_groups_and_fade};
+      selection_budget_groups_and_fade, selection_frustum_and_distance};
   return standalone::run("scenery_lights", tests);
 }

@@ -2730,33 +2730,51 @@ city at night.
   The city group is enabled by `src/resources/scene_sun.cpp:scene_sun_is_night`
   (before 06:00 or from 18:30, the night-facade window); other groups (car
   brake/indicator bits) stay off; `fake*` lights never light the scene.
-  `src/resources/script_lights.cpp:scenery_lights_select` picks the nearest 12
-  within 250 m of the eye and fades each one over 30 m before the first
-  excluded light, so the set changes without pops (largest change per 5 cm of
-  eye travel in the test: 0.004).
-- Shader budget: the 12 lights reuse the fixture uniforms (`kFixtureLights`)
-  as omni lights: `SpotLight::omni`, direction w = -2 and xyz = attenuation.
-  `shaders/scene_shadow.sh` skips the cone and the fixture shadow for them and
-  uses the stock falloff 1/(c + l·d + q·d²) inside the range window
-  saturate(1 − (d²/r²)²)². Outside garages the fixture shadow atlas is never
-  built (`src/render/bgfx_shadows.cpp:update_fixture_shadows`), so the lights
-  are unshadowed. No new uniforms or programs.
+  `src/resources/script_lights.cpp:scenery_lights_select` keeps lamps whose
+  45 m light sphere meets the view frustum (a lamp outside it lights no visible
+  pixel), then the nearest 64 within 500 m. Each fades to 0 over
+  min(150 m, 40 % of the cut distance, at least 20 m) before the first excluded
+  lamp or the 500 m limit, so lamps enter and leave the set with no power and
+  near lamps stay at full power. On a straight street (lamps every 30 m on
+  both sides) the whole visible street fits: 36 lamps ahead out to 480 m, the
+  last at 0.04 of full power.
+- History: the first version (`1df1452`) reused the 12 garage fixture slots,
+  nearest 12 within 250 m, with no frustum test. In game (user, 20 November
+  2026) lamps visibly appeared only a few lamps ahead while driving.
+- Shader budget: a separate lamp array, `kSceneryLamps` = 64
+  (`src/render/bgfx_lib_backend.hpp`), `u_lampParams` plus three vec4[64]
+  arrays (position + range, colour × intensity, attenuation), 193 vec4 of the
+  fragment constants, bound with the fixtures in
+  `src/render/bgfx_lighting.cpp:bind_fixture_lights` (same enable: previews
+  and lamp glass get none). `shaders/scene_shadow.sh:lampLighting` runs in
+  `fs_mesh` (instanced props included) and `fs_vehicle`: unshadowed, no cone,
+  stock falloff 1/(c + l·d + q·d²) inside the window saturate(1 − (d²/r²)²)²,
+  and an early `continue` when the pixel is outside a lamp's range. Garage
+  fixtures (12, shadowed) are unchanged and never hold scenery lamps.
 - Brightness (first pass, not yet validated in game): intensity 0.8 ×
   authored diffuse, range capped at 45 m (authored street range is 500 m)
   (`kSceneryLightIntensity`, `kSceneryLightMaxRange` in
   `include/slrr/script_lights.hpp`). In the GPU test a lamp at 7.8 m over a
   road with 0.08 ambient adds 161/255 red at its foot and 39 at a corner 30 m
   away.
-- Cost: selection over all 3,736 Valo City lights takes about 7 µs per frame
-  (`tests/test_scenery_lights.cpp`, Release). The per-pixel cost is up to 12
-  unshadowed point evaluations in `fs_mesh`/`fs_vehicle`; frame time was not
+- Cost: selection over all 3,736 Valo City lights takes about 8.5 µs per frame
+  (`tests/test_scenery_lights.cpp`, Release). GPU, `scene_shadow_gpu` case
+  `lamp_cost` on this machine: 1920×1080, a street-level road over the lower
+  half drawn as 8 layers (about 8 M shaded pixels), GPU timer per frame: no
+  lamps 0.21 ms, 12 street lamps 0.35 ms, 64 street lamps 0.83 ms; 12 and 64
+  lamps all in range of every pixel 0.46 and 1.50 ms. Per million shaded
+  pixels that is about 0.08 ms for 64 street lamps and 0.16 ms worst case. Not
   measured in game because the bench writes to the installed game root.
 - Validation: `tests/test_scenery_lights.cpp` (parser, every stock payload,
   Valo City registration count against an independent ICFG scan, kislampa
   pose, shell removal and revisit, selection budget/groups/day/fade);
   `tests/test_scene_shadow_gpu.cpp` case `scenery_lamps` (night lights the road
-  through `fs_mesh`, noon equals the unlit image, option 4 off and
-  glow-only/non-city lights select nothing). No in-game validation yet.
+  through `fs_mesh`, noon equals the unlit image, option 4 off, glow-only,
+  non-city and behind-camera lights select nothing, a zero-power or
+  out-of-range lamp leaves the image unchanged) and `lamp_cost` (timing).
+  `selection_frustum_and_distance` checks frustum culling, the 500 m street
+  and that a lamp entering far ahead has no power. In-game: `1df1452` worked
+  but lamps popped in; the 64-lamp version is not validated yet.
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
   `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).

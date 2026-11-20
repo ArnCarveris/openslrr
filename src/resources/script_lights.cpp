@@ -98,10 +98,22 @@ std::vector<std::pair<void *, SceneryLightList>> scenery_lights_all() {
 std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
                       uint32_t groups_on,
-                      const std::function<bool(void *, float *)> &matrix) {
+                      const std::function<bool(void *, float *)> &matrix,
+                      const SceneryLightFrustum *frustum) {
   std::vector<SceneryLightPick> candidates;
   if (!budget || !groups_on || !matrix)
     return candidates;
+  // Normalised planes, so the sphere test uses metres.
+  SceneryLightFrustum planes{};
+  if (frustum)
+    for (size_t i = 0; i < planes.size(); ++i) {
+      const auto &q = (*frustum)[i];
+      const float length = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+      if (length > 0.f && std::isfinite(length))
+        planes[i] = {q[0] / length, q[1] / length, q[2] / length, q[3] / length};
+      else
+        planes[i] = {0.f, 0.f, 0.f, 1.f}; // degenerate: accept everything
+    }
   constexpr float limit2 = kSceneryLightMaxDistance * kSceneryLightMaxDistance;
   for (const auto &[parent, list] : g_scenery_lights) {
     float m[16];
@@ -127,7 +139,16 @@ scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
       pick.range = std::min(light.range, kSceneryLightMaxRange);
       pick.distance = std::sqrt(d2);
       pick.source = &light;
-      if (pick.range > .1f)
+      if (!(pick.range > .1f))
+        continue;
+      bool visible = true;
+      if (frustum)
+        for (const auto &q : planes)
+          if (q[0] * p[0] + q[1] * p[1] + q[2] * p[2] + q[3] < -pick.range) {
+            visible = false;
+            break;
+          }
+      if (visible)
         candidates.push_back(pick);
     }
   }
@@ -147,9 +168,9 @@ scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
     candidates.resize(budget);
   }
   std::sort(candidates.begin(), candidates.end(), nearer);
+  const float band = std::clamp(cutoff * .4f, 20.f, kSceneryLightFadeBand);
   for (auto &pick : candidates) {
-    const float fade =
-        std::clamp((cutoff - pick.distance) / kSceneryLightFadeBand, 0.f, 1.f);
+    const float fade = std::clamp((cutoff - pick.distance) / band, 0.f, 1.f);
     pick.intensity = kSceneryLightIntensity * fade * fade * (3.f - 2.f * fade);
   }
   std::erase_if(candidates, [](const SceneryLightPick &pick) {

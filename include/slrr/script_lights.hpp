@@ -72,16 +72,19 @@ size_t scenery_lights_count();
 // (canonical parent key, list) pairs; order is unspecified.
 std::vector<std::pair<void *, SceneryLightList>> scenery_lights_all();
 
-// Renderer selection for scenery lights outside garages. Eye and output
-// positions are render space (script Z flipped). `matrix` returns a parent's
-// drawn script matrix (scene_instances_render_matrix); parents without one
-// are skipped. Only lights that light the scene and whose group is enabled
-// (group & groups_on) are candidates; the nearest `budget` within
-// kSceneryLightMaxDistance win. Intensity fades to 0 as a light nears the
-// first excluded candidate or the distance limit, so the set changes without
-// pops.
-inline constexpr float kSceneryLightMaxDistance = 250.f;
-inline constexpr float kSceneryLightFadeBand = 30.f;
+// Renderer selection for scenery lights outside garages. Eye, frustum planes
+// and output positions are render space (script Z flipped). `matrix` returns
+// a parent's drawn script matrix (scene_instances_render_matrix); parents
+// without one are skipped. Only lights that light the scene, whose group is
+// enabled (group & groups_on) and, with a frustum, whose light sphere (capped
+// range) meets it are candidates: a lamp whose sphere is outside the view
+// lights no visible pixel. The nearest `budget` within
+// kSceneryLightMaxDistance win. Intensity fades to 0 over
+// min(kSceneryLightFadeBand, 40 % of the cut distance, at least 20 m) before
+// the first excluded candidate or the distance limit, so a lamp enters and
+// leaves the set with no contribution while near lamps stay at full power.
+inline constexpr float kSceneryLightMaxDistance = 500.f;
+inline constexpr float kSceneryLightFadeBand = 150.f;
 // Lighting range cap: authored street ranges (500 m) would make each lamp
 // light the whole view; the shader window ends the light at this distance.
 inline constexpr float kSceneryLightMaxRange = 45.f;
@@ -94,8 +97,10 @@ struct SceneryLightPick {
   float distance = 0.f;  // to the eye
   const SceneryLight *source = nullptr;
 };
+using SceneryLightFrustum = std::array<std::array<float, 4>, 6>;
 std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
                       uint32_t groups_on,
-                      const std::function<bool(void *, float *)> &matrix);
+                      const std::function<bool(void *, float *)> &matrix,
+                      const SceneryLightFrustum *frustum = nullptr);
 } // namespace slrr

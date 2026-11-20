@@ -1228,11 +1228,14 @@ script space (`scenery_lights_attach`). They leave the registry with the shell
 
 Outside garages, with Local lights (option 4) on, lights of the city group
 (bit 4) light the scene at night (`scene_sun_is_night`); other groups stay
-off. The renderer keeps the nearest 12 within 250 m and fades them near the
-cut. They use the 12 fixture slots as unshadowed omni lights with the stock
+off. The renderer keeps lamps whose capped light sphere meets the view
+frustum, the nearest 64 within 500 m, and fades each to zero before the cut,
+so no lamp appears or disappears with power. They have their own unshadowed
+lamp array (64 entries, separate from the 12 garage fixtures) with the stock
 D3D attenuation 1/(c + l·d + q·d²), range capped at 45 m and intensity 0.8 ×
-diffuse. Scenery spots are drawn as omni lights, and flares are not drawn.
-Garages keep the fixture path of #235 unchanged.
+diffuse, evaluated in the mesh and vehicle shaders. Scenery spots are drawn as
+omni lights, and flares are not drawn. Garages keep the fixture path of #235
+unchanged.
 
 ## 13. Interface, input, and options
 

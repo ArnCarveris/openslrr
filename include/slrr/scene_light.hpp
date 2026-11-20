@@ -24,6 +24,21 @@ struct PointLight {
   }
   bool operator==(const PointLight &) const = default;
 };
+// Unshadowed omnidirectional scenery lamp (#237): street lamps outside
+// garages. Stock D3D falloff 1/(c + l*d + q*d*d) inside a range window.
+struct LampLight {
+  std::array<float, 3> position{}, color{1, 1, 1}, attenuation{1, 0, 0};
+  float intensity = 1.f, range = 45.f;
+  bool valid() const {
+    for (int i = 0; i < 3; ++i)
+      if (!std::isfinite(position[i]) || !std::isfinite(color[i]) ||
+          color[i] < 0 || !std::isfinite(attenuation[i]) || attenuation[i] < 0)
+        return false;
+    return attenuation[0] + attenuation[1] + attenuation[2] > 0 &&
+           std::isfinite(intensity) && intensity >= 0 &&
+           std::isfinite(range) && range > .1f;
+  }
+};
 // Broad fixture source with an explicit hood/cone, separate from point
 // fallback.
 struct SpotLight {
@@ -32,23 +47,7 @@ struct SpotLight {
   float intensity = 24.f, range = 20.f;
   float outer_cos =
       .173648f; // Fixed 65-degree inner / default 80-degree outer half-angle
-  // Omnidirectional scenery light (#237): no cone, no shadow, and the stock
-  // D3D falloff 1/(c + l*d + q*d*d) instead of 1/d^2. Direction and outer_cos
-  // are ignored. The fixture uniforms carry it as direction = attenuation,
-  // w = -2.
-  bool omni = false;
-  std::array<float, 3> attenuation{1.f, 0.f, 0.f};
   bool valid() const {
-    if (omni) {
-      for (int i = 0; i < 3; ++i)
-        if (!std::isfinite(position[i]) || !std::isfinite(color[i]) ||
-            color[i] < 0 || !std::isfinite(attenuation[i]) ||
-            attenuation[i] < 0)
-          return false;
-      return attenuation[0] + attenuation[1] + attenuation[2] > 0 &&
-             std::isfinite(intensity) && intensity >= 0 &&
-             std::isfinite(range) && range > .1f;
-    }
     float n = 0;
     for (int i = 0; i < 3; ++i) {
       if (!std::isfinite(position[i]) || !std::isfinite(direction[i]) ||

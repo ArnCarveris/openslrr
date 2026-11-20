@@ -17,8 +17,6 @@ vec2 clampReceiverGradient(vec2 gradient,float limit)
 }
 // Bounded ceiling emitters share one downward projection each, not six cube
 // faces per tube. The housing limits the direct source to its lower hemisphere.
-// A direction w below -1.5 marks an omni scenery light (#237): no cone, no
-// shadow, xyz = D3D attenuation (c, l, q) for 1/(c + l*d + q*d*d).
 uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
 uniform vec4 u_fixturePositions[12];
 uniform vec4 u_fixtureColors[12];
@@ -38,18 +36,12 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
         vec3 delta=u_fixturePositions[i].xyz-world;
         float d2=max(dot(delta,delta),0.001);
         vec3 toward=delta*inversesqrt(d2);
-        bool omni=u_fixtureDirections[i].w<-1.5;
-        float cone=omni?1.0:smoothstep(u_fixtureDirections[i].w,0.422618,
+        float cone=smoothstep(u_fixtureDirections[i].w,0.422618,
                              dot(-toward,u_fixtureDirections[i].xyz));
         float range=u_fixturePositions[i].w;
         float window=saturate(1.0-pow(d2/(range*range),2.0));
-        float falloff=1.0/max(d2,0.25);
-        if(omni) {
-            vec3 att=u_fixtureDirections[i].xyz;
-            falloff=1.0/max(att.x+att.y*sqrt(d2)+att.z*d2,0.25);
-        }
         float visibility=1.0;
-        if(u_fixtureParams.w>0.5 && !omni) {
+        if(u_fixtureParams.w>0.5) {
             vec4 clip=mul(u_fixtureMatrices[i],vec4(world+toward*0.015,1.0));
             vec3 p=clip.xyz/max(clip.w,0.0001);
             // Evaluate derivatives before the varying bounds branch. Compare
@@ -99,8 +91,8 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
                 }
             }
         }
-        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window*
-                        falloff)*cone*visibility;
+        vec3 radiance=u_fixtureColors[i].rgb*(u_fixtureColors[i].w*window*window/
+                        max(d2,0.25))*cone*visibility;
         float facing=max(dot(n,toward),0.0);
         diffuse+=radiance*facing;
         if(specular) {
@@ -108,6 +100,33 @@ void fixtureLighting(vec3 n,vec3 viewDirection,vec3 world,float power,bool specu
             highlight+=radiance*facing*pow(max(dot(n,h),0.0),power);
         }
     }
+}
+
+// Scenery lamps (#237): street lamps outside garages, unshadowed and
+// omnidirectional, separate from the 12 garage fixtures. Count in x.
+uniform vec4 u_lampParams;
+uniform vec4 u_lampPositions[64];   // render-space xyz, range (metres)
+uniform vec4 u_lampColors[64];      // rgb * intensity
+uniform vec4 u_lampAttenuation[64]; // D3D c, l, q: 1/(c + l*d + q*d*d)
+vec3 lampLighting(vec3 n,vec3 world)
+{
+    vec3 sum=vec3(0.0,0.0,0.0);
+    for(int i=0;i<64;++i) {
+        if(float(i)>=u_lampParams.x) break;
+        vec3 delta=u_lampPositions[i].xyz-world;
+        float r2=u_lampPositions[i].w*u_lampPositions[i].w;
+        float d2=dot(delta,delta);
+        // Most lamps are far from a given pixel: skip them before any
+        // transcendental work.
+        if(d2>=r2) continue;
+        d2=max(d2,0.001);
+        float inv=inversesqrt(d2);
+        float facing=max(dot(n,delta*inv),0.0);
+        float window=saturate(1.0-(d2/r2)*(d2/r2));
+        vec3 a=u_lampAttenuation[i].xyz;
+        sum+=u_lampColors[i].rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+    }
+    return sum;
 }
 
 // Independent interior daylight field; ambient is never multiplied by it.

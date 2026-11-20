@@ -103,7 +103,7 @@ this API: the engine reads them from the map objects (#237).
 
 At night (18:30 to 06:00) the street lamps placed in the maps light the road
 around them. The engine reads the lamps' own light resources, so no class is
-patched. The nearest 12 lamps are lit and fade in and out with distance; lamps
+patched. Up to 64 lamps in view, out to 500 m, are lit and fade in with distance; lamps
 that only glow in the stock game (`fake point`) add no light. They need
 **Local lights**; switching it off turns them off.
 

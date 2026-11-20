@@ -382,6 +382,14 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_fixture_colors_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fixture_directions_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fixture_matrices_=BGFX_INVALID_HANDLE;
+  // Scenery lamps (#237), outside garages. kSceneryLamps matches the arrays
+  // in shaders/scene_shadow.sh (3 x 64 vec4 of the fragment constants).
+  static constexpr size_t kSceneryLamps=64;
+  std::vector<LampLight> scenery_lamps_;
+  bgfx::UniformHandle u_lamp_params_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_positions_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_colors_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_lamp_attenuation_=BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
   bool fixture_shadow_active_=false;
   uint16_t fixture_shadow_tile_=512;

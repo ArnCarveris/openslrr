@@ -135,9 +135,7 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
       const auto& light=fixture_lights_[i];
       positions[i]={light.position[0],light.position[1],light.position[2],light.range};
       colors[i]={light.color[0],light.color[1],light.color[2],light.intensity};
-      directions[i]=light.omni
-          ? std::array<float,4>{light.attenuation[0],light.attenuation[1],light.attenuation[2],-2.f}
-          : std::array<float,4>{light.direction[0],light.direction[1],light.direction[2],light.outer_cos};
+      directions[i]={light.direction[0],light.direction[1],light.direction[2],light.outer_cos};
     }
     bgfx::setUniform(u_fixture_positions_,positions.data(),uint16_t(count));
     bgfx::setUniform(u_fixture_colors_,colors.data(),uint16_t(count));
@@ -146,6 +144,23 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   }
   bgfx::setTexture(7,s_fixture_shadow_,shadows?fixture_shadow_tex_:depth_white_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
+  // Scenery lamps (#237) follow the same enable as the fixtures: previews and
+  // emissive lamp glass receive none.
+  const auto lamps=enabled?std::min(scenery_lamps_.size(),kSceneryLamps):size_t(0);
+  const float lamp_params[4]={float(lamps),0.f,0.f,0.f};
+  bgfx::setUniform(u_lamp_params_,lamp_params);
+  if(lamps) {
+    std::array<std::array<float,4>,kSceneryLamps> positions{},colors{},attenuation{};
+    for(size_t i=0;i<lamps;++i) {
+      const auto& lamp=scenery_lamps_[i];
+      positions[i]={lamp.position[0],lamp.position[1],lamp.position[2],lamp.range};
+      colors[i]={lamp.color[0]*lamp.intensity,lamp.color[1]*lamp.intensity,lamp.color[2]*lamp.intensity,0.f};
+      attenuation[i]={lamp.attenuation[0],lamp.attenuation[1],lamp.attenuation[2],0.f};
+    }
+    bgfx::setUniform(u_lamp_positions_,positions.data(),uint16_t(lamps));
+    bgfx::setUniform(u_lamp_colors_,colors.data(),uint16_t(lamps));
+    bgfx::setUniform(u_lamp_attenuation_,attenuation.data(),uint16_t(lamps));
+  }
 }
 
 void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {

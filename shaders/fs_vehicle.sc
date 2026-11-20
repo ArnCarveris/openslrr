@@ -77,6 +77,7 @@ void main()
     vec3 fixtureView=normalize(mul(u_invView,vec4(-v_viewPos,0.0)).xyz);
     fixtureLighting(fixtureNormal,fixtureView,v_worldPos,max(u_vehicleSpec.a,1.0),true,fixtureDiffuse,fixtureHighlight);
     illum+=fixtureDiffuse;
+    illum+=lampLighting(fixtureNormal,v_worldPos);
     vec3 color = albedo*illum*bake;
     vec3 viewDir = normalize(-v_viewPos);
     vec3 halfDir = normalize(lightDir + viewDir);

@@ -272,6 +272,10 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_fixture_colors_=bgfx::createUniform("u_fixtureColors",bgfx::UniformType::Vec4,12);
     u_fixture_directions_=bgfx::createUniform("u_fixtureDirections",bgfx::UniformType::Vec4,12);
     u_fixture_matrices_=bgfx::createUniform("u_fixtureMatrices",bgfx::UniformType::Mat4,12);
+    u_lamp_params_=bgfx::createUniform("u_lampParams",bgfx::UniformType::Vec4);
+    u_lamp_positions_=bgfx::createUniform("u_lampPositions",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_colors_=bgfx::createUniform("u_lampColors",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
+    u_lamp_attenuation_=bgfx::createUniform("u_lampAttenuation",bgfx::UniformType::Vec4,uint16_t(kSceneryLamps));
 
 
     // bgfx returns an invalid program, without a message in Release, when the
@@ -464,7 +468,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
           &s_fixture_shadow_, &u_fixture_params_, &u_fixture_positions_,
-          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_}) {
+          &u_fixture_colors_, &u_fixture_directions_, &u_fixture_matrices_,
+          &u_lamp_params_, &u_lamp_positions_, &u_lamp_colors_, &u_lamp_attenuation_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -1146,6 +1151,7 @@ void LibBgfxBackend::update_local_light() {
     local_light_ = {};
     point_light_.reset();
     fixture_lights_.clear();
+    scenery_lamps_.clear();
     // Local lights are their own option (4). Map sunlight (option 3) only
     // controls scenery sunlight; it must not switch the garage lamps off.
     if (!host_enhanced_graphics().local_lights)
@@ -1263,29 +1269,30 @@ void LibBgfxBackend::update_local_light() {
 
 // Street lamps and other scenery lights (#237) outside garages. The city
 // group (cfg `flags 4`) is on at night only; fake* lights never light the
-// scene. The nearest kFixtureLights reuse the fixture uniforms as unshadowed
-// omni lights (update_fixture_shadows runs in garages only), so the shaders
-// and their uniform budget are unchanged; scenery_lights_select fades lights
-// near the cut so the set changes without pops.
+// scene. Up to kSceneryLamps lamps whose light sphere meets the camera
+// frustum get their own unshadowed lamp array (garage fixtures untouched);
+// scenery_lights_select fades lamps near the cut so the set changes without
+// pops.
 void LibBgfxBackend::update_scenery_lights() {
     const uint32_t groups = scene_sun_is_night() ? kLightGroupCity : 0u;
     if (!groups || !scenery_lights_count())
       return;
-    // cull_eye_ is script space (sync_instances); the lights are render space.
+    // cull_eye_ is script space (sync_instances); the lights are render space,
+    // like the frustum planes of the culled view.
     const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
-    const auto picks = scenery_lights_select(eye, kFixtureLights, groups,
+    const auto frustum = view_frustum(cull_view_, cull_proj_);
+    const auto picks = scenery_lights_select(eye, kSceneryLamps, groups,
         [](void* parent, float* matrix) {
           return scene_instances_render_matrix(parent, matrix);
-        });
+        }, &frustum);
     for (const auto& pick : picks) {
-      SpotLight light;
-      light.omni = true;
-      light.position = pick.position;
-      light.color = pick.color;
-      light.attenuation = pick.attenuation;
-      light.intensity = pick.intensity;
-      light.range = pick.range;
-      if (light.valid()) fixture_lights_.push_back(light);
+      LampLight lamp;
+      lamp.position = pick.position;
+      lamp.color = pick.color;
+      lamp.attenuation = pick.attenuation;
+      lamp.intensity = pick.intensity;
+      lamp.range = pick.range;
+      if (lamp.valid()) scenery_lamps_.push_back(lamp);
     }
 }
 
