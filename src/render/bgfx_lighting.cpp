@@ -154,7 +154,8 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled, bool upload_arrays) {
   bgfx::setTexture(7,s_fixture_shadow_,shadows||lamp_shadows?fixture_shadow_tex_:depth_white_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
   const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
-                                     1.f/(fixture_shadow_tile_*3),0.f};
+                                     1.f/(fixture_shadow_tile_*3),
+                                     render_debug().lamp_shadow_reference?1.f:0.f};
   bgfx::setUniform(u_lamp_shadow_params_,lamp_shadow_params);
   if(upload_arrays && all_lamp_shadows) {
     const auto count=uint16_t(all_lamp_shadows);

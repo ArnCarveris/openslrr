@@ -23,6 +23,7 @@ struct RenderDebugOverrides {
   bool lamp_lighting = true;       // street lamps outside garages
   bool lamp_shadows = true;        // scenery lamp shadow tiles
   bool car_lamp_tiles = true;      // car-only lamp shadow tiles
+  bool lamp_shadow_reference = false; // #237 lamp shadow loop (no early-out, full kernel)
   bool reflections = true;         // dynamic reflection cubemap
   bool sky = true;                 // sky dome instances
   bool clouds = true;              // volumetric clouds (with the saved option)
@@ -98,6 +99,7 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   flag("street lamp lighting", o.lamp_lighting, d.lamp_lighting);
   flag("street lamp shadows", o.lamp_shadows, d.lamp_shadows);
   flag("car lamp tiles", o.car_lamp_tiles, d.car_lamp_tiles);
+  flag("lamp shadow reference path", o.lamp_shadow_reference, d.lamp_shadow_reference);
   flag("reflections", o.reflections, d.reflections);
   flag("sky", o.sky, d.sky);
   flag("clouds", o.clouds, d.clouds);

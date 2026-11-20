@@ -855,6 +855,15 @@ struct SceneShadowRegression {
       std::printf("CAR SHADOW GPU 1920x1080, 8 road layers, car moving (ms/frame): no lamp shadows=%.3f "
                   "6 scenery tiles=%.3f scenery + %zu car tiles=%.3f\n",
                   off.first,scenery.first,with_car.second,with_car.first);
+      // #250: the same with each shadow smoothing (Very soft is the 4x4 tent).
+      const int saved_smoothing=host_enhanced_graphics().shadow_smoothing;
+      for(int smoothing=0;smoothing<3;++smoothing) {
+        host_enhanced_graphics().shadow_smoothing=smoothing;
+        const auto timed=measure(true,true);
+        std::printf("CAR SHADOW GPU smoothing=%d scenery + %zu car tiles=%.3f ms (no lamp shadows %.3f)\n",
+                    smoothing,timed.second,timed.first,measure(false,false).first);
+      }
+      host_enhanced_graphics().shadow_smoothing=saved_smoothing;
       bgfx::frame();bgfx::destroy(big_fb);
     }
     bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
@@ -1149,6 +1158,30 @@ struct SceneShadowRegression {
     b.sequential_views_.reset(view_id);
     before=b.light_array_uploads_;
     SLRR_REQUIRE(capture()==per_view && b.light_array_uploads_-before==4);
+    // #250: the early-out lamp shadow path against the #237 reference loop.
+    // Sharp and Soft must match closely (only the receiver gradient is
+    // computed differently); Very soft uses the capped 4-tap kernel.
+    {
+      const int saved_smoothing=host_enhanced_graphics().shadow_smoothing;
+      for(int smoothing=0;smoothing<3;++smoothing) {
+        host_enhanced_graphics().shadow_smoothing=smoothing;
+        render_debug().lamp_shadow_reference=true;
+        const auto reference=capture();
+        render_debug().lamp_shadow_reference=false;
+        const auto fast=capture();
+        int worst=0;unsigned differ=0,shaded=0;
+        for(size_t i=0;i<fast.size();i+=4) for(int c=0;c<3;++c) {
+          const int d=std::abs(int(fast[i+c])-int(reference[i+c]));
+          worst=std::max(worst,d);differ+=d>4;
+        }
+        for(size_t i=0;i<reference.size();i+=4) shaded+=reference[i]>30;
+        std::printf("LAMP EARLY-OUT smoothing=%d: max channel difference %d, %u channels differ by >4 "
+                    "(%u lit pixels)\n",smoothing,worst,differ,shaded);
+        if(smoothing<2) SLRR_REQUIRE(differ<=fast.size()/400);
+        else SLRR_REQUIRE(differ<=fast.size()/50);
+      }
+      host_enhanced_graphics().shadow_smoothing=saved_smoothing;
+    }
     // Submission cost: 2,000 lit draws in one view, per-draw vs per-view arrays.
     b.set_view_sequential(view_id);
     const auto submit_cost=[&](bool cache) {

@@ -3000,3 +3000,30 @@ city at night.
   pass 1 0.26–0.29 ms vs 0.61–0.80 ms full-res (−55 to −65 %), HBAO High
   0.25–0.38 vs 0.55–0.79 ms. Applied to the in-game 2.6 ms that is roughly
   −1.5 to −1.7 ms; confirm in game with the debug menu.
+
+### Street lamp shadow early-out and capped kernel (#250)
+
+- `shaders/scene_shadow.sh:lampLighting` takes `dFdx/dFdy(world)` once per
+  pixel, in uniform control flow, then skips each shadowed lamp whose range
+  does not reach the pixel or that faces away (`dot(n, delta) <= 0`); both
+  give zero radiance, so the skip is exact. The surviving lamps call
+  `shaders/scene_shadow.sh:lampTileVisibilityFast`, which rejects pixels
+  outside the tile before any tap and derives the receiver depth gradient
+  from the world derivatives through the tile matrix (quotient rule on
+  clip.xyz / clip.w, `receiverGradientFrom`) instead of `dFdx(p)`, so it can
+  run after a per-pixel branch.
+- Kernel: Sharp and Soft keep their 2x2 taps; Very soft uses the same 2x2
+  taps on a two-texel grid (4 taps) instead of the 4x4 tent (16). Sun
+  cascades and garage fixtures are unchanged.
+- The #237 loop stays as a reference path behind
+  `render_debug().lamp_shadow_reference` (u_lampShadowParams.w = 1; menu
+  Passes, "Lamp shadow reference path").
+- `scene_shadow_gpu` case `per_view_light_uniforms` compares both paths on the
+  lamp, car-tile and block scene: Sharp and Soft are byte-identical (max
+  channel difference 0); Very soft differs on shadow edges (max 35 levels,
+  1.5 % of channels). Harness timing, 1920×1080, 8 road layers, 50 lamps,
+  6 scenery + 7 car tiles redrawn every frame (noisy): lamp shadow cost over
+  "no lamp shadows" Very soft 1.10 → 0.61 ms, Soft 0.69 → 0.65 ms, Sharp
+  about 1.1 → 0.86 ms. The harness lamps all reach the visible road, so the
+  range early-out saves more in the city, where most pixels are out of range
+  of most shadowed lamps.
