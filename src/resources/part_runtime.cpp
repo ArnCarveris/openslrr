@@ -5660,10 +5660,35 @@ void add_render_box(const PartMatrix &part_frame, Object *render, TopBox &box) {
     box.z1 = std::max(box.z1, z);
   }
 }
-// Engine, body and wheel parts for the damage gauge, placed from above in
-// the chassis frame and normalised to the extent of the chassis renders and
-// body panels: the car the gauge outline stands for. Wheels keep their corner
-// from the chassis slot (type 101 + corner) they hang from.
+// The gauge describes installed locations, not a panel's bent/open pose. Use
+// closed CFG mounts plus intentional setSlotPos, excluding damage slot offsets.
+PartMatrix hud_installed_frame(const Record& parent, int slot_id, Object* part) {
+  const auto* child = record(part);
+  if (!child) return node_local(part);
+  const auto mount = std::find_if(parent.config->slots.begin(), parent.config->slots.end(),
+      [&](const PartSlot& s) { return s.id == slot_id; });
+  const auto mate = std::find_if(child->config->slots.begin(), child->config->slots.end(),
+      [&](const PartSlot& s) { return s.id == child->state.own_slot; });
+  if (mount == parent.config->slots.end() || mate == child->config->slots.end())
+    return node_local(part);
+  const auto scripted = [](const Record& rec, const PartSlot& source) {
+    PartSlot slot = source;
+    if (const auto it = rec.slot_script_pose.find(slot.id); it != rec.slot_script_pose.end()) {
+      if (it->second.pos)
+        std::copy(it->second.p, it->second.p + 3, slot.pose.position.begin());
+      if (it->second.ypr)
+        std::copy(it->second.y, it->second.y + 3, slot.pose.rotation.begin());
+    }
+    return slot;
+  };
+  PartMatrix a, b;
+  if (!part_slot_matrix(*parent.config, scripted(parent, *mount), a) ||
+      !part_slot_matrix(*child->config, scripted(*child, *mate), b)) return node_local(part);
+  return part_matrix_multiply(a, part_matrix_inverse_rigid(b));
+}
+// Engine, body and wheel parts in the rest chassis frame. Prefer chassis-only
+// bounds so removing a panel cannot rescale/reassign the surviving indicators.
+// Wheels keep their corner from the chassis slot (type 101 + corner).
 void hud_damage_parts(const Record &rec, VehicleHudState &state) {
   state.part_count = 0;
   struct Placed {
@@ -5674,6 +5699,7 @@ void hud_damage_parts(const Record &rec, VehicleHudState &state) {
   size_t count = 0;
   TopBox car;
   for (Object *render : rec.renders) add_render_box(eye_matrix(), render, car);
+  const bool chassis_bounds = car.valid();
   const auto visit = [&](auto &&visit, Object *part, const PartMatrix &frame,
                          int corner, int depth) -> void {
     const auto *child = record(part);
@@ -5685,7 +5711,7 @@ void hud_damage_parts(const Record &rec, VehicleHudState &state) {
         : category == 1 ? VehicleHudPart::Kind::Engine : VehicleHudPart::Kind::Body;
     TopBox box;
     for (Object *render : child->renders) add_render_box(frame, render, box);
-    if (category == 2 && corner < 0 && box.any()) {
+    if (!chassis_bounds && category == 2 && corner < 0 && box.any()) {
       car.x0 = std::min(car.x0, box.x0);
       car.x1 = std::max(car.x1, box.x1);
       car.z0 = std::min(car.z0, box.z0);
@@ -5694,20 +5720,23 @@ void hud_damage_parts(const Record &rec, VehicleHudState &state) {
     if (shown && box.any() && count < placed.size()) {
       auto &entry = placed[count++];
       entry.part.kind = kind;
+      entry.part.quarterpanel = kind == VehicleHudPart::Kind::Body &&
+          runtime->tree_instance_of(part, "java.game.parts.bodypart.Quarterpanel");
       entry.part.corner = static_cast<int8_t>(corner);
       entry.part.condition = std::clamp(child->state.wear * child->state.tear, 0.f, 1.f);
       entry.x = .5f * (box.x0 + box.x1);
       entry.z = .5f * (box.z0 + box.z1);
     }
     for (const auto &[slot, grandchild] : child->children)
-      visit(visit, grandchild, part_matrix_multiply(frame, node_local(grandchild)), corner,
-            depth + 1);
+      visit(visit, grandchild,
+            part_matrix_multiply(frame, hud_installed_frame(*child, slot, grandchild)),
+            corner, depth + 1);
   };
   for (const auto &[slot_id, child] : rec.children) {
     int corner = -1;
     for (const auto &slot : rec.config->slots)
       if (slot.id == slot_id && slot.type >= 101 && slot.type <= 104) corner = slot.type - 101;
-    visit(visit, child, node_local(child), corner, 0);
+    visit(visit, child, hud_installed_frame(rec, slot_id, child), corner, 0);
   }
   if (!car.valid()) {
     // No chassis mesh or panel: fall back to the extent of the parts.

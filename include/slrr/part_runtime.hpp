@@ -109,11 +109,13 @@ std::vector<PartVehiclePosition> part_vehicle_positions();
 Object* part_chassis(Object* object);
 Object* part_debug_chassis(Object* object);
 // One installed part as the damage gauge (osd_damage) sees it. `x` and `z`
-// are the centre of its drawn meshes seen from above, normalised to the
-// car's top-down extent: -1 is the left / front edge, +1 the right / rear.
+// are the centre of its meshes in the closed/rest installed pose, normalised
+// to chassis bounds: -1 is the left / front edge, +1 the right / rear.
 struct VehicleHudPart {
   enum class Kind : uint8_t { Engine, Body, Wheel };
   Kind kind = Kind::Body;
+  // Script type, not a CFG filename: only Quarterpanel instances own fender blips.
+  bool quarterpanel = false;
   int8_t corner = -1;   // Wheel: the corner of its chassis slot (101 + corner)
   float x = 0, z = 0;
   float condition = 1;  // Stock Part.getConditionNoAttach: wear * tear
