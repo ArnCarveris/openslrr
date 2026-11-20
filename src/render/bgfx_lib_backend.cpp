@@ -1145,8 +1145,9 @@ void LibBgfxBackend::update_local_light() {
     local_light_ = {};
     point_light_.reset();
     fixture_lights_.clear();
-    if (!garage_ || !host_enhanced_graphics().local_lights ||
-        !host_enhanced_graphics().dynamic_lighting)
+    // Local lights are their own option (4). Map sunlight (option 3) only
+    // controls scenery sunlight; it must not switch the garage lamps off.
+    if (!garage_ || !host_enhanced_graphics().local_lights)
       return;
     for (const auto* node : gameref_directional_lights()) {
       float matrix[16];

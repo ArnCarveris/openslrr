@@ -10,6 +10,11 @@ vec2 shadowReceiverGradient(vec3 p)
         return vec2(dy.y*dx.z-dx.y*dy.z,dx.x*dy.z-dy.x*dx.z)/determinant;
     return vec2(0.0,0.0);
 }
+vec2 clampReceiverGradient(vec2 gradient,float limit)
+{
+    float length2=dot(gradient,gradient);
+    return length2>limit*limit?gradient*(limit*inversesqrt(length2)):gradient;
+}
 // Bounded ceiling emitters share one downward projection each, not six cube
 // faces per tube. The housing limits the direct source to its lower hemisphere.
 uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
@@ -245,6 +250,15 @@ float cascadeVisibility(vec3 world, float distanceToEye)
     // reference depth on the receiver plane, including the widest footprint.
     vec2 g0=shadowReceiverGradient(p0),g1=shadowReceiverGradient(p1);
     vec2 g2=shadowReceiverGradient(p2),g3=shadowReceiverGradient(p3);
+    // A pixel quad that straddles two surfaces (pole on ground, kerb, wall/
+    // floor crease) yields an arbitrary slope; applied across the 4x4
+    // footprint it compares taps against far-off depths. Bound it to a real
+    // receiver slope of 20:1 (about 87 degrees from the light), converted to
+    // this cascade's depth/width units: width 2*extent, depth 2*(extent+768).
+    vec4 extent=u_shadowRanges*1.1;
+    vec4 slopeLimit=vec4(20.0,20.0,20.0,20.0)*extent/(extent+vec4(768.0,768.0,768.0,768.0));
+    g0=clampReceiverGradient(g0,slopeLimit.x);g1=clampReceiverGradient(g1,slopeLimit.y);
+    g2=clampReceiverGradient(g2,slopeLimit.z);g3=clampReceiverGradient(g3,slopeLimit.w);
     // Select only the current and adjacent level; do not sample every tile.
     float s1=step(u_shadowRanges.x,distanceToEye);
     float s2=step(u_shadowRanges.y,distanceToEye);

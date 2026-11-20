@@ -521,7 +521,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       }
       const bool world_mesh = !preview && !instance.sky && !blend && !fixture_emitter;
       // Reflection faces are 256² copies of the city. They keep the sun
-      // and skip the shadow taps.
+      // and receive the same scene shadow taps as the main view.
       const auto& graphics = host_enhanced_graphics();
       const bool procedural_sky = instance.sky && outdoor_lighting_;
       const float sky[4] = {matrix[12], matrix[13], matrix[14],
@@ -675,6 +675,10 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
                            nullptr);
+          // Batched props occlude in the AO prepass, so they must also
+          // receive it. Otherwise fs_mesh reads whatever u_aoSampling the
+          // previous draw left and stages 9/10 are unbound.
+          bind_ambient_occlusion(view_id == ao_world_view_);
 
           uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA |
                            BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
