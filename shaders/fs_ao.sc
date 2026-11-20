@@ -65,10 +65,11 @@ vec3 sampleDelta(vec2 uv,vec3 p) {
     return positionAt(uv)-p;
 }
 float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
-    int directions=u_aoConfig.y<0.5?4:u_aoConfig.y<1.5?6:8;
+    // High runs at half resolution like Medium (#248) with more directions.
+    int directions=u_aoConfig.y<0.5?4:u_aoConfig.y<1.5?6:10;
     int steps=u_aoConfig.y<0.5?3:u_aoConfig.y<1.5?4:6;
     float sum=0.0,r2=u_aoConfig.z*u_aoConfig.z;
-    for(int i=0;i<8;++i) {
+    for(int i=0;i<10;++i) {
         if(i>=directions) break;
         float angle=2.0*PI*(float(i)+rotation)/float(directions);
         vec2 direction=vec2(cos(angle),sin(angle))*radiusUv;
@@ -91,10 +92,11 @@ float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
 // for bgfx. The projected normal and two horizon angles define each cosine-
 // weighted visible arc. No vendor SDK, temporal history or deinterleaving.
 float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
-    int slices=u_aoConfig.y<0.5?2:u_aoConfig.y<1.5?3:4;
+    // High runs at half resolution like Medium (#248) with 5 slices x 8 steps.
+    int slices=u_aoConfig.y<0.5?2:u_aoConfig.y<1.5?3:5;
     int steps=u_aoConfig.y<0.5?4:u_aoConfig.y<1.5?6:8;
     vec3 view=normalize(-p);float visibility=0.0,r2=u_aoConfig.z*u_aoConfig.z;
-    for(int i=0;i<4;++i) {
+    for(int i=0;i<5;++i) {
         if(i>=slices) break;
         float phi=PI*(float(i)+rotation)/float(slices);
         vec2 screenDirection=vec2(cos(phi),sin(phi));

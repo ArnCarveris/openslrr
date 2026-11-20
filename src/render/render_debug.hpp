@@ -40,7 +40,7 @@ struct RenderDebugOverrides {
   int local_shadow_tile = 0;       // 0: from Shadow quality, else 256/512/1024
   int sun_shadow_size = 0;         // 0: from Shadow quality, else 1024/2048/4096
   float cascade_scale = 1.f;       // multiplies the four cascade radii
-  float ao_resolution_scale = 1.f; // multiplies the AO buffer size (0.25-1)
+  float ao_resolution_scale = 1.f; // multiplies the half-res AO buffer (0.25-2, 2 = full)
   bool operator==(const RenderDebugOverrides &) const = default;
 };
 

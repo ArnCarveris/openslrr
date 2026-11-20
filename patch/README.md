@@ -30,8 +30,8 @@ The **Video Options** menu applies the resolution and the Enhanced settings in g
 The menu and ImGui share all of these options. They are saved in `save/game/openslrr_options` and persist across launches. Local lights (4) are independent of scenery sunlight (3): turning sunlight off keeps the garage lamps and their shadows. Resolution, the global shadow toggle, and flares use the game's existing configuration.
 
 AO affects indirect diffuse light in the main world view. It leaves direct sunlight,
-lamps, emission, reflections and UI unchanged. Low/medium use half-resolution AO;
-high uses full resolution. AO is off by default to preserve the existing frame cost.
+lamps, emission, reflections and UI unchanged. All AO qualities run at half
+resolution; high takes more samples per pixel. AO is off by default to preserve the existing frame cost.
 Higher shadow quality increases depth resolution and memory; smoothing changes
 comparison filtering independently. Start with medium quality and soft edges.
 
