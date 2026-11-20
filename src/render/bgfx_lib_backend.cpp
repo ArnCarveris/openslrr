@@ -194,6 +194,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     ao_skin_depth_program_=create_owned_program(bgfx::createEmbeddedShader(k_skin,rt,"vs_skin"),bgfx::createEmbeddedShader(k_fs,rt,"fs_static_shadow"));
     s_ao_depth_=bgfx::createUniform("s_aoDepth",bgfx::UniformType::Sampler);
     s_ao_input_=bgfx::createUniform("s_aoInput",bgfx::UniformType::Sampler);
+    s_ao_linear_=bgfx::createUniform("s_aoLinear",bgfx::UniformType::Sampler);
+    s_ao_normal_=bgfx::createUniform("s_aoNormal",bgfx::UniformType::Sampler);
     s_ao_field_=bgfx::createUniform("s_aoField",bgfx::UniformType::Sampler);
     u_ao_screen_=bgfx::createUniform("u_aoScreen",bgfx::UniformType::Vec4);
     u_ao_projection_=bgfx::createUniform("u_aoProjection",bgfx::UniformType::Vec4);
@@ -434,7 +436,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     for(auto* program:{&ao_program_,&ao_skin_depth_program_}) {
       if(bgfx::isValid(*program)) bgfx::destroy(*program);*program=BGFX_INVALID_HANDLE;
     }
-    for(auto* uniform:{&s_ao_depth_,&s_ao_input_,&s_ao_field_,&u_ao_screen_,&u_ao_projection_,&u_ao_config_,&u_ao_params_,&u_ao_sampling_,&u_ao_field_size_}) {
+    for(auto* uniform:{&s_ao_depth_,&s_ao_input_,&s_ao_linear_,&s_ao_normal_,&s_ao_field_,&u_ao_screen_,&u_ao_projection_,&u_ao_config_,&u_ao_params_,&u_ao_sampling_,&u_ao_field_size_}) {
       if(bgfx::isValid(*uniform)) bgfx::destroy(*uniform);*uniform=BGFX_INVALID_HANDLE;
     }
     if (bgfx::isValid(static_shadow_program_)) bgfx::destroy(static_shadow_program_);
@@ -1637,11 +1639,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 144> base_order{};
+    std::array<uint16_t, 145> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
       if (i == kWorldView) {
-        for(uint16_t f=128;f<144;++f) base_order[base_slot++]=f;
+        for(uint16_t f=128;f<145;++f) base_order[base_slot++]=f;
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
         base_order[base_slot++] = 66;
@@ -1662,10 +1664,10 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 144> order{};
+      std::array<uint16_t, 145> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
-      for(uint16_t f=128;f<144;++f) order[slot++]=f;
+      for(uint16_t f=128;f<145;++f) order[slot++]=f;
       if (point_shadow_active_) order[slot++] = 64;
       order[slot++] = 65;
       order[slot++] = 66;

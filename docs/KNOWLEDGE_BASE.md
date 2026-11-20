@@ -2905,7 +2905,8 @@ city at night.
   (`draw_render_views`, `ImGui::Image` of the D32F atlases and the R8 AO
   buffer), Session and host, Options (saved). View names come from
   `src/render/render_debug.hpp:render_debug_view_name`; views 128–135 are the
-  fixture or lamp tiles, 136 the car lamp tiles, 140–143 AO.
+  fixture or lamp tiles, 136 the car lamp tiles, 140–144 AO (prepass,
+  geometry since #256, pass 1, two filters).
 - Clipboard and log: bgfx's Dear ImGui build defines
   `IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS` (bgfx `imconfig.h`), so
   `ImGui::SetClipboardText` only filled an in-process buffer and Copy never
@@ -3120,3 +3121,30 @@ city at night.
   (noisy, ±0.2 ms on a loaded machine). LOD selection itself costs about
   0.03–0.05 ms here, so the +0.3 ms of collection seen in game at #252 is
   mostly not LOD selection; it is within frame-to-frame noise of that zone.
+
+### AO geometry pass and depth fetches (#256)
+
+- New view 141 (`src/render/bgfx_ao.cpp:update_ambient_occlusion`, shader
+  pass 3 of `shaders/fs_ao.sc`) writes, at AO resolution, the linear view
+  depth (R32F, 0 = no surface) and the 9-tap reconstructed normal (RGBA32F,
+  w = valid) of the full-resolution depth texel under each AO texel centre.
+  AO pass 1 and both filters read the centre position and normal from it
+  (2 fetches instead of 10), and the filter taps read the linear depth once
+  per tap; positions are rebuilt at the same full-resolution texel centres,
+  so the filters and the centre terms are exact. AO passes moved to views
+  142–144; the views ordered before the world now run 128–144
+  (`draw_previews`).
+- Pass 1 samples the AO-resolution linear depth (one fetch per sample, a
+  quarter of the texels over the same radius) instead of reading the
+  full-resolution D32F twice per sample. `render_debug().ao_reference`
+  ("AO reference sampling") keeps the full-resolution depth, now with one
+  fetch per sample, for comparison. Depth mips chosen by sample distance were
+  not added (the half-resolution depth already removed most of the cost).
+- AO test, reference vs new on the blocker scene: GTAO max 2–7 levels and no
+  pixel off by more than 8 at every quality; HBAO max 48–55 levels on
+  0.7–0.8 % of pixels (its few radial samples move to the coarser grid),
+  contact area within ±10 %.
+- Harness timing, GTAO High, 2560×1440, 3 m radius, a street scene filling
+  the screen (400 m ground, 400 boxes): pass 1 1.61–1.93 ms → 0.57–0.74 ms;
+  the new geometry pass costs 0.02–0.03 ms and the filters 0.09–0.15 ms.
+  The old numbers match the 1.8 ms Elias measured in game.
