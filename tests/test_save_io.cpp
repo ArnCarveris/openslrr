@@ -1,4 +1,6 @@
 #include "save_io_fixture.hpp"
+#include "slrr/paint_texture.hpp"
+#include "slrr/gameref.hpp"
 #include <bit>
 
 namespace {
@@ -94,6 +96,108 @@ SLRR_TEST(raw_file_resource_write_keeps_its_original_id) {
   SLRR_REQUIRE(f.open("save/raw", 0) == 1);
   SLRR_REQUIRE(f.read_resource() == 0x12340056);
   f.close();
+}
+SLRR_TEST(painter_texture_roundtrips_through_the_save_trailer) {
+  Fixture f;
+  slrr::PaintImage image;
+  image.width = 16;
+  image.height = 8;
+  image.rgba.resize(16 * 8 * 4);
+  for (size_t i = 0; i < image.rgba.size(); ++i) image.rgba[i] = static_cast<uint8_t>(i * 7);
+  const uint32_t id = slrr::paint_texture_create(image);
+  SLRR_REQUIRE(id != 0);
+  SLRR_REQUIRE(f.open("save/painted", 1) == 1);
+  SLRR_REQUIRE(f.write_resource(int32_t(id), 7) == 4);
+  SLRR_REQUIRE(f.write_resource(int32_t(id), 7) == 4);  // same blob twice
+  SLRR_REQUIRE(f.write_int(99) == 4);
+  f.close();
+  slrr::paint_texture_release(id);
+  SLRR_REQUIRE(f.open("save/painted", 0) == 1);
+  const auto restored = static_cast<uint32_t>(f.read_resource());
+  SLRR_REQUIRE(slrr::paint_texture_exists(restored));
+  SLRR_REQUIRE(static_cast<uint32_t>(f.read_resource()) == restored);
+  SLRR_REQUIRE(f.read_int() == 99);
+  const slrr::PaintImage* back = slrr::paint_texture_committed(restored);
+  SLRR_REQUIRE(back && back->width == 16 && back->height == 8 && back->rgba == image.rgba);
+  f.close();
+  slrr::paint_texture_release(restored);
+
+  // A dead Painter id keeps an empty blob (the dynamic-resource contract)
+  // that loads as null, keeping later fields aligned.
+  SLRR_REQUIRE(f.open("save/dead", 1) == 1);
+  SLRR_REQUIRE(f.write_resource(int32_t(id), 7) == 4);
+  SLRR_REQUIRE(f.write_int(5) == 4);
+  f.close();
+  SLRR_REQUIRE(f.open("save/dead", 0) == 1);
+  SLRR_REQUIRE(f.read_resource() == 0);
+  SLRR_REQUIRE(f.read_int() == 5);
+  f.close();
+}
+SLRR_TEST(stock_side_file_texture_is_loaded_for_an_empty_blob) {
+  Fixture f;
+  // Stock layout: payload, then one empty type-7 blob and no packs; the
+  // image is "<save>.<ordinal>" beside the file.
+  std::vector<uint8_t> file = {'S', 'D', 'A', 'T', 0x00, 0x01, 0x02, 0x00};
+  auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) file.push_back(uint8_t(v >> (8 * i))); };
+  u32(1);  // payload: the wired ordinal
+  u32(1); u32(1); u32(7); u32(0);  // one blob: ordinal 1, kind 7, size 0
+  u32(0);  // no packs
+  u32(20);
+  fs::create_directories(f.root / "save/stock");
+  { std::ofstream out(f.root / "save/stock/PlayerCar0", std::ios::binary);
+    out.write(reinterpret_cast<const char*>(file.data()), std::streamsize(file.size())); }
+  slrr::PaintImage image;
+  image.width = image.height = 4;
+  image.rgba.assign(64, 200);
+  const auto png = slrr::paint_png_encode(image);
+  { std::ofstream out(f.root / "save/stock/PlayerCar0.1", std::ios::binary);
+    out.write(reinterpret_cast<const char*>(png.data()), std::streamsize(png.size())); }
+  SLRR_REQUIRE(f.open("save/stock/PlayerCar0", 0) == 1);
+  const auto restored = static_cast<uint32_t>(f.read_resource());
+  SLRR_REQUIRE(slrr::paint_texture_exists(restored));
+  SLRR_REQUIRE(slrr::paint_texture_committed(restored)->rgba == image.rgba);
+  f.close();
+  slrr::paint_texture_release(restored);
+}
+SLRR_TEST(file_backed_decal_has_an_id_and_survives_save_load_and_resource_ownership) {
+  Fixture f;
+  slrr::gameref_clear();
+  slrr::register_resref_natives(f.vm,f.packs,f.sections);
+  slrr::register_painter_natives(f.vm);
+  slrr::PaintImage image;
+  image.width=image.height=4;
+  image.rgba.assign(64,128);
+  const auto png=slrr::paint_png_encode(image);
+  {std::ofstream out(f.root/"decal.png",std::ios::binary);
+   out.write(reinterpret_cast<const char*>(png.data()),std::streamsize(png.size()));}
+  slrr::Object texture,path,restored_ref,decal;
+  path.str="decal.png";
+  auto resource=[&](const char* method,const char* sig,slrr::Object* self,std::vector<slrr::Value> args={}){
+    return f.registry.invoke("java.util.resource.ResourceRef",method,sig,self,args);
+  };
+  resource("makeTexture","(Ljava.util.resource.ResourceRef;Ljava.lang.String;)V",&texture,
+           {slrr::Value::make_obj(nullptr),slrr::Value::make_obj(&path)});
+  const auto id=resource("id","()I",&texture).v.i;
+  SLRR_REQUIRE(id>=0x70000000);
+  // Catalog buys new Decal(texture.id()), which binds another wrapper.
+  resource("set","(I)V",&decal,{slrr::Value::make_int(id)});
+  SLRR_REQUIRE(f.open("save/decal",1)==1);
+  SLRR_REQUIRE(f.invoke("write","(Ljava.util.resource.ResourceRef;)I",{slrr::Value::make_obj(&decal)},&f.file).v.i==4);
+  f.close();
+  resource("deleteNative","()V",&decal);
+  resource("deleteNative","()V",&texture);
+  SLRR_REQUIRE(f.open("save/decal",0)==1);
+  const auto loaded=f.read_resource();
+  SLRR_REQUIRE(slrr::paint_texture_exists(uint32_t(loaded)));
+  SLRR_REQUIRE(slrr::paint_texture_committed(uint32_t(loaded))->rgba==image.rgba);
+  resource("set","(I)V",&restored_ref,{slrr::Value::make_int(loaded)});
+  f.close();
+  for(int i=0;i<5;++i)slrr::painter_tick();
+  SLRR_REQUIRE(slrr::paint_texture_exists(uint32_t(loaded)));
+  resource("deleteNative","()V",&restored_ref);
+  for(int i=0;i<3;++i)slrr::painter_tick();
+  SLRR_REQUIRE(!slrr::paint_texture_exists(uint32_t(loaded)));
+  slrr::gameref_clear();
 }
 namespace {
 std::string disk_text(const fs::path& path) {
@@ -298,6 +402,9 @@ int main() {
     unsupported_blob_resource_keeps_following_save_fields_aligned,
     valid_and_null_resources_still_roundtrip,
     raw_file_resource_write_keeps_its_original_id,
+    painter_texture_roundtrips_through_the_save_trailer,
+    stock_side_file_texture_is_loaded_for_an_empty_blob,
+    file_backed_decal_has_an_id_and_survives_save_load_and_resource_ownership,
     new_saves_are_readable_typed_json_with_bit_exact_streams,
     json_strings_preserve_byte_encoding_escapes_and_null_distinction,
     large_strings_keep_the_existing_open_and_read_string_limits,

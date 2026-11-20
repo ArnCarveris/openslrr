@@ -359,6 +359,15 @@ See `ptx_image.cpp`.
 and children. A type resource is not its live instance. A script alias and
 reference wrappers do not justify duplicating the underlying object.
 
+Painter textures (#64) are host images with ids `0xFFFFxxxx`
+(`paint_texture.hpp`). A part shows one through its `Part.setTexture` value
+like a pack texture; it is drawn into only while that part alone shows it,
+and it is reclaimed after three host frames without a part, native resource
+wrapper or open save reader using it. `ResourceRef.makeTexture` file textures
+have live native handles; their pixels are embedded the same way on save.
+Painter textures are saved as
+type-7 blobs, never as pack references; see §15.
+
 `scene_instances_collect` produces the instances to draw for the selected
 world. Geometry can be shared. Pose, color, and texture replacements are
 instance properties. Avoid modifying shared geometry to fix a single car.
@@ -373,7 +382,8 @@ An active camera with a non-null viewport may render only while that viewport
 exists and is active. `Viewport.deactivate` / OSD hiding must stop an old
 preview even when the script retains its camera and scene. Reactivation may
 reuse those objects. Do not implement this by recognizing a mod's selector
-class or forcibly deleting its model.
+class or forcibly deleting its model. The same holds for OSD widgets: an Osd
+whose viewport has never been activated neither draws nor takes clicks.
 
 A map is not necessarily one SCX. `GroundMapData` distinguishes render and
 collision meshes, exterior packs, and placements. Valo City requires resolving
@@ -939,7 +949,8 @@ precision; `floatBits` stores a nonfinite float's unsigned 32-bit pattern.
 `packs` contains `[ordinal, game-relative path]`; `blobs` contains
 `[ordinal, kind, hex bytes]`. Resource values retain SDAT's file-local IDs, not
 session pack numbers. Dynamic resources retain the existing limitation: their
-metadata/bytes can be read, but they are not reinstantiated by the remounter.
+metadata/bytes can be read, but they are not reinstantiated by the remounter,
+except Painter textures stored as PNG blobs (below).
 
 Script strings are byte strings: JSON U+0001..U+00FF represents the corresponding
 byte, not a UTF-8 transcoding of it. The writer escapes non-ASCII/control bytes;
@@ -966,6 +977,12 @@ Resetting a section means inspecting, together: parent world, pose,
 velocities, the physics accumulator, contacts, assembly, camera, lights,
 reflections, shadows, and loading state. Do not keep the fallen pose of an
 old car as the initial pose of the next one.
+
+`File.write(ResourceRef)` stores a Painter texture as a PNG in its save blob
+(the SDAT trailer, or a JSON `blobs` entry). `readResID` turns the blob back
+into a new Painter texture; a blob the stock game left empty is read from its
+side file `<save>.<ordinal>` (JPEG). A texture id that is no longer live keeps
+an empty blob, like other dynamic resources, and reads back as null.
 
 A catalog/garage round trip does not necessarily recreate the same set of
 objects as a dealer round trip. A state repaired by the dealer but not by

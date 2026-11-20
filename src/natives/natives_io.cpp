@@ -1,5 +1,7 @@
 #include "slrr/natives_boot.hpp"
 #include "natives_internal.hpp"
+#include "slrr/paint_texture.hpp"
+#include "slrr/ptx_image.hpp"
 
 #include "slrr/gameref.hpp"
 #include "slrr/host_cursor.hpp"
@@ -496,7 +498,9 @@ int json_take_payload(RpkIndex& rpk, HostFile& file) {
 
 // File-local id for write(ResourceRef). A null ref is 0. A pack resource
 // becomes (ordinal << 16) | local. An unsaved id (high word 0xFFFF, type
-// 5 or 7) becomes its session ordinal, with an empty blob in the trailer.
+// 5 or 7) becomes its session ordinal, with a blob in the trailer. A
+// Painter texture's blob holds its committed pixels as a PNG; a type-7 id
+// that is no longer a live texture keeps an empty blob, which loads as null.
 bool sdat_wire_resource(RpkIndex& rpk, HostFile& file, int32_t host_id,
                         int32_t restype, int32_t* wired) {
   if (!wired) return false;
@@ -505,7 +509,8 @@ bool sdat_wire_resource(RpkIndex& rpk, HostFile& file, int32_t host_id,
     return true;
   }
   const uint32_t uid = static_cast<uint32_t>(host_id);
-  if ((uid & 0xFFFF0000u) == 0xFFFF0000u) {
+  const bool file_texture = restype == 7 && gameref_find_live(host_id);
+  if ((uid & 0xFFFF0000u) == 0xFFFF0000u || file_texture) {
     if (restype != 5 && restype != 7) return false;
     for (const SdatBlobRef& blob : file.sdat_blobs) {
       if (blob.abs_id == host_id) {
@@ -513,7 +518,21 @@ bool sdat_wire_resource(RpkIndex& rpk, HostFile& file, int32_t host_id,
         return true;
       }
     }
+    if (file.sdat_blobs.size() >= 0xFFFF) return false;
     SdatBlobRef blob;
+    if (restype == 7) {
+      PaintImage decoded;
+      const PaintImage* image = paint_texture_committed(uid);
+      if (!image && file_texture) {
+        const auto path = scene_instances_texture(uid);
+        if (!path.empty() && paint_image_from_texture(load_texture_file(path), &decoded))
+          image = &decoded;
+      }
+      if (image) {
+        blob.bytes = paint_png_encode(*image);
+        if (blob.bytes.empty()) return false;
+      }
+    }
     blob.ordinal = static_cast<int32_t>(file.sdat_blobs.size() + 1);
     blob.kind = restype;
     blob.abs_id = host_id;
@@ -540,7 +559,32 @@ bool sdat_wire_resource(RpkIndex& rpk, HostFile& file, int32_t host_id,
   return true;
 }
 
-int32_t sdat_remap_resource(const HostFile& file, uint32_t wired) {
+// A saved texture blob becomes a Painter texture again. The stock game
+// leaves the blob empty and writes the image (JPEG) beside the save as
+// "<file>.<ordinal>"; this host embeds a PNG.
+int32_t sdat_load_texture_blob(const HostFile& file, SdatBlobRef& blob,
+                                const std::string& root) {
+  std::vector<uint8_t> bytes = blob.bytes;
+  if (bytes.empty() && !file.path.empty()) {
+    std::filesystem::path side = file.path;
+    side += "." + std::to_string(blob.ordinal);
+    side = under_game(root, side.lexically_relative(std::filesystem::path(root)).string());
+    if (side.empty()) return 0;
+    std::ifstream in(side, std::ios::in | std::ios::binary | std::ios::ate);
+    if (in) {
+      const auto size = in.tellg();
+      if (size <= 0 || size > 64 * 1024 * 1024) return 0;
+      in.seekg(0);
+      bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+  }
+  PaintImage image;
+  if (bytes.empty() || !paint_image_decode(bytes.data(), bytes.size(), &image)) return 0;
+  blob.abs_id = static_cast<int32_t>(paint_texture_create(std::move(image)));
+  return blob.abs_id;
+}
+
+int32_t sdat_remap_resource(HostFile& file, uint32_t wired, const std::string& root) {
   if (!file.sdat) return static_cast<int32_t>(wired);
   if (wired == 0) return 0;
   const uint32_t hi = wired & 0xFFFF0000u;
@@ -553,8 +597,12 @@ int32_t sdat_remap_resource(const HostFile& file, uint32_t wired) {
     return 0;
   }
   const int32_t ordinal = static_cast<int32_t>(wired & 0xFFFF);
-  for (const SdatBlobRef& blob : file.sdat_blobs) {
-    if (blob.ordinal == ordinal && blob.abs_id != 0) return blob.abs_id;
+  for (SdatBlobRef& blob : file.sdat_blobs) {
+    if (blob.ordinal != ordinal) continue;
+    if (blob.abs_id != 0 && (blob.kind != 7 ||
+                             paint_texture_exists(static_cast<uint32_t>(blob.abs_id))))
+      return blob.abs_id;
+    if (blob.kind == 7) return sdat_load_texture_blob(file, blob, root);
   }
   return 0;
 }
@@ -1033,13 +1081,13 @@ void register_io_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
       });
   jvm.natives().register_method(
       "java.io.File", "readResID", "()I",
-      [](Object* self, const std::vector<Value>&) {
+      [&jvm](Object* self, const std::vector<Value>&) {
         uint32_t v = 0;
         auto it = g_host_files.find(self);
         if (it == g_host_files.end() ||
             !rd_u32(it->second.bytes, it->second.pos, &v))
           return Value::make_int(0);
-        return Value::make_int(sdat_remap_resource(it->second, v));
+        return Value::make_int(sdat_remap_resource(it->second, v, jvm.game_root()));
       });
   jvm.natives().register_method(
       "java.io.File", "readString", "()Ljava.lang.String;",
