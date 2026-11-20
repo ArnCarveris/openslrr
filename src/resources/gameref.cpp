@@ -5,6 +5,7 @@
 #include "slrr/host_input.hpp"
 #include "slrr/part_runtime.hpp"
 #include "slrr/scene_instances.hpp"
+#include "slrr/script_lights.hpp"
 #include "slrr/skeleton.hpp"
 #include "slrr/vehicle_dynamics.hpp"
 
@@ -69,6 +70,7 @@ void gameref_clear() {
   g_trigger_refs.clear();
   g_simulated_refs.clear();
   g_lights.clear();
+  script_lights_clear();
   g_next_live = 0x70000000;
   g_fog = false;
 }
@@ -151,6 +153,8 @@ void gameref_remove(void* key) {
     }
   }
   g_lights.erase(key);
+  // Script lights die with the GameRef they are attached to (#235).
+  script_lights_forget_parent(key);
   if (n) g_live_refs.erase(n->live_id);
   g_refs.erase(key);
 }

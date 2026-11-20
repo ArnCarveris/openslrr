@@ -7,9 +7,29 @@
 #include <numeric>
 
 namespace slrr {
-// Explicit stock g1 adapter. Its tube faces sample a white atlas swatch; the
-// shell and fitting use other coordinates in the same material. Do not mark
-// the entire material emissive or guess sources from arbitrary bright pixels.
+// Explicit stock garage adapter for twin-tube ceiling fittings.
+// - g1: the `texturak` section of garazs1.dds; its tube faces sample a white
+//   atlas swatch, while the shell and fitting use other coordinates in the
+//   same material.
+// - g2/g3 (#235): the lamp groups carry an authored SCX4 emissive colour and
+//   no emission mask (`neon` in garazs2_targyak, `Material #11345` in
+//   garazs3targyak). Other emissive groups, such as the `reklam` signs, fail
+//   the tube shape test below.
+// Only tube-shaped components (2-4 m long, under 0.25 m wide and tall, above
+// 3.3 m, paired) become emitters. Do not mark the entire material emissive or
+// guess sources from arbitrary bright pixels.
+inline bool legacy_neon_candidate_group(const ScxGeometry &mesh,
+                                        const ScxGroup &group, bool *swatch) {
+  *swatch = group.name == "texturak" &&
+            group.texture_index < mesh.textures.size() &&
+            std::filesystem::path(mesh.textures[group.texture_index])
+                    .filename() == "garazs1.dds";
+  const bool emissive = group.emission_index == 0xffff &&
+                        (group.emission_color[0] > 0.f ||
+                         group.emission_color[1] > 0.f ||
+                         group.emission_color[2] > 0.f);
+  return *swatch || emissive;
+}
 inline void adapt_legacy_neon_fixtures(ScxGeometry &mesh) {
   if (!mesh.ceiling_light_anchors.empty())
     return;
@@ -19,10 +39,8 @@ inline void adapt_legacy_neon_fixtures(ScxGeometry &mesh) {
   std::vector<Triangle> triangles;
   for (size_t g = 0; g < mesh.groups.size(); ++g) {
     const auto &group = mesh.groups[g];
-    if (group.name != "texturak" ||
-        group.texture_index >= mesh.textures.size() ||
-        std::filesystem::path(mesh.textures[group.texture_index]).filename() !=
-            "garazs1.dds")
+    bool swatch = false;
+    if (!legacy_neon_candidate_group(mesh, group, &swatch))
       continue;
     const auto &uv = group.base_map.channel == 2   ? mesh.uv3
                      : group.base_map.channel == 1 ? mesh.uv2
@@ -32,11 +50,13 @@ inline void adapt_legacy_neon_fixtures(ScxGeometry &mesh) {
       bool tube = true;
       for (size_t k = 0; k < 3; ++k) {
         const auto v = mesh.indices[i + k];
-        tube &= v * 2 + 1 < uv.size() && v * 3 + 2 < mesh.positions.size();
+        tube &= (!swatch || v * 2 + 1 < uv.size()) &&
+                v * 3 + 2 < mesh.positions.size();
         if (!tube)
           break;
-        tube &= std::abs(uv[v * 2] - .188369f) < .00002f &&
-                std::abs(uv[v * 2 + 1] - .139628f) < .00002f &&
+        // g1 shares its material with the fitting: keep only the swatch.
+        tube &= (!swatch || (std::abs(uv[v * 2] - .188369f) < .00002f &&
+                             std::abs(uv[v * 2 + 1] - .139628f) < .00002f)) &&
                 mesh.positions[v * 3 + 1] * mesh.position_scale > 3.3f;
       }
       if (tube)

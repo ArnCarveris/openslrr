@@ -63,6 +63,7 @@ add_executable(slrr_host
   src/natives/natives_resref.cpp
   src/natives/natives_script.cpp
   src/natives/natives_painter.cpp
+  src/natives/natives_lights.cpp
   src/ui/osd_registry.cpp
   src/ui/osd_script.cpp
   src/ui/ui_time.cpp
@@ -80,6 +81,7 @@ add_executable(slrr_host
   src/formats/skeleton_text.cpp
   src/formats/matrixdata.cpp
   src/resources/gameref.cpp
+  src/resources/script_lights.cpp
   src/resources/scene_instances.cpp
   src/resources/scene_ambience.cpp
   src/resources/scene_triggers.cpp

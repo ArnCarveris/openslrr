@@ -94,7 +94,8 @@ current gaps to SLRR_rev code are in
   The host matches this (`src/platform/host_music.cpp:host_music_change_set`).
   The extra `Misc_Menu` and `Anim_Scene` sets in SLRR_rev belong to build 940.
 - Java changes are allowed only for specific authorized features. Shipped
-  changes live in `patch/` with their source (`patch/sl/Scripts/game/src/OptionsDialog.java`).
+  changes live in `patch/` with their source (`patch/sl/Scripts/game/src/OptionsDialog.java`,
+  `patch/sl/Scripts/game/src/Garage.java`, `patch/system/Scripts/render/src/*.java`).
   A file that exists only in the local game tree is not a patch.
 
 ## 3. Build, run and diagnostics
@@ -1903,6 +1904,8 @@ Mechanic.flushInventory before autoSaveQuiet snapshots player.parts. The VM,
 natives and save format are unchanged. scripts/patch_garage_save_order.py
 reproduces the binary patch from one SHA-256 verified MWM input and rejects
 other mods; do not apply binary offsets to an unknown Garage container.
+Since #235 the shipped class is compiled from `patch/sl/Scripts/game/src/Garage.java`
+instead, which keeps this order; the binary builder is kept as the #59 reference.
 
 Validation: inventory_transition executes the actual shipped GameLogic transition,
 Mechanic.flushInventory and Garage.osdCommand/exit with isolated presentation
@@ -2550,3 +2553,142 @@ Fixes from the `antomys` review of PR #202:
 Validated in game by the user at `bbcb39c` (20 November 2026), after checking
 the garage with Map sunlight off, prop AO and shadow edges near poles and kerbs.
 No `--perf-log` measurement exists for these changes.
+
+### Stock light resources and placement (#235)
+
+Survey of the stock game plus the `DestructionTools` and `MW_Mod` RPKs
+(20 November 2026, read-only scan of the game root). The game already has a
+complete authored light model; an explicit light API should consume it before
+inventing new Java classes.
+
+- Light resources are RPK type 13 (`RESTYPE_RENDER_LIGHT` in the game's
+  `ResourceRef.java`), text payloads. 89 entries: 35 `spot`, 27 `fakespot`,
+  15 `directional`, 5 `fakepoint`, 2 `point`, 1 `fake point` (with a space),
+  4 base classes without a `type` line.
+- Common keywords: `type`, `diffuse a r g b`, `specular`, `ambient`,
+  `position x y z`, `direction x y z`, `range f`, usually `attenuation c l q`
+  (`1 .03 0` or `0 0 0`). Spot and fake lights add `theta`/`phi` cone angles
+  (radians, e.g. 1.896/2.02), `lit_dynamic 1`, `attH_texture`/`attV_texture`
+  (0x80000000 = none), and a flare set `lf_*` (note the `lenght` spelling).
+- Parser pitfalls: inline `//` comments (`type spot // thatis`), commented-out
+  lines, non-zero `position` on directional lights (garage `0 3 0`).
+- `src/natives/natives_renderref.cpp:apply_directional_light` only reads
+  directional lights (diffuse/ambient/specular/direction). Range, attenuation,
+  cone, `lit_dynamic`, `fake*` and `lf_*` are not parsed anywhere yet.
+- Placement: lights are render children in part/car/scenery cfgs,
+  `render <light id> <pos xyz> <ypr>`, then `flags <group>` and optionally
+  `colors 1 0xAARRGGBB`. 99 car/part cfgs do this. Group bits from cfg comments:
+  1 brake, 2 reversing, 4 city (headlights/streetlights), 8 police/siren,
+  16/32 indicators, 256 nitro; combinations exist.
+- Scenery: `objects.rpk` lamps (`0x18C` kislampa, `0x18E` lamp_base) place the
+  `0x1C7` street point light (range 500); `0x18F`/`0x191` use `0x16`
+  `fake point`. `0x1D7` trafficlamp is an ICFG with a separate
+  `light <id> ...` + `color` syntax.
+- Java: only directional lights are created from scripts (Garage.java duplicates
+  `misc.garage:0x001D` as "neon", CarLot uses `0x0025`, Scene.java the skydome
+  sun with `setLight`/`setFlare`). No Java creates headlights; lamp state is
+  engine-driven (time of day, car state).
+- The `fake*` types look like flare/glow-only lights that do not light the
+  scene. Not confirmed against the original engine.
+
+### Script light sources and the g1 garage (#235, phase 1)
+
+- API: `patch/system/Scripts/render/src/LightSource.java` with `PointLight`,
+  `SpotLight` (`setCone`) and `RectLight` (`setSize`). Package `java.render`,
+  new classes, no stock equivalent. Contract in ENGINE_CONTRACT §12
+  "Script light sources".
+- Natives: `src/natives/natives_lights.cpp:register_light_natives`, called from
+  `src/natives/natives_boot.cpp:register_boot_natives`. Natives are registered
+  on the declaring class only: `Jvm::invoke` resolves the declaring owner first
+  (`src/jvm/jvm.cpp:find_method_inherited`), so `SpotLight.setPosition` reaches
+  `java.render.LightSource.setPosition`. Registrations use literal class names
+  because `scripts/render_native_coverage.py` reads them statically.
+- Registry: `src/resources/script_lights.cpp:script_lights_create`, keyed by the
+  Java object, parent stored as the canonical GameRef key (`gameref_get`).
+  `src/resources/gameref.cpp:gameref_remove` calls
+  `script_lights_forget_parent`; `gameref_clear` and `register_light_natives`
+  clear it. `script_lights_visit_gc_roots` roots lights and parents.
+- Parent type: `ResourceRef`, not `GameRef`. `RenderRef` extends `ResourceRef`
+  directly (`GAME:system/Scripts/util/resource/src/RenderRef.java`), and the
+  garage parents its lights to `stuff`, a `RenderRef`.
+- Space: parent-local script metres, the coordinates of `RenderRef.setMatrix`.
+  `src/resources/scene_instances.cpp:chain_matrix` documents the S·M·S instance
+  transform; `src/render/bgfx_lib_backend.cpp:update_local_light` uses
+  `scene_instances_render_matrix` (the drawn pose, as the instance transform)
+  and flips Z. Mesh-local SCX coordinates equal script-local coordinates, so
+  the adapter's anchors can be pasted into Java unchanged.
+- g1 anchors: `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` finds
+  nine fittings, all in `misc/garage/g1/garazs_01_targyak.scx` (the 0x42 stuff
+  mesh), none in the room mesh; y = 6.43138, x/z in `Garage.java:createFixtures`.
+- All garages use the same fitting: two 3.00 × 0.11 × 0.09–0.12 m tubes about
+  0.185 m apart. Anchors follow the adapter's rule (a tube is a connected
+  component 2–4 m long and under 0.25 m wide and tall; tubes pair within 0.4 m
+  horizontally and 0.1 m vertically; anchor = pair midpoint, 8 cm below the
+  lower tube's bottom). Run on the g1 group it reproduces the adapter exactly.
+  - g2 (`misc/garage/g2/garazs2_targyak.scx`, stuff 0x18): group `neon`
+    (texture `g2cucc.dds`, SCX4 emissive colour 0.53), 20 tubes → 10 fittings
+    along X, all at y = 5.42426, x = −13.633/−7.046/0.027/7.122/14.095,
+    z = −3.267/4.322. Ceiling 7.79 m.
+  - g3 (`misc/garage/g3/garazs3targyak.scx`, stuff 0x3c): group
+    `Material #11345` (texture `g3cucc.dds`, emissive colour 0.82), 24 tubes →
+    12 fittings, three along Z and nine along X, at y 5.52–6.43 (stepped
+    ceiling up to 8.80 m). Exactly the 12-fixture budget.
+  - ROC (`misc/garage/g4`, ground 0x2f, stuff 0x51): an open-air scene
+    (sand ground, tents, containers, stands); no ceiling fittings and no
+    emissive lamp group. No lights are created there.
+  - Dark tubes in g2/g3 (user test at `bc2f8aa`): only
+    `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` turns tube faces
+    into `self_illuminated` groups, and it matched only g1's `garazs1.dds`
+    swatch. Script lights never touched it (g1 kept its white tubes). Now
+    `legacy_neon_candidate_group` also accepts groups with an SCX4 emissive
+    colour and no emission mask, and the same tube-shape and pairing rules pick
+    the faces. Its anchors equal the Garage.java tables in all three garages, so
+    without the patch g2 and g3 get the same fallback lights as g1.
+  - Brightness: Garage.java sets intensity 30 and range 26 m per garage
+    (`createFixtures`). History, all user feedback in game: 24 / 20 m too dim,
+    48 / 26 m (`c07d99c`) too bright, 36 / 26 m (`1e0c3cd`), then 30 at the
+    user's request. In the GPU test the floor that was dim at 24 / 20 m (gain
+    under 60 in an 8-bit capture) brightens about 1.5× (g1 47→72, g2 54→77,
+    g3 55→81; 36 / 26 m gave 87, 93, 91 and 48 / 26 m 112, 123, 105).
+    Brighter areas clip in the capture. The tube glow does not depend on
+    these values.
+- Renderer: registry lights replace the adapter whenever one has a drawn parent,
+  even when disabled. Limits: one point light, 12 fixtures, inner cone fixed at
+  65° by `shaders/scene_shadow.sh`, fixture shadows all-or-nothing, rect drawn as
+  spot, garage only (`garage_`).
+- Garage source: `sources/sl/Scripts/game/src/Garage.java` is the only copy on
+  disk and is the MWM version (jack, `Mirans_Mod_protection`). Every
+  non-comment string literal appears in the original MWM class; the known code
+  difference was the #59 save order. The patch copy adds `createFixtures`
+  (one table per garage index 0–2), `createFixture` and `destroyFixtures`
+  (called in `exit` before `stuff.destroy`).
+- Validation: `tests/test_script_lights.cpp` (constructors and inherited natives
+  through the shipped classes, input validation, destroy/parent/GC/reset
+  lifetime); `tests/test_scene_shadow_gpu.cpp` checks that nine script spots at
+  the Garage.java anchors give the adapter's positions, directions and cones,
+  that disabled lights darken the garage and that destroying them restores the
+  adapter. Its `garage_fixtures` case loads g2 and g3, checks each Garage.java
+  anchor sits 8 cm under its lamp group's tubes, that the registry places all
+  10/12 spots there, and that they light the real floor (15,207 and 20,437 of
+  65,536 pixels), that only lamp-group faces emit and stay white without any
+  light (g1 120, g2 193, g3 168 pixels), and the brightness above; and that the
+  neon point record stays ambient-only when every script light is disabled.
+  `tests/test_inventory_transition.cpp` runs the recompiled
+  `patch/sl/Scripts/game/Garage.class` main-menu path (save after exit), and
+  `garage_rejected_commands_do_not_save` runs `osdCommand` with a recording
+  probe.
+- Refused commands (review of PR #236): the MWM source saved after Choose
+  Track and the dealers even when they were refused (no car, undriveable car,
+  dealer closed). The shipped #59 class does not save there; it saves before the
+  transition when they are accepted (`save,change`). The patch saves inside the
+  success branch after `changeActiveSection` (`change,save`), so a refused
+  command never saves a garage whose mechanic strip was not flushed. With a local
+  `build/garage-59.class` (`git cat-file blob 6171aa2:patch/sl/Scripts/game/Garage.class`) the test also compares all 43 `CMD_*` commands: none
+  differs from the #59 class in whether it saves.
+  Validated in game by the user in the g1 garage at `df7117f` (20 November
+  2026): the nine script fittings light the garage as before. g1, g2 and g3
+  validated in game by the user at `2f904ac` (20 November 2026): glowing tubes
+  and intensity 30 / range 26 m accepted (24 was too dim, 48 and 36 too bright).
+- Phase 2 (not done): stock light resources (type 13) and cfg `render` light
+  children for street lamps and scenery objects; per-light spot shadows and inner
+  cone; outside-garage rendering.
