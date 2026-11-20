@@ -3258,3 +3258,14 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   Per frame: uniform sets 39,590 → 186, texture sets 15,063 → 1,995, draws
   1,368 → 1,367. The pre-#262 build measured 0.39–0.46 / 0.79–0.99 /
   1.34–1.62 ms in the same harness.
+- In game after #260 and #262 (Elias, 2560×1440, night city, about the same
+  spot and time as the #246–#257 snapshot, 6,090 draws, 625 batches / 8,946
+  placements): frame 11.2 → 10.2 ms, GPU 7.63 → 7.36 ms, bgfx render thread
+  5.62 → 4.70 ms, world view GPU 5.40 → 5.25 ms, scene collection +
+  residency 3.87 → 3.24 ms, world submission 2.91 → 2.68 ms. The main thread
+  is still the limit (render flush 7.9 ms of a 10.1 ms frame; scripts 0.37,
+  physics 0.98, other 0.88). Open question: the "instanced prop batches"
+  zone (main-view `scene_instances_collect_batches` only) stayed at 1.55 ms
+  although the #260 harness measured 0.6–0.7 → 0.17–0.24 ms for it, so the
+  in-game cost lies in something the harness does not reproduce (scene,
+  LOD/size filter, frame cache state).
