@@ -174,7 +174,11 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     // #264: the world list is built by the first collection of the frame
     // (the batches above, in the main view); every collection copies it.
     {perf::Zone::WorldList, "    world list build"},
-    {perf::Zone::WorldCopy, "  world list copies (all collections)"},
+    {perf::Zone::CollectInstances, "  scene instances (main view)"},
+    {perf::Zone::WorldCopy, "    world list copies (all collections)"},
+    {perf::Zone::CollectSkins, "    walker palettes (all collections)"},
+    {perf::Zone::CollectPreviews, "  viewport previews"},
+    {perf::Zone::Residency, "  GPU residency"},
     {perf::Zone::LampSelect, "Street lamp selection"},
     {perf::Zone::Shadows, "Shadow updates (all)"},
     {perf::Zone::SunShadows, "  sun cascades / point"},

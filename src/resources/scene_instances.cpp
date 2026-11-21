@@ -20,6 +20,7 @@
 #include "slrr/vehicle_dynamics.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -2328,6 +2329,12 @@ bool sphere_visible(const SceneFrustum* frustum, const std::array<float, 3>& wor
 }
 
 // Whether `prop` draws at its placement's current LOD (#252).
+// The batch loop calls this from several jobs at once (#266). A placement's
+// level and epoch are read and written through atomic_ref: two jobs may meet
+// the same placement (both chain members), and scene_prop_lod_level is
+// idempotent (the level it returns maps to itself for the same size), so a
+// job that reads a level another job has just stored still gets the same
+// answer, and the frame's choices match a serial loop's.
 bool prop_lod_visible(GroundPropMap& map, const GroundProp& prop, const PartMatrix& shell) {
   if (prop.lod_min < 0 || prop.lod_index < 0 ||
       static_cast<size_t>(prop.lod_index) >= map.lods.size())
@@ -2335,21 +2342,25 @@ bool prop_lod_visible(GroundPropMap& map, const GroundProp& prop, const PartMatr
   auto& entry = map.lods[static_cast<size_t>(prop.lod_index)];
   int level = static_cast<int>(entry.sizes.size());
   if (g_lod_view.valid && !g_lod_view.force_highest) {
-    if (entry.level >= 0 && (!g_lod_view.update || entry.epoch == g_lod_epoch)) {
+    std::atomic_ref<int> stored_level(entry.level);
+    std::atomic_ref<uint64_t> stored_epoch(entry.epoch);
+    const uint64_t epoch = stored_epoch.load(std::memory_order_acquire);
+    const int previous = stored_level.load(std::memory_order_relaxed);
+    if (previous >= 0 && (!g_lod_view.update || epoch == g_lod_epoch)) {
       // Chosen this frame (the other chain member, the other collection
       // path) or a non-updating pass reusing the main view's choice.
-      level = entry.level;
+      level = previous;
     } else {
       const auto world = transform_point(shell, entry.center);
       const float dx = world[0] - g_lod_view.eye[0], dy = world[1] - g_lod_view.eye[1],
                   dz = world[2] - g_lod_view.eye[2];
       const float distance = std::sqrt(dx * dx + dy * dy + dz * dz) *
                              std::clamp(g_lod_view.bias, .1f, 10.f);
-      level = scene_prop_lod_level(entry.level, entry.radius / std::max(distance, .01f),
+      level = scene_prop_lod_level(previous, entry.radius / std::max(distance, .01f),
                                    entry.sizes);
       if (g_lod_view.update) {
-        entry.level = level;
-        entry.epoch = g_lod_epoch;
+        stored_level.store(level, std::memory_order_relaxed);
+        stored_epoch.store(g_lod_epoch, std::memory_order_release);
       }
     }
   }
@@ -2384,10 +2395,13 @@ std::vector<SceneInstance> scene_instances_collect(
     out = world;
   }
   // Walkers outside this view keep an empty palette; the renderer skips them.
-  for (auto& instance : out)
-    if (complete_character_palettes && instance.gpu_skin && instance.skin.empty() &&
-        (!frustum || character_in_view(instance, *frustum)))
-      complete_skin(instance);
+  if (complete_character_palettes) {
+    perf::Scope skin_scope(perf::Zone::CollectSkins);
+    for (auto& instance : out)
+      if (instance.gpu_skin && instance.skin.empty() &&
+          (!frustum || character_in_view(instance, *frustum)))
+        complete_skin(instance);
+  }
   if (g_ground_props.empty()) {
     if (night_batches) night_batches->clear();
     return out;
@@ -2461,6 +2475,10 @@ std::vector<SceneInstance> scene_instances_collect(
   return out;
 }
 
+// Fewer visible cells than this keep the batch loop on the host thread (#266).
+constexpr size_t kParallelCellMin = 16;
+constexpr size_t kParallelThreadMin = 4;
+
 void scene_instances_collect_batches(const SceneFrustum* frustum,
                                      std::vector<SceneBatch>& out,
                                      const float* reflection_origin) {
@@ -2508,47 +2526,95 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
       draw.instances.clear();
       draw.lighting = entry.base->lighting;
     }
-  for (const auto& entry : shells) {
-    auto& map = *entry.map;
-    for (const auto& [key, cell] : map.cells) {
+  // Visible cells in serial order (#266). The placement loop runs on the
+  // job pool over contiguous runs of this list, and the runs are appended in
+  // order, so every batch lists its placements as the serial loop did.
+  struct VisibleCell {
+    const Shell* shell;
+    const GroundPropCell* cell;
+  };
+  static std::vector<VisibleCell> cells;  // host thread only, capacity kept
+  cells.clear();
+  for (const auto& entry : shells)
+    for (const auto& [key, cell] : entry.map->cells) {
       (void)key;
       if (cell.batches.empty() || !sphere_visible(frustum, cell.world_center, cell.radius)) continue;
       if (g_size_filter &&
           !g_size_filter(cell.world_center.data(), cell.radius, g_size_filter_user)) continue;
-      for (const auto& batch : cell.batches) {
-        if (batch.slot >= map.batch_geometry.size()) continue;
-        auto& draw = out[entry.offset + batch.slot];
-        if (!draw.geometry) continue;
-        float extent = 0.f;
-        if (reflection_origin) {
+      cells.push_back({&entry, &cell});
+    }
+  if (cells.empty()) return;
+  const bool night = night_props_visible();
+  // A few runs per thread balance uneven cells. Tiny lists, and machines with
+  // fewer than kParallelThreadMin threads (the bgfx render thread and the
+  // walker stepper need theirs; on two cores the pool was slower), stay on
+  // this thread.
+  const size_t threads = jobs_concurrency();
+  const size_t runs = cells.size() < kParallelCellMin || threads < kParallelThreadMin
+      ? 1 : std::min(cells.size(), threads * 4);
+  const auto run_cells = [&](size_t run) {
+    return std::pair<size_t, size_t>{cells.size() * run / runs, cells.size() * (run + 1) / runs};
+  };
+  // Placements past the per-placement flags, as the serial loop tested them.
+  const auto each_candidate = [&](const VisibleCell& visible, auto&& visit) {
+    const auto& map = *visible.shell->map;
+    for (const auto& batch : visible.cell->batches) {
+      if (batch.slot >= map.batch_geometry.size()) continue;
+      const auto& draw = out[visible.shell->offset + batch.slot];
+      if (!draw.geometry) continue;
+      for (const auto index : batch.indices) {
+        if (index >= visible.cell->props.size()) continue;
+        const auto& prop = visible.cell->props[index];
+        if (prop.hidden || (prop.night_only && !night)) continue;
+        visit(batch, draw, prop);
+      }
+    }
+  };
+  struct Hit {
+    uint32_t slot;
+    const GroundProp* prop;
+  };
+  static std::vector<std::vector<Hit>> hit_runs;
+  if (hit_runs.size() < runs) hit_runs.resize(runs);
+  jobs_parallel_for(runs, [&](size_t run) {
+    auto& list = hit_runs[run];
+    list.clear();
+    const auto [first, last] = run_cells(run);
+    for (size_t i = first; i < last; ++i) {
+      const auto& visible = cells[i];
+      const SceneBatch* extent_of = nullptr;
+      float extent = 0.f;
+      each_candidate(visible, [&](const GroundPropBatch& batch, const SceneBatch& draw,
+                                  const GroundProp& prop) {
+        if (reflection_origin && extent_of != &draw) {
+          extent_of = &draw;
+          extent = 0.f;
           const auto& mesh = *draw.geometry;
           for (int axis = 0; axis < 3; ++axis)
             extent = std::max(extent, (mesh.info.bbox_max[axis] - mesh.info.bbox_min[axis]) *
                                           mesh.position_scale);
         }
-        for (const auto index : batch.indices) {
-          if (index >= cell.props.size()) continue;
-          const auto& prop = cell.props[index];
-          // LOD first (#257): the non-selected chain member costs one cached
-          // lookup instead of a frustum test.
-          if (prop.hidden || (prop.night_only && !night_props_visible()) ||
-              !prop_lod_visible(map, prop, entry.shell) ||
-              !sphere_visible(frustum, prop.world_center, prop.radius)) continue;
-          if (g_size_filter &&
-              !g_size_filter(prop.world_center.data(), prop.radius, g_size_filter_user)) continue;
-          const auto& matrix = prop.render_matrix;
-          if (reflection_origin && extent > 0.f) {
-            const float dx = matrix[12] - reflection_origin[0];
-            const float dy = matrix[13] - reflection_origin[1];
-            const float dz = matrix[14] - reflection_origin[2];
-            const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (dist > 12.f && extent / dist * 128.f < 4.f) continue;
-          }
-          draw.instances.push_back({matrix, prop.color});
+        // LOD first (#257): the non-selected chain member costs one cached
+        // lookup instead of a frustum test.
+        if (!prop_lod_visible(*visible.shell->map, prop, visible.shell->shell) ||
+            !sphere_visible(frustum, prop.world_center, prop.radius)) return;
+        if (g_size_filter &&
+            !g_size_filter(prop.world_center.data(), prop.radius, g_size_filter_user)) return;
+        const auto& matrix = prop.render_matrix;
+        if (reflection_origin && extent > 0.f) {
+          const float dx = matrix[12] - reflection_origin[0];
+          const float dy = matrix[13] - reflection_origin[1];
+          const float dz = matrix[14] - reflection_origin[2];
+          const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+          if (dist > 12.f && extent / dist * 128.f < 4.f) return;
         }
-      }
+        list.push_back({static_cast<uint32_t>(visible.shell->offset + batch.slot), &prop});
+      });
     }
-  }
+  });
+  for (size_t run = 0; run < runs; ++run)
+    for (const auto& hit : hit_runs[run])
+      out[hit.slot].instances.push_back({hit.prop->render_matrix, hit.prop->color});
 }
 
 void scene_instances_override_mesh(uint32_t id,
