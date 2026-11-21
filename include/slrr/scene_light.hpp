@@ -34,6 +34,11 @@ struct LampLight {
   // is an omnidirectional lamp.
   std::array<float, 3> direction{0, 0, 0};
   float cos_inner = -1.f, cos_outer = -2.f;
+  // Car lights (#283): the chassis the light is installed on, whether it is
+  // a headlight beam, and its tile in the headlight shadow atlas (-1: none).
+  const void *car = nullptr;
+  bool headlight = false;
+  int shadow_tile = -1;
   const void *source = nullptr; // stable identity (the registry entry)
   bool valid() const {
     for (int i = 0; i < 3; ++i)

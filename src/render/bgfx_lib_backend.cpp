@@ -271,6 +271,8 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_aperture_edge_ = bgfx::createUniform("u_apertureEdge", bgfx::UniformType::Vec4, 32);
     s_aperture_ = bgfx::createUniform("s_aperture", bgfx::UniformType::Sampler);
     s_fixture_shadow_=bgfx::createUniform("s_fixtureShadow",bgfx::UniformType::Sampler);
+    s_headlight_shadow_=bgfx::createUniform("s_headlightShadow",bgfx::UniformType::Sampler);
+    u_headlight_shadow_=bgfx::createUniform("u_headlightShadow",bgfx::UniformType::Vec4);
     s_light_data_=bgfx::createUniform("s_lightData",bgfx::UniformType::Sampler);
     light_data_tex_=bgfx::createTexture2D(kLightDataWidth,kLightDataRows,false,1,
         bgfx::TextureFormat::RGBA32F,BGFX_SAMPLER_POINT|BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
@@ -457,6 +459,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     interior_sun_active_ = false;
     if(bgfx::isValid(fixture_shadow_fb_)) bgfx::destroy(fixture_shadow_fb_);
     fixture_shadow_fb_=BGFX_INVALID_HANDLE;fixture_shadow_tex_=BGFX_INVALID_HANDLE;
+    if(bgfx::isValid(headlight_shadow_fb_)) bgfx::destroy(headlight_shadow_fb_);
+    headlight_shadow_fb_=BGFX_INVALID_HANDLE;headlight_shadow_tex_=BGFX_INVALID_HANDLE;
+    headlight_shadow_count_=0;
     fixture_lights_.clear();fixture_shadow_casters_.clear();fixture_shadow_active_=false;
     fixture_shadow_revision_=0;
     interior_sun_casters_.clear();
@@ -475,7 +480,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
           &u_aperture_matrices_, &u_aperture_uv_, &u_aperture_edge_, &s_aperture_,
           &s_fixture_shadow_, &u_fixture_params_,
-          &u_lamp_params_, &u_lamp_shadow_params_}) {
+          &u_lamp_params_, &u_lamp_shadow_params_, &s_headlight_shadow_, &u_headlight_shadow_}) {
       if (bgfx::isValid(*handle)) bgfx::destroy(*handle);
       *handle = BGFX_INVALID_HANDLE;
     }
@@ -816,8 +821,10 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
           set_lamp_shadow_focus(player_matrix + 12);
         else
           set_lamp_shadow_focus(nullptr);
+        set_headlight_focus(player ? player->key : nullptr);
       }
       update_lamp_shadows(video);
+      update_headlight_shadows(video);
       update_interior_sun(video);
       if(world_cam && !world_inset) {
         perf::Scope ao_scope(perf::Zone::AmbientOcclusion);
@@ -1410,6 +1417,7 @@ void LibBgfxBackend::publish_debug_stats() {
     stats.lamps_shadowed = uint32_t(std::count_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
         [](const LampShadowSlot& slot) { return slot.source != nullptr; }));
     stats.car_tiles = uint32_t(car_shadow_tiles_.size());
+    stats.headlight_tiles = uint32_t(headlight_shadow_count_);
     stats.lamp_tile_redraws = lamp_shadow_redraws_;
     stats.car_tile_redraws = car_shadow_redraws_;
     stats.sun_atlas_redraws = shadow_atlas_revision_;
@@ -1462,6 +1470,8 @@ void LibBgfxBackend::update_car_lights() {
       lamp.position = light.position;
       lamp.direction = light.direction;
       lamp.source = light.part;
+      lamp.car = light.car;
+      lamp.headlight = light.kind == CarLightKind::Headlight;
       if (light.kind == CarLightKind::Headlight) {
         lamp.color = hue(light.diffuse, {1.f, .96f, .88f});
         lamp.intensity = kHeadlightIntensity;
@@ -1908,11 +1918,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
 {
     perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 145> base_order{};
+    std::array<uint16_t, 151> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
       if (i == kWorldView) {
-        for(uint16_t f=128;f<145;++f) base_order[base_slot++]=f;
+        for(uint16_t f=128;f<151;++f) base_order[base_slot++]=f;
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
         base_order[base_slot++] = 66;
@@ -1933,10 +1943,10 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 145> order{};
+      std::array<uint16_t, 151> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
-      for(uint16_t f=128;f<145;++f) order[slot++]=f;
+      for(uint16_t f=128;f<151;++f) order[slot++]=f;
       if (point_shadow_active_) order[slot++] = 64;
       order[slot++] = 65;
       order[slot++] = 66;

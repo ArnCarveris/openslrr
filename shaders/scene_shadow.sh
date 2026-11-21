@@ -34,6 +34,9 @@ uniform vec4 u_fixtureParams; // count, inverse atlas size xy, shadows enabled
 // fixture position+range [0,12), colour+intensity [12,24), direction+outer
 // cosine [24,36), shadow matrix [36+4i,40+4i). Matrices are stored by column.
 SAMPLER2D(s_lightData, 11);
+// Headlight shadow atlas (#283): 3 x 2 tiles, standard depth.
+SAMPLER2DSHADOW(s_headlightShadow, 12);
+uniform vec4 u_headlightShadow; // atlas texel size
 vec4 lightData(int x,int y) { return texelFetch(s_lightData,ivec2(x,y),0); }
 mat4 lightMatrix(int x,int y)
 {
@@ -230,6 +233,28 @@ vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
     vec3 a=lightData(128+i,0).xyz;
     return lightData(64+i,0).rgb*(facing*window*window*lampCone(i,delta*inv)/max(a.x+a.y*d2*inv+a.z*d2,0.25));
 }
+// Headlight shadow (#283): tile t of the headlight atlas, 2 x 2 compare taps,
+// 3 cm normal offset toward the lamp. No derivatives: it runs after the
+// per-lamp early-outs.
+float headlightVisibility(int t,vec3 world,vec3 toward)
+{
+    vec4 clip=mul(lightMatrix(96+4*t,2),vec4(world+toward*0.03,1.0));
+    if(clip.w<=0.0) return 1.0;
+    vec3 p=clip.xyz/clip.w;
+    if(any(lessThanEqual(p,vec3(0.0,0.0,0.0))) || any(greaterThanEqual(p,vec3(1.0,1.0,1.0))))
+        return 1.0;
+    vec4 rect=lightData(120+t,2);
+    vec2 uv=rect.xy+p.xy*rect.zw;
+    vec2 texel=u_headlightShadow.xy;
+    vec2 lo=rect.xy+texel*1.5,hi=rect.xy+rect.zw-texel*1.5;
+    float depth=p.z-0.00001;
+    float sum=0.0;
+    sum+=shadow2D(s_headlightShadow,vec3(clamp(uv+vec2(-0.5,-0.5)*texel,lo,hi),depth));
+    sum+=shadow2D(s_headlightShadow,vec3(clamp(uv+vec2( 0.5,-0.5)*texel,lo,hi),depth));
+    sum+=shadow2D(s_headlightShadow,vec3(clamp(uv+vec2(-0.5, 0.5)*texel,lo,hi),depth));
+    sum+=shadow2D(s_headlightShadow,vec3(clamp(uv+vec2( 0.5, 0.5)*texel,lo,hi),depth));
+    return sum*0.25;
+}
 vec3 lampLighting(vec3 n,vec3 world)
 {
     vec3 sum=vec3(0.0,0.0,0.0);
@@ -285,9 +310,13 @@ vec3 lampLighting(vec3 n,vec3 world)
         float inv=inversesqrt(d2);
         float facing=max(dot(n,delta*inv),0.0);
         if(facing<=0.0) continue;
+        float cone=lampCone(i,delta*inv);
+        if(cone<=0.0) continue;
         float window=saturate(1.0-(d2/r2)*(d2/r2));
         vec3 a=lightData(128+i,0).xyz;
-        sum+=lightData(64+i,0).rgb*(facing*window*window*lampCone(i,delta*inv)/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+        vec4 colour=lightData(64+i,0);
+        float visibility=colour.w>0.5?headlightVisibility(int(colour.w-0.5),world,delta*inv):1.0;
+        sum+=colour.rgb*(facing*window*window*cone*visibility/max(a.x+a.y*d2*inv+a.z*d2,0.25));
     }
     return sum;
 }

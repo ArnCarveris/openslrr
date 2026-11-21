@@ -3063,10 +3063,52 @@ city at night.
   5520 with one; 24 m ahead 1500 → 3600; 9 m behind unchanged; brake red 3.5 m
   behind 500 → 2271 with green unchanged; toggle off or option 4 off equals
   the unlit image.
-- Not done: headlight shadows (they would need forward lamp tiles; the street
-  lamp atlas has none free for them), the `attH`/`attV` beam pattern (a round
+- Not done: headlight shadows came in #283 (below); the `attH`/`attV` beam pattern (a round
   cone instead), lens flares, reverse and indicator lights, native traffic
   cars without part records, not validated in game yet.
+
+### Headlight shadows (#283)
+
+- `src/render/bgfx_shadows.cpp:update_headlight_shadows`, after
+  `update_lamp_shadows` in the frame (so it sees the final lamp order). Its
+  own D32F atlas, 3 × 2 tiles of half the local shadow resolution (128, 256
+  or 512 px by Shadow quality), views 145–150, ordered before the world with
+  the other shadow views (`draw_previews`).
+- Candidates are the lit headlight beams in the lamp array, so the #279 rules
+  (installed part, running engine, condition above 0.25) already apply. The
+  followed car's (`set_headlight_focus`, the same car as the lamp shadow
+  focus) go first, then the others in the array's nearest-first order, up to
+  `kHeadlightShadows` = 6 (debug budget "Headlight shadow tiles").
+- One perspective frustum per headlight part: from the lamp along its beam,
+  2 × the outer half-angle + 4° wide, near 0.15 m, far = the beam range
+  (60 m). Casters are the main view's instances (world meshes except the
+  ground polygon, vehicles except the light's own car through
+  `part_render_owner`/`part_chassis`, characters within reach) and the
+  instanced props whose bounds meet the frustum. A caster outside the camera
+  view casts nothing, a known gap; the beams point ahead of the followed car,
+  mostly inside the view. Tiles are redrawn every frame (the beams move).
+- Each tile view is one `queue_or_run` job (#270), so it is submitted on a
+  worker encoder when worker encoders are on.
+- Shader: a lamp entry's colour `.w` holds its tile + 1;
+  `shaders/scene_shadow.sh:headlightVisibility` samples `s_headlightShadow`
+  (stage 12) with four compare taps, 3 cm normal offset toward the lamp,
+  matrices and tile rects in row 2 of the light data (columns 96+4t and
+  120+t). The unshadowed lamp loop now also skips pixels outside a spot cone
+  before shading.
+- Gates: Local lights, Car lights, the shadow option (`VideoOptions::shadows`),
+  the debug option "Headlight shadows", outside garages.
+- Tests (`scene_shadow_gpu` case `headlight_shadows`): a 1.5 m box 8 m ahead
+  of two headlights darkens the road behind it (3798 → 1866, r+g+b over a
+  patch) and leaves the road beside and in front unchanged; with ten
+  headlights the followed car's two (the farthest) get tiles and six in all;
+  shadow option off gives none. Cost (`city_submission` workers case, crowd
+  city 1280x720, the followed car's 2 headlights + 4 of traffic, 256 px
+  tiles), two runs: GPU +0.15 / +0.26 ms (the headlight views 0.234 / 0.247
+  ms), render thread +0.17 / +0.36 ms, host submission +0.05 / +0.19 ms, 386
+  more draws.
+- Not done: casters outside the camera view, brake light shadows, a
+  per-headlight shadow fade on budget changes (a tile switches on or off at
+  once), not validated in game.
 
 ### Lamp glass snapped onto the lens (#284)
 

@@ -1201,8 +1201,9 @@ at most (`src/resources/part_runtime.cpp:part_car_lights`). A light exists
 only while its part is installed on a car whose engine runs and its part
 condition (wear × tear) is above 0.25; headlights follow the city-lamp night
 window and the brake light the brake pedal, like the part's lamp glass
-(`part_lamp_lit`). The renderer draws them as unshadowed spot lamps ahead of
-the street lamps in the lamp array.
+(`part_lamp_lit`). The renderer draws them as spot lamps ahead of the street
+lamps in the lamp array; since #283 up to six headlight beams (the followed
+car's first) cast shadows from their own atlas.
 
 | Native (owner) | Descriptor | Effect |
 | --- | --- | --- |
