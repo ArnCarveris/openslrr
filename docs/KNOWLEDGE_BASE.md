@@ -1215,9 +1215,9 @@ Parse and retain emission texture slot plus UV mapping; include both in material
 merge equality. In a night overlay, skip sections without a mask and sample the
 mask RGB to modulate the additive emissive contribution. Missing masks do not
 fall back to white/full-bright. Preserve normal lighting on base facades. The
-night detail vertex path uses a 0.002 m normal offset to reduce coplanar depth
-fighting, without depth writes or distance-dependent clip bias. Onset remains
-18:30. Signs only emit through their authored masks as well.
+night detail vertex path used a 0.002 m normal offset to reduce coplanar depth
+fighting, without depth writes; since #281 it is a relative depth bias instead
+(see "Emissive overlays sit flush" below). Onset remains 18:30. Signs only emit through their authored masks as well.
 
 Release x64 and DXBC/GLSL shaders compile. Stock integration test verifies one
 masked and four unmasked sections, valid mask slot and hour transitions. This
@@ -1236,7 +1236,7 @@ either an authored mask (windows) or a nonzero emission colour (signs).
 Colour-only signs use the white mask binding and multiply the base texture
 by the emission colour; non-emissive facade groups remain excluded. Missing
 authored mask textures still do not fall back to a full-bright facade.
-The 2 mm overlay offset and 18:30 onset remain unchanged.
+The overlay depth handling (now #281's depth bias) and 18:30 onset remain unchanged.
 
 Validation: Release host build succeeded; `night_props` passed against game
 assets, checking night/day sign emission and window mask presence. Actual
@@ -3419,6 +3419,36 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   in-game cost lies in something the harness does not reproduce (scene,
   LOD/size filter, frame cache state).
 
+### Emissive overlays sit flush (#281)
+
+- Symptom (user, 21 November 2026): lamp glass floated about 2 mm off its
+  body: car head- and taillights, traffic lights.
+- Cause in code: `shaders/vs_mesh.sc` and `shaders/vs_mesh_inst.sc` pushed
+  every emissive overlay 2 mm along its normal (`1f886b5` for night facade
+  masks, `8f2775d` for the instanced copy). The flag is
+  `SceneInstance::emissive_overlay` (`u_alphaTest.y` = 2, or the instance
+  colour's w = 2): night-only props, night facade meshes and the traffic
+  signal glass (`src/resources/scene_instances.cpp:signal_geometry`). The
+  push moved the glass visibly and showed glass authored just behind its
+  bezel.
+- Fix: no geometry offset; clip z is scaled by 1 + 1e-4, which with
+  reverse Z brings the overlay 1e-4 × its distance nearer in depth only
+  (0.5 mm at 5 m, 5 mm at 50 m); x and y are unchanged, so nothing moves on
+  screen. 1e-5 lost depth ties on 250 of 4,200 pixels of a slanted wall in the
+  harness. Overlays keep `BGFX_STATE_DEPTH_TEST_GEQUAL` and additive blend
+  without depth writes.
+- Car lamp glass is not an emissive overlay: the `_CITY`/`_BRAKE` meshes
+  (`light_flags`) are drawn by the vehicle program, which has no offset. In
+  the stock data they are authored in front of the lamp body: Baiern
+  `L_taillights_CITY` exactly 1.000 cm along the lens normal for all 12
+  vertices, `L_taillights_BRAKE` 0.94–1.0 cm, `L_headlights_CITY` 0.4–1.0 cm
+  (measured with `load_scx_geometry`, distance to the body triangles). That
+  gap is the asset's, not the renderer's, and is left as authored.
+- Test: `scene_shadow_gpu` case `emissive_overlay_flush`: a 4 × 4 m wall seen
+  at a slant, glass as an 8 × 8 grid with the other diagonal; level glass
+  shows on all 4,200 interior pixels, 1.5 mm in front too, 1.5 mm behind on
+  none. With the old 2 mm push the glass 1.5 mm behind showed on every pixel.
+
 ### Instanced night overlays and blended props, world list zones (#264)
 
 - Profiler: `perf::Zone::WorldList` wraps the frame's world list build in
@@ -3454,8 +3484,8 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   order and sent in the instance colour, with `u_color.rgb` = 1 and the alpha
   (which never depends on the placement) in `u_color.a`. fs_mesh multiplies
   `tint * placement`, so the product is the same float.
-- `shaders/vs_mesh_inst.sc` applies vs_mesh's 2 mm overlay offset when the
-  instance colour's w is 2 (1 otherwise, including the shadow programs).
+- `shaders/vs_mesh_inst.sc` applies vs_mesh's overlay depth bias (a 2 mm
+  normal offset before #281) when the instance colour's w is 2 (1 otherwise, including the shadow programs).
   Pitfall: the first version read `u_alphaTest.y` in this vertex shader, like
   vs_mesh does; the bgfx render thread then took ~45 ms per frame in the
   harness, and the main thread got slower too (bisected: same code without
