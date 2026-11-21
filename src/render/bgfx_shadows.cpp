@@ -167,7 +167,12 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     car_shadow_stamps_.clear();
     car_shadow_valid_ = false;
   };
-  if (garage_ || !scene_sun_is_night() || !scenery_lights_count() || video.shadows == 0 ||
+  // No tiles while the lamps are faint or the sun still casts shadows
+  // (#271): a lamp shadow beside a sun shadow reads as a doubled shadow.
+  const auto sun = scene_instances_sun_state();
+  const float night = sun.night;
+  if (garage_ || night < kLampShadowNightMin || sun.shadowing || !scenery_lights_count() ||
+      video.shadows == 0 ||
       !render_debug().lamp_shadows || !render_debug().lamp_lighting ||
       !debug_overlay_.render_options().map_shadows ||
       !host_enhanced_graphics().local_lights ||
@@ -178,6 +183,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   }
   perf::Scope perf_scope(perf::Zone::Shadows);
   perf::Scope detail_scope(perf::Zone::LampShadows);
+  // Lamps added here at full power fade with the darkness too (#271).
   const uint16_t tile = local_shadow_resolution();
   if (bgfx::isValid(fixture_shadow_fb_) && fixture_shadow_tile_ != tile) {
     bgfx::destroy(fixture_shadow_fb_);
@@ -304,7 +310,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     lamp.position = candidate.position;
     lamp.color = candidate.color;
     lamp.attenuation = candidate.attenuation;
-    lamp.intensity = candidate.intensity;
+    lamp.intensity = candidate.intensity * night;
     lamp.range = candidate.range;
     lamp.source = candidate.source;
     const auto free = std::find_if(lamp_shadow_slots_.begin(), lamp_shadow_slots_.end(),
@@ -451,7 +457,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       tile.lamp.position = candidate->position;
       tile.lamp.color = candidate->color;
       tile.lamp.attenuation = candidate->attenuation;
-      tile.lamp.intensity = candidate->intensity;
+      tile.lamp.intensity = candidate->intensity * night;
       tile.lamp.range = candidate->range;
       tile.lamp.source = candidate->source;
       car_shadow_tiles_.push_back(tile);

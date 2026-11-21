@@ -1878,8 +1878,9 @@ bool scene_instances_supports(void *root,
   return !points.empty();
 }
 
-SceneSun scene_instances_light(void* root) {
-  if(!root)root=g_world;
+namespace {
+// The world's light before the day cycle, and whether the cycle applies.
+SceneSun base_light(void* root, bool* cycle) {
   SceneSun selected=scene_sun();int newest=0;
   for(auto* node:gameref_directional_lights()) {
     if(!node->directional_light.set || node->live_id<=newest)continue;
@@ -1890,9 +1891,44 @@ SceneSun scene_instances_light(void* root) {
     const auto& d=node->directional_light.direction;
     for(int i=0;i<3;++i)selected.direction[i]=frame[i]*d[0]+frame[4+i]*d[1]+frame[8+i]*d[2];
   }
-  if (root == g_world && scene_instances_outdoor())
+  *cycle = root == g_world && scene_instances_outdoor();
+  return selected;
+}
+float luminance(const float* rgb) {
+  return rgb[0] * 0.2126f + rgb[1] * 0.7152f + rgb[2] * 0.0722f;
+}
+}  // namespace
+
+SceneSun scene_instances_light(void* root) {
+  if(!root)root=g_world;
+  bool cycle=false;
+  SceneSun selected=base_light(root,&cycle);
+  if (cycle)
     scene_sun_apply_day_cycle(selected);
   return selected;
+}
+
+SceneSunState scene_instances_sun_state() {
+  SceneSunState state;
+  bool cycle=false;
+  const SceneSun base=base_light(g_world,&cycle);
+  SceneSun now=base, noon=base;
+  if (cycle) {
+    scene_sun_apply_day_cycle(now);
+    scene_sun_apply_day_cycle_at(noon, 12.f * 3600.f);
+  }
+  const float length=std::sqrt(now.direction[0]*now.direction[0]+now.direction[1]*now.direction[1]+
+                               now.direction[2]*now.direction[2]);
+  // The direction is where the light travels: a sun above the horizon points down.
+  state.elevation = now.has_direction && length > 1e-6f
+      ? std::asin(std::clamp(-now.direction[1] / length, -1.f, 1.f)) : 0.f;
+  state.diffuse = now.set ? luminance(now.diffuse) : 0.f;
+  state.noon = noon.set ? luminance(noon.diffuse) : 0.f;
+  // update_static_shadow casts no sun shadow from a direction with y >= 0.02.
+  state.shadowing = now.has_direction && now.direction[1] < 0.02f && state.diffuse > 0.f;
+  state.direct = state.noon > 1e-4f ? std::clamp(state.diffuse / state.noon, 0.f, 1.f) : 0.f;
+  state.night = scene_sun_night_factor(state.direct);
+  return state;
 }
 namespace {
 constexpr int kSkinBones = 48;
