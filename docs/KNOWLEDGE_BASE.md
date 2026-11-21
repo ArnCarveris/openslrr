@@ -3438,8 +3438,9 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   second shadow. Cause: street lamps switched on at full power on a clock
   window (`scene_sun_is_night`, 18:30-06:00) independent of the light that
   lit the scene, so a lamp's shadow tile (#237) added a second shadow beside
-  the sun's. Not a regression of the #244-#269 stack: the harness at 13:30
-  shows 0 lamps lit and single shadows on every merge tested.
+  the sun's. Not a regression of the #244-#269 stack: the clock gate and
+  the lamp tiles come from #237/#238, and on the 2a4abf1 merge the harness
+  at 13:30 shows 0 lamps lit and single shadows (no bisect was needed).
 - Fix: `src/resources/scene_sun.cpp:scene_sun_night_factor` gives 0 while
   the day cycle's sun lights the scene and 1 once its direct light is gone
   (sun elevation -0.06, where `scene_sun_apply_day_cycle`'s daylight ends),
