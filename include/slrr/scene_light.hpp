@@ -29,6 +29,11 @@ struct PointLight {
 struct LampLight {
   std::array<float, 3> position{}, color{1, 1, 1}, attenuation{1, 0, 0};
   float intensity = 1.f, range = 45.f;
+  // Spot cone (car lights, #279): beam direction (unit, render space) and
+  // the cosines of the inner and outer half-angles. An outer cosine below -1
+  // is an omnidirectional lamp.
+  std::array<float, 3> direction{0, 0, 0};
+  float cos_inner = -1.f, cos_outer = -2.f;
   const void *source = nullptr; // stable identity (the registry entry)
   bool valid() const {
     for (int i = 0; i < 3; ++i)

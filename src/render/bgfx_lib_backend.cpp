@@ -1253,11 +1253,13 @@ void LibBgfxBackend::update_local_light() {
     point_light_.reset();
     fixture_lights_.clear();
     scenery_lamps_.clear();
+    car_lamp_count_ = 0;
     // Local lights are their own option (4). Map sunlight (option 3) only
     // controls scenery sunlight; it must not switch the garage lamps off.
     if (!host_enhanced_graphics().local_lights)
       return;
     if (!garage_) {
+      update_car_lights();
       update_scenery_lights();
       return;
     }
@@ -1412,6 +1414,69 @@ void LibBgfxBackend::publish_debug_stats() {
     stats.ao_height = ao_height_;
 }
 
+// Car lights (#279): one spot per lit headlight part, one red light per lit
+// brake light part (part_car_lights). The authored D3D values light the
+// scene too weakly (headlight diffuse 0.2) and their cone (theta/phi about
+// 110 degrees) was shaped by the beam textures attH/attV, which are not
+// drawn; the hue comes from the resource, power and cone from the constants
+// below. Unshadowed.
+void LibBgfxBackend::update_car_lights() {
+    car_lamp_count_ = 0;
+    if (!render_debug().car_lights) return;
+    std::vector<CarLight> lights = car_lights_override_ ? *car_lights_override_ : part_car_lights();
+    if (lights.empty()) return;
+    // The followed car (lamp shadow focus) else the eye: its own lights,
+    // about 2 m away, always come first.
+    const std::array<float, 3> eye{cull_eye_[0], cull_eye_[1], -cull_eye_[2]};
+    const std::array<float, 3> centre = lamp_focus_valid_
+        ? std::array<float, 3>{lamp_focus_[0], lamp_focus_[1], -lamp_focus_[2]} : eye;
+    const auto distance2 = [](const CarLight& light, const std::array<float, 3>& to) {
+      float d = 0.f;
+      for (int i = 0; i < 3; ++i) d += (light.position[i] - to[i]) * (light.position[i] - to[i]);
+      return d;
+    };
+    std::stable_sort(lights.begin(), lights.end(), [&](const CarLight& a, const CarLight& b) {
+      return distance2(a, centre) < distance2(b, centre);
+    });
+    const auto hue = [](const std::array<float, 3>& diffuse, const std::array<float, 3>& fallback) {
+      const float peak = std::max({diffuse[0], diffuse[1], diffuse[2]});
+      if (!(peak > 1e-3f)) return fallback;
+      return std::array<float, 3>{diffuse[0] / peak, diffuse[1] / peak, diffuse[2] / peak};
+    };
+    for (const auto& light : lights) {
+      if (car_lamp_count_ >= kCarLights) break;
+      if (distance2(light, eye) > kCarLightMaxDistance * kCarLightMaxDistance) continue;
+      LampLight lamp;
+      lamp.position = light.position;
+      lamp.direction = light.direction;
+      lamp.source = light.part;
+      if (light.kind == CarLightKind::Headlight) {
+        lamp.color = hue(light.diffuse, {1.f, .96f, .88f});
+        lamp.intensity = kHeadlightIntensity;
+        lamp.range = std::min(light.range > 0.f ? light.range : kHeadlightRange, kHeadlightRange);
+        lamp.attenuation = light.attenuation;
+        lamp.cos_inner = std::cos(kHeadlightInnerDegrees * 3.14159265f / 180.f);
+        lamp.cos_outer = std::cos(kHeadlightOuterDegrees * 3.14159265f / 180.f);
+      } else {
+        lamp.color = hue(light.diffuse, {1.f, 0.f, 0.f});
+        lamp.intensity = kBrakeLightIntensity;
+        lamp.range = kBrakeLightRange;
+        lamp.attenuation = {1.f, 0.f, kBrakeLightQuadratic};
+        lamp.cos_inner = std::cos(kBrakeLightInnerDegrees * 3.14159265f / 180.f);
+        lamp.cos_outer = std::cos(kBrakeLightOuterDegrees * 3.14159265f / 180.f);
+      }
+      const float length = std::sqrt(lamp.direction[0] * lamp.direction[0] +
+          lamp.direction[1] * lamp.direction[1] + lamp.direction[2] * lamp.direction[2]);
+      if (!(length > 1e-3f)) { lamp.cos_inner = -1.f; lamp.cos_outer = -2.f; }
+      // A worn lamp part dims before it breaks (part_lamp_power).
+      lamp.intensity *= std::clamp(light.power, 0.f, 1.f);
+      if (!(lamp.intensity > 0.f)) continue;
+      if (!lamp.valid()) continue;
+      scenery_lamps_.push_back(lamp);
+      ++car_lamp_count_;
+    }
+}
+
 void LibBgfxBackend::update_scenery_lights() {
     perf::Scope lamp_scope(perf::Zone::LampSelect);
     // Street lamps follow the sun the scene is lit by, not a clock window
@@ -1428,8 +1493,9 @@ void LibBgfxBackend::update_scenery_lights() {
     const auto frustum = view_frustum(cull_view_, cull_proj_);
     // Leave room for shadowed lamps outside this set (update_lamp_shadows).
     const auto& overrides = render_debug();
-    const int budget = render_debug_budget(overrides.lamp_budget,
-        int(kSceneryLamps - kLampSpecial), int(kSceneryLamps - kLampSpecial));
+    const int budget = std::max(0, render_debug_budget(overrides.lamp_budget,
+        int(kSceneryLamps - kLampSpecial), int(kSceneryLamps - kLampSpecial)) -
+        int(car_lamp_count_));
     const float distance = overrides.lamp_distance > 0.f
         ? std::min(overrides.lamp_distance, 2000.f) : kSceneryLightMaxDistance;
     const auto picks = scenery_lights_select(eye, size_t(budget), groups,

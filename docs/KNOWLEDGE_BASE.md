@@ -2756,7 +2756,8 @@ city at night.
   `src/resources/scene_instances.cpp:scene_instances_sun_state` since #271
   (lamp power scaled by it, off below 0.01); night facades keep
   the `scene_sun_is_night` window (before 06:00 or from 18:30). Other groups (car
-  brake/indicator bits) stay off; `fake*` lights never light the scene.
+  brake/indicator bits) stay off for scenery; car lights are their own path
+  (#279, below); `fake*` lights never light the scene.
   `src/resources/script_lights.cpp:scenery_lights_select` keeps lamps whose
   45 m light sphere meets the view frustum (a lamp outside it lights no visible
   pixel), then the nearest 64 within 500 m. Each fades to 0 over
@@ -2915,7 +2916,83 @@ city at night.
   lamp reaching the car) accepted by the user in game (20 November 2026).
 - Not done: lens flares/glow for scenery lights (`lf_*`), spot cones for
   scenery spots (drawn as omni), lights following knocked-over lamps,
-  `0x1D7` trafficlamp `light` syntax, car head/taillights (still hardcoded).
+  `0x1D7` trafficlamp `light` syntax. Car head- and brake lights: #279 below.
+
+### Car lights: headlight beams and brake lights (#279)
+
+- What the stock data says (read-only scan of every car cfg and RPK under
+  `game/cars` and `game/parts`). Lights are not marked by a part class,
+  name or typeof of the part: a light part is any part whose cfg has a
+  `render <id>` line resolving to a typeof-13 light resource, followed by
+  `flags <group>` (1 brake, 2 reverse, 4 city, 16 indicator; see the
+  scenery-light notes above). Example, Baiern `L_headlights.cfg`:
+  `render 0x000000E4 ... ; CITY / flags 4` (typeof 14 lamp-glass mesh
+  `L_headlights_CITY`, texture `Baiern_light_glow.dds`) and
+  `render 0x00030008 0 0 0 0.087 0 0 ; CITY / flags 4` (racers.rpk 0x08,
+  `type spot`, diffuse 0.2 grey, range 400, attenuation 1 .03 0, theta
+  1.896, phi 2.02, `attH_texture`/`attV_texture` = `light_beams/attH.dds`,
+  `attVV.png`, flare `lf_*`). `L_taillights.cfg` has `render 0x0003000F ...
+  ; BRAKE / flags 1`: `fakespot`, diffuse 1 0 0, range 5. Over the stock
+  cfgs, 34 headlight parts carry a real `spot` in group 4 (range 250–400),
+  some other parts too (pop-up or bumper lamps); taillight city lamps are
+  `fakespot` (range 0.001 or 5); every brake child is a `fakespot`.
+- The "fake beam": the original lit the road with the headlight spot itself,
+  shaped by the horizontal/vertical attenuation textures `attH`/`attV`
+  (D3D projected light). No beam quad or ground mesh exists in the data, and
+  this engine never drew those textures, so nothing doubled up and nothing
+  had to be hidden. The `_CITY`/`_BRAKE` meshes are the lamp glass, shown by
+  `src/resources/scene_instances.cpp` through `part_lamp_lit`; they stay.
+- Scripts: no Java class drives headlights or brake lights (no lights
+  on/off or braking method in the car scripts); the engine decides.
+- Ownership: `src/resources/part_runtime.cpp:collect_lamps` keeps, per part
+  record, the first group-4 `spot` light (headlight beam) and the first
+  group-1 light (brake light), with the render pose composed with the
+  resource position and direction. `part_car_lights` reports them in render
+  space for installed parts only: `car(part)` must reach a chassis (a
+  removed part has no record; a torn-off loose part, `detach_panel`, has no
+  parent), and lit ones only when `part_lamp_lit` is true for their group.
+- Gates (`part_lamp_lit`, shared with the lamp glass): engine running;
+  headlights in the stock night window (before 06:00, from 21:00, on the
+  `GameLogic.time` clock); brake lights while `dynamics.drive.brake` >
+  0.05 (`kBrakeLampMin`), day or night, never in the showroom preview.
+  Wear: condition c = wear × tear (the `getConditionNoAttach` product of
+  `Part.java`; 1 = new). `part_lamp_power`: 0 at c ≤ 0.25
+  (`kLampBrokenCondition`: no beam, no lit glass), 40 % rising linearly to
+  full at c = 0.5 (`kLampFullCondition`). No flicker: it would make frames
+  depend on time and break the capture tests. `part_tear_off` tears a part
+  off as a collision does (used by the test).
+- Rendering: `src/render/bgfx_lib_backend.cpp:update_car_lights`, before
+  `update_scenery_lights` outside garages when Local lights (option 4) and
+  the debug option "Car lights" are on. At most `kCarLights` = 16 within
+  150 m, nearest to the followed car first; the street-lamp budget shrinks
+  by that count so the array still holds 64. Car lights are unshadowed and
+  come right after the shadowed lamps. Hue from the resource diffuse
+  normalised to its peak; power and cone are constants because the authored
+  0.2 diffuse and 108–116° cone were shaped by the textures above: headlight
+  intensity 3 × part power, range min(authored, 60 m), authored attenuation,
+  half-angles 14°/30°; brake light intensity 1.5, range 6 m, attenuation
+  1 0 0.3, half-angles 55°/85° around its authored backward direction.
+  Shader: `shaders/scene_shadow.sh:lampCone`, direction and outer cosine at
+  light-data column 192+i of row 0, inner cosine in the attenuation `.w`;
+  street lamps store −2 (omnidirectional), so their images are unchanged.
+  Stock headlight poses yaw each beam 5° outward (`0.087` is yaw) and do not
+  pitch it down.
+- Tests: `tests/test_car_lights.cpp` (new suite `car_lights`, stock Baiern
+  on Valo City): 2 headlights and 2 brake lights from 4 different parts;
+  beams 2.07 m ahead of the car centre, forward, level; nothing lit parked
+  at noon; driving at night 2 headlights, no brake; braking 2 brake lights;
+  removing the left headlight leaves only the right beam; wear 0.2 gives no
+  beam and no lit glass, 0.4 gives 0.76, 1.0 full; a taillight torn to 0.1
+  loses its brake light; the remaining headlight torn off and lying loose
+  gives no light. `scene_shadow_gpu` case `car_lights` (night road, 25-pixel
+  patches, sum of r+g+b): 10 m ahead 1500 unlit, 9510 with two headlights,
+  5520 with one; 24 m ahead 1500 → 3600; 9 m behind unchanged; brake red 3.5 m
+  behind 500 → 2271 with green unchanged; toggle off or option 4 off equals
+  the unlit image.
+- Not done: headlight shadows (they would need forward lamp tiles; the street
+  lamp atlas has none free for them), the `attH`/`attV` beam pattern (a round
+  cone instead), lens flares, reverse and indicator lights, native traffic
+  cars without part records, not validated in game yet.
 
 ### Renderer debug menu (#243)
 

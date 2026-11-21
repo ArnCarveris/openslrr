@@ -21,6 +21,7 @@ struct RenderDebugOverrides {
   bool skinned_casters = true;     // characters in sun cascades and lamp tiles
   bool fixture_shadows = true;     // garage fixture shadow atlas
   bool lamp_lighting = true;       // street lamps outside garages
+  bool car_lights = true;          // headlight beams and brake lights (#279)
   bool lamp_shadows = true;        // scenery lamp shadow tiles
   bool car_lamp_tiles = true;      // car-only lamp shadow tiles
   bool lamp_shadow_reference = false; // #237 lamp shadow loop (no early-out, full kernel)
@@ -102,6 +103,7 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   flag("character casters", o.skinned_casters, d.skinned_casters);
   flag("garage fixture shadows", o.fixture_shadows, d.fixture_shadows);
   flag("street lamp lighting", o.lamp_lighting, d.lamp_lighting);
+  flag("car lights", o.car_lights, d.car_lights);
   flag("street lamp shadows", o.lamp_shadows, d.lamp_shadows);
   flag("car lamp tiles", o.car_lamp_tiles, d.car_lamp_tiles);
   flag("lamp shadow reference path", o.lamp_shadow_reference, d.lamp_shadow_reference);
