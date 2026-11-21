@@ -8,6 +8,7 @@
 #include "slrr/part_runtime.hpp"
 #include "slrr/race_runtime.hpp"
 #include "slrr/scene_instances.hpp"
+#include <array>
 #include <cmath>
 namespace slrr {
 void spawn_ground_shell(Jvm &, const RpkIndex &, Object *);
@@ -25,6 +26,92 @@ const CarLight *find(const std::vector<CarLight> &lights, CarLightKind kind, siz
     if (light.kind == kind && nth-- == 0)
       return &light;
   return nullptr;
+}
+// #284: gaps between each lamp-glass vertex and the lens of its part, in
+// metres along the nearest lens triangle's plane (a body triangle facing
+// within 60 degrees of the glass normal), for vertices with a lens triangle
+// within 3 cm. Also the largest
+// distance a vertex moved from the stock mesh.
+struct GlassGaps {
+  size_t meshes = 0, vertices = 0;
+  double smallest = 1e9, largest = -1e9, moved = 0;
+};
+using V3 = std::array<double, 3>;
+V3 sub(V3 a, V3 b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+double dot3(V3 a, V3 b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+V3 cross3(V3 a, V3 b) {
+  return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+V3 place(const GameRefState &node, const ScxGeometry &mesh, size_t v) {
+  const float *m = node.local_matrix;
+  const double k = mesh.position_scale, x = mesh.positions[v * 3] * k,
+               y = mesh.positions[v * 3 + 1] * k, z = mesh.positions[v * 3 + 2] * k;
+  return {m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
+          m[2] * x + m[6] * y + m[10] * z + m[14]};
+}
+GlassGaps glass_gaps(Object *car) {
+  GlassGaps out;
+  for (const auto &item : part_installed_tree(car)) {
+    const auto *part = gameref_get(item.object);
+    if (!part) continue;
+    std::vector<std::array<V3, 3>> body;
+    std::vector<const GameRefState *> glass;
+    for (void *child : part->children) {
+      const auto *node = gameref_get(child);
+      if (!node || node->empty || node->kind != GameRefKind::RenderRef) continue;
+      if (node->light_flags) { glass.push_back(node); continue; }
+      const auto mesh = scene_instances_geometry(uint32_t(node->type_id));
+      if (!mesh) continue;
+      for (size_t t = 0; t + 2 < mesh->indices.size(); t += 3)
+        body.push_back({place(*node, *mesh, mesh->indices[t]), place(*node, *mesh, mesh->indices[t + 1]),
+                        place(*node, *mesh, mesh->indices[t + 2])});
+    }
+    if (body.empty()) continue;
+    for (const auto *node : glass) {
+      const auto stock = scene_instances_geometry(uint32_t(node->type_id));
+      const auto drawn = node->deformed_geometry && node->deformed_type == node->type_id
+                             ? node->deformed_geometry : stock;
+      if (!stock || !drawn || drawn->positions.size() != stock->positions.size()) continue;
+      ++out.meshes;
+      for (size_t v = 0; v * 3 + 2 < drawn->positions.size(); ++v) {
+        const V3 p = place(*node, *drawn, v), before = place(*node, *stock, v);
+        const V3 d = sub(p, before);
+        out.moved = std::max(out.moved, std::sqrt(dot3(d, d)));
+        const float *m = node->local_matrix;
+        const double nx = stock->normals[v * 3], ny = stock->normals[v * 3 + 1], nz = stock->normals[v * 3 + 2];
+        const V3 normal{m[0] * nx + m[4] * ny + m[8] * nz, m[1] * nx + m[5] * ny + m[9] * nz,
+                        m[2] * nx + m[6] * ny + m[10] * nz};
+        double best = .03, gap = 0;
+        bool found = false;
+        for (const auto &tri : body) {
+          const V3 e0 = sub(tri[1], tri[0]), e1 = sub(tri[2], tri[0]);
+          V3 n = cross3(e0, e1);
+          const double length = std::sqrt(dot3(n, n));
+          if (!(length > 1e-10)) continue;
+          for (auto &c : n) c /= length;
+          if (dot3(n, normal) < 0) for (auto &c : n) c = -c;
+          // A lens faces the way the glass does (not a housing wall).
+          if (dot3(n, normal) < .5 * std::sqrt(dot3(normal, normal))) continue;
+          const double h = dot3(sub(p, tri[0]), n);
+          if (std::fabs(h) >= best) continue;
+          const V3 q = sub(sub(p, {n[0] * h, n[1] * h, n[2] * h}), tri[0]);
+          const double d00 = dot3(e0, e0), d01 = dot3(e0, e1), d11 = dot3(e1, e1);
+          const double d20 = dot3(q, e0), d21 = dot3(q, e1), det = d00 * d11 - d01 * d01;
+          if (!(std::fabs(det) > 1e-20)) continue;
+          const double b1 = (d11 * d20 - d01 * d21) / det, b2 = (d00 * d21 - d01 * d20) / det;
+          if (b1 < -.02 || b2 < -.02 || b1 + b2 > 1.04) continue;
+          best = std::fabs(h);
+          gap = h;
+          found = true;
+        }
+        if (!found) continue;
+        ++out.vertices;
+        out.smallest = std::min(out.smallest, gap);
+        out.largest = std::max(out.largest, gap);
+      }
+    }
+  }
+  return out;
 }
 void set_time(Jvm &vm, float seconds) {
   vm.set_static("java.game.GameLogic", "time", Value::make_float(seconds));
@@ -122,6 +209,14 @@ void stock_baiern_lights() {
     SLRR_REQUIRE(out > .8f && ahead > 2.f && std::fabs(light->direction[1]) < .26f);
   }
   SLRR_REQUIRE(std::hypot(left.position[0] - right.position[0], left.position[2] - right.position[2]) > .8f);
+
+  // #284: lamp glass sits on its lens: 0 to 1 mm in front of the lamp body,
+  // never behind, moved at most a few centimetres from the stock mesh.
+  const auto gaps = glass_gaps(car);
+  std::printf("LAMP GLASS %zu meshes, %zu vertices over a lens: gap %.2f to %.2f mm, moved at most %.1f mm\n",
+              gaps.meshes, gaps.vertices, gaps.smallest * 1000, gaps.largest * 1000, gaps.moved * 1000);
+  SLRR_REQUIRE(gaps.meshes >= 8 && gaps.vertices >= 40);
+  SLRR_REQUIRE(gaps.smallest >= 0. && gaps.largest < .001 && gaps.moved < .03);
 
   // Gating: parked, engine off, midday: nothing is lit.
   set_time(f.vm, 12 * 3600.f);

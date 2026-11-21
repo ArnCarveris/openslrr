@@ -559,6 +559,123 @@ void collect_lamps(Record &rec) {
     rec.lamps.push_back(lamp);
   }
 }
+// Lamp glass (#284): the stock `_CITY`/`_BRAKE` meshes are authored about
+// 1 cm in front of the lamp body, so the lit glass floated off the lens.
+// Each glass vertex moves onto the nearest body triangle within
+// kGlassSnapReach (measured along that triangle's plane, oriented by the
+// glass normal) and kGlassSnapGap in front of it; vertices with no body
+// triangle in reach take the mean move of the others, so the glass keeps its
+// shape. The copy is the node's own geometry (deformed_geometry, which the
+// deformation pass leaves alone on lamp nodes); the game files and the shared
+// mesh cache are unchanged.
+constexpr double kGlassSnapReach = .03, kGlassSnapGap = .0005;
+// Lens triangles face within 60 degrees of the glass normal.
+constexpr double kGlassLensAlignment = .5;
+void snap_lamp_glass(Record &rec) {
+  using physics::Vec3;
+  struct Tri { Vec3 a, n, e0, e1; double d00, d01, d11, inv; };
+  std::vector<Tri> body;
+  for (auto *render : rec.renders) {
+    const auto *node = gameref_get(render);
+    if (!node || node->light_flags || node->empty) continue;
+    const auto mesh = scene_instances_geometry(static_cast<uint32_t>(node->type_id));
+    if (!mesh || !(mesh->position_scale > 0)) continue;
+    const auto m = node_local(render);
+    const double k = mesh->position_scale;
+    const auto at = [&](uint32_t i) {
+      const double x = mesh->positions[i * 3] * k, y = mesh->positions[i * 3 + 1] * k,
+                   z = mesh->positions[i * 3 + 2] * k;
+      return Vec3{m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13],
+                  m[2] * x + m[6] * y + m[10] * z + m[14]};
+    };
+    for (size_t t = 0; t + 2 < mesh->indices.size(); t += 3) {
+      Tri tri;
+      tri.a = at(mesh->indices[t]);
+      tri.e0 = at(mesh->indices[t + 1]) - tri.a;
+      tri.e1 = at(mesh->indices[t + 2]) - tri.a;
+      const Vec3 n = tri.e0.cross(tri.e1);
+      const double length = std::sqrt(n.dot(n));
+      if (!(length > 1e-10)) continue;
+      tri.n = n / length;
+      tri.d00 = tri.e0.dot(tri.e0); tri.d01 = tri.e0.dot(tri.e1); tri.d11 = tri.e1.dot(tri.e1);
+      const double det = tri.d00 * tri.d11 - tri.d01 * tri.d01;
+      if (!(std::abs(det) > 1e-20)) continue;
+      tri.inv = 1 / det;
+      body.push_back(tri);
+    }
+  }
+  if (body.empty()) return;
+  for (auto *render : rec.renders) {
+    auto *node = gameref_get(render);
+    if (!node || !node->light_flags) continue;
+    const auto mesh = scene_instances_geometry(static_cast<uint32_t>(node->type_id));
+    if (!mesh || !(mesh->position_scale > 0) || mesh->normals.size() != mesh->positions.size())
+      continue;
+    const auto m = node_local(render);
+    const Vec3 x{m[0], m[1], m[2]}, y{m[4], m[5], m[6]}, z{m[8], m[9], m[10]};
+    const Vec3 origin{m[12], m[13], m[14]};
+    const double k = mesh->position_scale;
+    const size_t count = mesh->positions.size() / 3;
+    std::vector<Vec3> points(count), normals(count);
+    for (size_t v = 0; v < count; ++v) {
+      points[v] = origin + (x * mesh->positions[v * 3] + y * mesh->positions[v * 3 + 1] +
+                            z * mesh->positions[v * 3 + 2]) * k;
+      normals[v] = (x * mesh->normals[v * 3] + y * mesh->normals[v * 3 + 1] +
+                    z * mesh->normals[v * 3 + 2]).normalized();
+    }
+    const std::vector<Vec3> stock = points;
+    // The move that puts p kGlassSnapGap in front of the nearest lens
+    // triangle: one roughly parallel to the glass (housing walls are not
+    // lenses), within reach, whose plane projection holds p.
+    const auto snap = [&](const Vec3 &p, const Vec3 &normal, Vec3 &move) {
+      double best = kGlassSnapReach;
+      bool hit = false;
+      for (const auto &tri : body) {
+        // Front of the lens is the side the glass faces.
+        const Vec3 n = tri.n.dot(normal) < 0 ? tri.n * -1. : tri.n;
+        if (n.dot(normal) < kGlassLensAlignment) continue;
+        const double d = (p - tri.a).dot(n);
+        if (std::abs(d) >= best) continue;
+        const Vec3 q = p - n * d - tri.a;
+        const double d20 = q.dot(tri.e0), d21 = q.dot(tri.e1);
+        const double b1 = (tri.d11 * d20 - tri.d01 * d21) * tri.inv;
+        const double b2 = (tri.d00 * d21 - tri.d01 * d20) * tri.inv;
+        if (b1 < -.02 || b2 < -.02 || b1 + b2 > 1.04) continue;
+        best = std::abs(d);
+        move = n * (kGlassSnapGap - d);
+        hit = true;
+      }
+      return hit;
+    };
+    // Pass 1 moves the vertices over a lens and the others by their mean;
+    // later passes settle vertices that the mean brought over a lens.
+    bool any = false;
+    for (int pass = 0; pass < 3; ++pass) {
+      Vec3 mean;
+      size_t snapped = 0;
+      std::vector<Vec3> moves(count);
+      std::vector<char> found(count, 0);
+      for (size_t v = 0; v < count; ++v)
+        if ((found[v] = snap(points[v], normals[v], moves[v]))) { mean = mean + moves[v]; ++snapped; }
+      if (!snapped) break;
+      any = true;
+      mean = mean / double(snapped);
+      for (size_t v = 0; v < count; ++v)
+        if (found[v]) points[v] = points[v] + moves[v];
+        else if (pass == 0) points[v] = points[v] + mean;
+    }
+    if (!any) continue;
+    auto copy = std::make_shared<ScxGeometry>(*mesh);
+    for (size_t v = 0; v < count; ++v) {
+      const Vec3 delta = (points[v] - stock[v]) / k;
+      copy->positions[v * 3] += float(delta.dot(x));
+      copy->positions[v * 3 + 1] += float(delta.dot(y));
+      copy->positions[v * 3 + 2] += float(delta.dot(z));
+    }
+    node->deformed_geometry = std::move(copy);
+    node->deformed_type = node->type_id;
+  }
+}
 void render_part(Jvm &jvm, Object *self, Record &rec) {
   rec.inline_wheels.clear();
   collect_lamps(rec);
@@ -661,6 +778,7 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
       }
     }
   }
+  snap_lamp_glass(rec);
 }
 void stock_parts(Jvm &jvm, Object *part, Object *descriptor, int depth = 0) {
   if (depth > 48 || records.size() > 2000)
@@ -3232,8 +3350,9 @@ void restore_deformation(Object* part, Record& rec) {
   rec.deformation.reset();
   rec.deformed_collision.reset();
   rec.deformation_upload_ticks = 0;
+  // Lamp glass keeps its lens snap (#284): deformation never moves it.
   for (auto* render : rec.renders)
-    if (auto* node = gameref_get(render)) node->deformed_geometry.reset();
+    if (auto* node = gameref_get(render); node && !node->light_flags) node->deformed_geometry.reset();
   for (const auto& [slot, child] : rec.children)
     if (const auto* installed = record(child); installed && installed->config->category == 2)
       place_child(part, slot, false);

@@ -2994,6 +2994,30 @@ city at night.
   cone instead), lens flares, reverse and indicator lights, native traffic
   cars without part records, not validated in game yet.
 
+### Lamp glass snapped onto the lens (#284)
+
+- The stock lamp-glass meshes (`light_flags` renders such as `_CITY`,
+  `_BRAKE`) are authored in front of their lamp body: Baiern 3.85–10.6 mm over
+  the lens (`L_taillights_CITY` 10 mm on every vertex). Lit, the glass floated
+  off the car.
+- `src/resources/part_runtime.cpp:snap_lamp_glass`, at the end of
+  `render_part`: each glass vertex moves onto the nearest lens triangle of
+  the same part's other renders, 0.5 mm (`kGlassSnapGap`) in front of it. A
+  lens triangle faces within 60° of the glass normal (`kGlassLensAlignment`;
+  housing walls are not lenses), lies within 3 cm (`kGlassSnapReach`) and
+  holds the vertex in its plane projection. Vertices with no lens under them
+  take the mean move, then two more passes settle those the mean brought over
+  a lens. The copy is the render node's `deformed_geometry`; game files and
+  the shared mesh cache are untouched.
+- `restore_deformation` no longer clears lamp nodes: Java `setTear(1)` during
+  assembly ran it and dropped the snap. The deformation pass already skipped
+  lamp nodes, so lamp glass still does not follow body dents.
+- The vehicle path draws lamp glass with `BGFX_STATE_DEPTH_TEST_GEQUAL`, so
+  the 0.5 mm gap never loses a depth tie with the lens.
+- Test (`tests/test_car_lights.cpp`, stock Baiern): 14 glass meshes, 78
+  vertices over a lens, all exactly 0.50 mm in front after loading, none
+  behind, at most 10.1 mm moved; before the change 3.85–10.6 mm.
+
 ### Renderer debug menu (#243)
 
 - Overrides and statistics: `src/render/render_debug.hpp:render_debug`
