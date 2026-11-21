@@ -1898,14 +1898,15 @@ namespace {
 constexpr int kSkinBones = 48;
 
 // False when the clip gives no bones; the instance then keeps the CPU pose.
-bool skin_palette(SceneInstance& instance, void* key, int32_t type_id) {
+// Safe on the job pool for distinct characters (#268): it writes only the
+// instance and the prepared character.
+bool skin_palette_prepared(SceneInstance& instance, void* prepared) {
   instance.skin.assign(static_cast<size_t>(kSkinBones) * 16, 0.f);
   for (int bone = 0; bone < kSkinBones; ++bone) {
     float* m = instance.skin.data() + static_cast<size_t>(bone) * 16;
     m[0] = m[5] = m[10] = m[15] = 1.f;
   }
-  const int count = character_skin_palette(key, type_id, *g_resources,
-                                           instance.skin.data(), kSkinBones);
+  const int count = character_skin_palette_prepared(prepared, instance.skin.data(), kSkinBones);
   if (count <= 0) {
     instance.skin.clear();
     instance.gpu_skin = false;
@@ -1932,6 +1933,53 @@ bool skin_palette(SceneInstance& instance, void* key, int32_t type_id) {
   instance.gpu_skin = true;
   return true;
 }
+bool skin_palette(SceneInstance& instance, void* key, int32_t type_id) {
+  return skin_palette_prepared(instance, character_skin_prepare(key, type_id, *g_resources));
+}
+
+// Lowercase texture path without extension or game/ prefix: the mesh list
+// may prefer a DDS sidecar while the resource names the original image.
+std::string texture_key(std::string path) {
+  std::replace(path.begin(), path.end(), '\\', '/');
+  for (char &c : path)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  const auto slash = path.find_last_of('/');
+  const auto dot = path.find_last_of('.');
+  if (dot != std::string::npos &&
+      (slash == std::string::npos || dot > slash))
+    path.resize(dot);
+  const auto game = path.rfind("game/");
+  if (game != std::string::npos)
+    path = path.substr(game + 5);
+  return path;
+}
+
+// texture_key of every texture of a mesh, kept per mesh and revision (#268):
+// a painted or retextured part matched them string by string every frame.
+// The weak pointer catches a freed mesh whose address was reused. Host
+// thread only.
+const std::vector<std::string>& mesh_texture_keys(const std::shared_ptr<const ScxGeometry>& mesh) {
+  struct Entry {
+    std::weak_ptr<const ScxGeometry> owner;
+    uint32_t revision = 0;
+    std::vector<std::string> keys;
+  };
+  static std::unordered_map<const ScxGeometry*, Entry> cache;
+  static size_t prune_at = 256;
+  if (cache.size() >= prune_at) {
+    std::erase_if(cache, [](const auto& item) { return item.second.owner.expired(); });
+    prune_at = std::max<size_t>(256, cache.size() * 2);
+  }
+  auto& entry = cache[mesh.get()];
+  if (entry.owner.lock() != mesh || entry.revision != mesh->revision ||
+      entry.keys.size() != mesh->textures.size()) {
+    entry.owner = mesh;
+    entry.revision = mesh->revision;
+    entry.keys.clear();
+    for (const auto& texture : mesh->textures) entry.keys.push_back(texture_key(texture));
+  }
+  return entry.keys;
+}
 
 // defer_skin leaves pedestrians with gpu_skin set and an empty palette.
 std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
@@ -1953,6 +2001,7 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
            widget->second.tag == ValueTag::Int;
   };
   const auto nodes = render_nodes_in_world(root);
+  out.reserve(nodes.size());  // SceneInstance is large; one allocation (#268)
   {
     // A new car or scene brings many meshes at once: read them on the job
     // pool instead of one by one in the loop below. Lamp renders keep their
@@ -2031,43 +2080,30 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     instance.vehicle_material = n->vehicle_material;
     instance.light_flags = n->light_flags;
     if (n->paint_source || !n->texture_replacements.empty() || !n->texture_file_replacements.empty()) {
-      // The mesh list may prefer a DDS sidecar while the resource names the
-      // original image. Match the path without the extension.
-      auto key = [](std::string path) {
-        std::replace(path.begin(), path.end(), '\\', '/');
-        for (char &c : path)
-          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        const auto slash = path.find_last_of('/');
-        const auto dot = path.find_last_of('.');
-        if (dot != std::string::npos &&
-            (slash == std::string::npos || dot > slash))
-          path.resize(dot);
-        const auto game = path.rfind("game/");
-        if (game != std::string::npos)
-          path = path.substr(game + 5);
-        return path;
-      };
-      const auto paint = key(scene_instances_texture(n->paint_source));
+      // Match paths without the extension (texture_key); the mesh side is
+      // cached per mesh (#268).
+      const auto& keys = mesh_texture_keys(instance.geometry);
+      const auto paint = texture_key(scene_instances_texture(n->paint_source));
       if (!paint.empty()) {
-        for (size_t i = 0; i < instance.geometry->textures.size(); ++i) {
-          if (key(instance.geometry->textures[i]) == paint) {
+        for (size_t i = 0; i < keys.size(); ++i) {
+          if (keys[i] == paint) {
             instance.paint_slot = static_cast<int>(i);
             break;
           }
         }
       }
       for (const auto& [from, to] : n->texture_replacements) {
-        const auto source = key(scene_instances_texture(from));
+        const auto source = texture_key(scene_instances_texture(from));
         if (source.empty()) continue;
-        for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
-          if (source == key(instance.geometry->textures[i]))
+        for (size_t i = 0; i < keys.size(); ++i)
+          if (source == keys[i])
             instance.texture_replacements.emplace_back(i, scene_instances_texture(to));
       }
       for (const auto& [from, path] : n->texture_file_replacements) {
-        const auto source = key(scene_instances_texture(from));
+        const auto source = texture_key(scene_instances_texture(from));
         if (source.empty()) continue;
-        for (size_t i = 0; i < instance.geometry->textures.size(); ++i)
-          if (source == key(instance.geometry->textures[i]))
+        for (size_t i = 0; i < keys.size(); ++i)
+          if (source == keys[i])
             instance.texture_replacements.emplace_back(i, path);
       }
       if (n->paint_texture)
@@ -2094,6 +2130,7 @@ struct FrameCharacter {
   std::vector<float> skin;
   std::shared_ptr<const ScxGeometry> geometry;
   bool gpu_skin = false;
+  bool pending = false;  // reserved by a palette batch, not built yet (#268)
 };
 std::unordered_map<void*, FrameCharacter> g_frame_characters;
 
@@ -2378,6 +2415,12 @@ bool scene_instances_has_ground_props() {
   return false;
 }
 
+// Fewer visible cells than this keep the batch loop on the host thread (#266).
+constexpr size_t kParallelCellMin = 16;
+constexpr size_t kParallelThreadMin = 4;
+// Fewer new walker palettes than this are built on the host thread (#268).
+constexpr size_t kParallelSkinMin = 8;
+
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum,
     std::vector<std::shared_ptr<const ScxGeometry>>* resident_props,
@@ -2397,10 +2440,52 @@ std::vector<SceneInstance> scene_instances_collect(
   // Walkers outside this view keep an empty palette; the renderer skips them.
   if (complete_character_palettes) {
     perf::Scope skin_scope(perf::Zone::CollectSkins);
-    for (auto& instance : out)
-      if (instance.gpu_skin && instance.skin.empty() &&
-          (!frustum || character_in_view(instance, *frustum)))
-        complete_skin(instance);
+    // Palettes new this frame are built on the job pool (#268): the host
+    // thread finds or loads each character first, every job then rebuilds a
+    // different character into its own instance, and the host thread
+    // publishes them in order. Other views copy the frame's palette.
+    struct Fresh {
+      SceneInstance* instance;
+      void* prepared;
+      bool skinned = false;
+    };
+    static std::vector<Fresh> fresh;  // host thread only, capacity kept
+    fresh.clear();
+    std::vector<SceneInstance*> repeats;
+    for (auto& instance : out) {
+      if (!instance.gpu_skin || !instance.skin.empty() ||
+          (frustum && !character_in_view(instance, *frustum)))
+        continue;
+      auto [found, added] = g_frame_characters.try_emplace(instance.key);
+      if (!added) {
+        if (found->second.pending) repeats.push_back(&instance);
+        else {
+          instance.skin = found->second.skin;
+          instance.geometry = found->second.geometry;
+          instance.gpu_skin = found->second.gpu_skin;
+        }
+        continue;
+      }
+      found->second.pending = true;
+      fresh.push_back({&instance, character_skin_prepare(instance.key, instance.type_id,
+                                                         *g_resources)});
+    }
+    const auto build = [&](size_t i) {
+      fresh[i].skinned = skin_palette_prepared(*fresh[i].instance, fresh[i].prepared);
+    };
+    if (fresh.size() >= kParallelSkinMin && jobs_concurrency() >= kParallelThreadMin)
+      jobs_parallel_for(fresh.size(), build);
+    else
+      for (size_t i = 0; i < fresh.size(); ++i) build(i);
+    for (auto& item : fresh) {
+      auto& instance = *item.instance;
+      if (!item.skinned)
+        if (auto posed = character_posed(instance.key, instance.type_id,
+                                         instance.geometry.get(), *g_resources))
+          instance.geometry = std::move(posed);
+      g_frame_characters[instance.key] = {instance.skin, instance.geometry, instance.gpu_skin};
+    }
+    for (auto* instance : repeats) complete_skin(*instance);
   }
   if (g_ground_props.empty()) {
     if (night_batches) night_batches->clear();
@@ -2475,9 +2560,6 @@ std::vector<SceneInstance> scene_instances_collect(
   return out;
 }
 
-// Fewer visible cells than this keep the batch loop on the host thread (#266).
-constexpr size_t kParallelCellMin = 16;
-constexpr size_t kParallelThreadMin = 4;
 
 void scene_instances_collect_batches(const SceneFrustum* frustum,
                                      std::vector<SceneBatch>& out,
