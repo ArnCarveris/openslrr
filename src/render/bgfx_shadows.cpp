@@ -28,6 +28,7 @@ uint32_t skin_palette_hash(const std::vector<float> &palette) {
 } // namespace
 
 void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
+  ++light_uniform_revision_;
   bool was_active = fixture_shadow_active_;
   fixture_shadow_active_ = false;
   if (fixture_lights_.empty() || !garage_ || video.shadows == 0 ||
@@ -157,6 +158,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
 // of the peak) for one depth pass, instead of the five or six passes of a
 // cube. The shader fades the shadow out at the tile rim.
 void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
+  ++light_uniform_revision_;
   lamp_shadow_atlas_bound_ = false;
   lamp_shadow_count_ = 0;
   const auto free_slots = [&] {
@@ -654,6 +656,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
 // A separate directional field: punctual shadow visibility must never occlude
 // sunlight, nor may the sky's ambient term replace the direct source.
 void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
+  ++light_uniform_revision_;
   bool was_active = interior_sun_active_;
   interior_sun_active_ = false;
   if (!garage_ || video.shadows == 0 ||
@@ -919,7 +922,12 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   interior_sun_cached_matrix_ = interior_sun_matrix_;
 }
 
-void LibBgfxBackend::update_static_shadow(const float *eye,
+void LibBgfxBackend::update_static_shadow(const float *eye, const VideoOptions &video) {
+  ++light_uniform_revision_;
+  update_static_shadow_inner(eye, video);
+}
+
+void LibBgfxBackend::update_static_shadow_inner(const float *eye,
                                           const VideoOptions &video) {
   const uint16_t point_shadow_tile=local_shadow_resolution();
   const uint16_t point_shadow_width=point_shadow_tile*3,point_shadow_height=point_shadow_tile*2;

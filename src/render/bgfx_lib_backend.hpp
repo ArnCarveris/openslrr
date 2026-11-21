@@ -20,6 +20,7 @@
 #include <bgfx/bgfx.h>
 
 #include <array>
+#include <bitset>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -155,6 +156,7 @@ class LibBgfxBackend final : public IRenderBackend {
   static SceneFrustum view_frustum(const float* view, const float* projection);
   void apply_video_mode(const VideoMode& mode);
   void update_static_shadow(const float* eye, const VideoOptions& video);
+  void update_static_shadow_inner(const float* eye, const VideoOptions& video);
 
   // Diffuse * baked lightmap, the way the exe draws a map. No lightmap
   // (OSD, FMV, a mesh without the slot) keeps the existing shading.
@@ -163,7 +165,30 @@ class LibBgfxBackend final : public IRenderBackend {
         ? BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC : BGFX_SAMPLER_NONE;
   }
   void publish_debug_stats();
+  // Per-view light uniforms (#246). bgfx applies the uniforms set before a
+  // submit to that draw only, into a cache that persists across draws, in
+  // render order. In a Sequential view render order is submit order, so the
+  // view-invariant light arrays (fixtures, lamps, lamp/car shadow tiles, sun
+  // cascades, point faces) are set on the first lit draw of each view and
+  // frame and skipped after. Unknown or sorted views keep uploading per draw.
+  std::bitset<256> sequential_views_;
+  uint16_t binding_view_ = UINT16_MAX;  // view of the draw being bound
+  uint16_t light_arrays_view_ = UINT16_MAX;
+  int32_t light_arrays_frame_ = -1;
+  uint64_t light_uniform_revision_ = 1, light_arrays_revision_ = 0;
+  uint64_t light_array_uploads_ = 0;  // for tests and the debug menu
+  bool light_array_cache_ = true;     // tests: false uploads on every draw
+  void set_view_sequential(uint16_t view) {
+    bgfx::setViewMode(view, bgfx::ViewMode::Sequential);
+    sequential_views_.set(view);
+  }
+  bool light_arrays_current() const {
+    return light_array_cache_ && binding_view_ < sequential_views_.size() &&
+           sequential_views_.test(binding_view_) && light_arrays_view_ == binding_view_ &&
+           light_arrays_frame_ == frames_ && light_arrays_revision_ == light_uniform_revision_;
+  }
   void bind_scene_shadow(bool receive, uint8_t stage);
+  void bind_fixture_lights(bool enabled, bool upload_arrays);
   void bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex,
                         bgfx::TextureHandle mix = BGFX_INVALID_HANDLE,
@@ -376,7 +401,6 @@ class LibBgfxBackend final : public IRenderBackend {
   std::vector<SpotLight> fixture_lights_;
   void update_fixture_shadows(const VideoOptions& video);
   void update_lamp_shadows(const VideoOptions& video);
-  void bind_fixture_lights(bool enabled);
   bgfx::FrameBufferHandle fixture_shadow_fb_=BGFX_INVALID_HANDLE;
   bgfx::TextureHandle fixture_shadow_tex_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle s_fixture_shadow_=BGFX_INVALID_HANDLE;

@@ -766,7 +766,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       bgfx::setViewRect(kWorldView, 0, 0, ww, hh);
       bgfx::setViewClear(kWorldView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
                          0x000000ff, 0.f, 0);
-      bgfx::setViewMode(kWorldView, bgfx::ViewMode::Sequential);
+      set_view_sequential(kWorldView);
       draw_fmv(kWorldView);
       bgfx::setViewRect(world_view, 0, 0, ww, hh);
       bgfx::setViewClear(world_view, BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL, 0,
@@ -785,7 +785,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
           std::clamp(int(world_vp->vp_h * height_), 1, height_ - y));
     }
     bgfx::setViewTransform(world_view, view, render_proj);
-    bgfx::setViewMode(world_view, bgfx::ViewMode::Sequential);
+    set_view_sequential(world_view);
     bgfx::touch(world_view);
 
     // Menu/Splash: no garage SCX — stock MainMenu uses FMV or Dummy scene.
@@ -1197,6 +1197,7 @@ void LibBgfxBackend::cache_scene_mesh(
     deformed_meshes_ = std::move(current_deformed);
   }
 void LibBgfxBackend::update_local_light() {
+    ++light_uniform_revision_;
     local_light_ = {};
     point_light_.reset();
     fixture_lights_.clear();
@@ -1504,7 +1505,7 @@ void LibBgfxBackend::update_reflections(const float* eye) {
       bgfx::setViewRect(reflection_view, 0, 0, size, size);
       bgfx::setViewClear(reflection_view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x577493ff, 0.f);
       bgfx::setViewTransform(reflection_view, view, proj);
-      bgfx::setViewMode(reflection_view, bgfx::ViewMode::Sequential);
+      set_view_sequential(reflection_view);
       bgfx::touch(reflection_view);
       if (outdoor_lighting_ || std::any_of(objects.begin(), objects.end(),
           [](const SceneInstance& object) { return object.sky; }))
@@ -1709,7 +1710,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       }
       bx::mtxProj(proj,p.camera.half_aov,static_cast<float>(w)/h,std::max(.0001f,p.camera.dmin),p.camera.dmax,bgfx::getCaps()->homogeneousDepth);
       reverse_scene_projection(proj);
-      bgfx::setViewRect(id,x,y,w,h);bgfx::setViewClear(id,BGFX_CLEAR_DEPTH,0,0.f);bgfx::setViewMode(id,bgfx::ViewMode::Sequential);bgfx::setViewTransform(id,view,proj);
+      bgfx::setViewRect(id,x,y,w,h);bgfx::setViewClear(id,BGFX_CLEAR_DEPTH,0,0.f);set_view_sequential(id);bgfx::setViewTransform(id,view,proj);
       for (int pass = 0; pass < 2; ++pass)
         for(const auto&i:p.instances)draw_instance(id,i,i.transform.data(),true,pass);
       ++id;

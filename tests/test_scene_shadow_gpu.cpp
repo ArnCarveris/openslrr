@@ -8,6 +8,7 @@
 #include "slrr/mainloop.hpp"
 #include "slrr/script_lights.hpp"
 #include <bx/math.h>
+#include <chrono>
 #include <limits>
 #include <map>
 namespace slrr {
@@ -978,6 +979,155 @@ struct SceneShadowRegression {
     b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
     gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
     std::puts("PASS renderer debug overrides: defaults, pass toggles remove their views, budgets");
+  }
+  // #246: per-view light uniforms. In a Sequential view the lamp, fixture and
+  // shadow arrays are uploaded on the first lit draw of the view and frame;
+  // the image must equal the per-draw upload, and unknown views, new frames
+  // and changed light data upload again.
+  static void per_view_light_uniforms(LibBgfxBackend& b) {
+    Fixture f;scene_instances_set_resources(&f.packs);
+    Object world,shell;
+    gameref_upsert(&world)->flags=kWorldTreeRoot;
+    gameref_upsert(&shell,GameRefKind::RenderRef)->empty=false;
+    gameref_set_parent(&shell,&world);gameref_make_live(&shell);gameref_set_matrix(&shell,0,0,0,0,0,0);
+    scene_instances_select(&world,nullptr,false,SceneEnvironment::Exterior);
+    auto lights=std::make_shared<std::vector<SceneryLight>>();
+    for(int i=-6;i<=6;++i) for(float side:{-8.f,8.f}) {
+      SceneryLight lamp;lamp.position={side,7.8f,30.f*i+(side>0?15.f:0.f)};lamp.color={.972f,.888f,.615f};
+      lamp.range=500;lamp.attenuation={1,.03f,0};lamp.group=kLightGroupCity;lamp.lights_scene=true;
+      lights->push_back(lamp);
+    }
+    SLRR_REQUIRE(scenery_lights_attach(&shell,lights));
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_method=0;host_enhanced_graphics().shadow_quality=2;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};b.fixture_lights_.clear();
+    auto floor=std::make_shared<ScxGeometry>();floor->info.ok=true;floor->info.version=4;floor->position_scale=1;
+    floor->positions={-60,0,60,60,0,60,-60,0,-60,60,0,-60};floor->normals={0,1,0,0,1,0,0,1,0,0,1,0};
+    floor->uvs.resize(8);floor->indices={0,2,1,1,2,3};ScxGroup group;group.index_count=6;floor->groups={group};
+    floor->info.bbox_min[0]=-60;floor->info.bbox_max[0]=60;floor->info.bbox_min[2]=-60;floor->info.bbox_max[2]=60;
+    floor->ground_polygons=true;
+    SceneInstance road;road.geometry=floor;bx::mtxIdentity(road.transform.data());
+    road.lighting.set=road.lighting.has_direction=true;road.lighting.direction[1]=-1;
+    for(int i=0;i<3;++i){road.lighting.diffuse[i]=0;road.lighting.ambient[i]=.08f;road.lighting.specular[i]=0;}
+    b.cache_scene_mesh(floor,nullptr,false);
+    auto car_mesh=std::make_shared<ScxGeometry>();
+    {
+      const float x0=-.9f,y0=0,z0=-2,x1=.9f,y1=1.4f,z1=2;
+      car_mesh->info.ok=true;car_mesh->info.version=4;car_mesh->position_scale=1;
+      car_mesh->positions={x0,y0,z0,x1,y0,z0,x1,y1,z0,x0,y1,z0,x0,y0,z1,x1,y0,z1,x1,y1,z1,x0,y1,z1};
+      car_mesh->indices={0,1,2,0,2,3,4,6,5,4,7,6,0,4,5,0,5,1,3,2,6,3,6,7,0,3,7,0,7,4,1,5,6,1,6,2};
+      car_mesh->normals.resize(24,0.f);
+      for(size_t i=0;i<8;++i) car_mesh->normals[i*3+1]=1.f;
+      car_mesh->uvs.resize(16,0.f);
+      car_mesh->info.bbox_min[0]=x0;car_mesh->info.bbox_min[1]=y0;car_mesh->info.bbox_min[2]=z0;
+      car_mesh->info.bbox_max[0]=x1;car_mesh->info.bbox_max[1]=y1;car_mesh->info.bbox_max[2]=z1;
+      ScxGroup g;g.index_count=36;car_mesh->groups={g};
+    }
+    b.cache_scene_mesh(car_mesh,nullptr,false);
+    SceneInstance car;car.geometry=car_mesh;car.vehicle_material=true;bx::mtxIdentity(car.transform.data());
+    SceneInstance block=car;block.vehicle_material=false;block.transform[12]=4;
+    b.instances_={road,car};
+    scene_sun_set_time(22*3600.f);
+    b.lamp_shadow_dt_override_=1.f;
+    constexpr uint16_t width=320,height=180;
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    float view[16],projection[16],render[16];
+    bx::mtxLookAt(view,{0,2.5f,-7},{0,1,0});
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,2000.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    b.cull_eye_[0]=0;b.cull_eye_[1]=2.5f;b.cull_eye_[2]=7;
+    std::copy(view,view+16,b.cull_view_);std::copy(projection,projection+16,b.cull_proj_);
+    const float focus[3]={0,0,0};b.set_lamp_shadow_focus(focus);
+    VideoOptions video;video.shadows=2;
+    for(int i=0;i<3;++i){b.update_local_light();b.update_lamp_shadows(video);}
+    SLRR_REQUIRE(b.scenery_lamps_.size()>6 && b.lamp_shadow_count_>0 && !b.car_shadow_tiles_.empty());
+    const uint16_t view_id=5;
+    b.set_view_sequential(view_id);
+    // Four lit draws in one view: road, car, block, road again (a layer).
+    auto capture=[&]() {
+      ++b.frames_;
+      bgfx::setViewFrameBuffer(view_id,fb);bgfx::setViewRect(view_id,0,0,width,height);
+      bgfx::setViewClear(view_id,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+      bgfx::setViewTransform(view_id,view,render);
+      b.draw_instance(view_id,road,road.transform.data(),false,0);
+      b.draw_instance(view_id,b.instances_[1],b.instances_[1].transform.data(),false,0);
+      b.draw_instance(view_id,block,block.transform.data(),false,0);
+      b.draw_instance(view_id,road,road.transform.data(),false,0);
+      bgfx::TextureRegion dst,src;dst.init(readback);src.init(color);bgfx::blit(100,dst,src);bgfx::frame();
+      std::vector<uint8_t> bytes(width*height*4);const auto ready=bgfx::read(dst,bytes.data());
+      for(int i=0;i<16;++i) if(bgfx::frame()>=ready) return bytes;
+      throw std::runtime_error("light uniform readback timeout");
+    };
+    b.light_array_cache_=false;
+    auto before=b.light_array_uploads_;
+    const auto per_draw=capture();
+    const auto per_draw_uploads=b.light_array_uploads_-before;
+    b.light_array_cache_=true;
+    before=b.light_array_uploads_;
+    const auto per_view=capture();
+    const auto per_view_uploads=b.light_array_uploads_-before;
+    unsigned lit=0;for(size_t i=0;i<per_view.size();i+=4) lit+=per_view[i]>30;
+    std::printf("LIGHT UNIFORMS per-draw uploads=%llu per-view uploads=%llu lit pixels=%u, images %s\n",
+                (unsigned long long)per_draw_uploads,(unsigned long long)per_view_uploads,lit,
+                per_draw==per_view?"identical":"DIFFER");
+    SLRR_REQUIRE(per_draw_uploads==4 && per_view_uploads==1 && per_draw==per_view && lit>1000);
+    // Next frame: one upload again. Changed light data within a frame: another.
+    before=b.light_array_uploads_;
+    SLRR_REQUIRE(capture()==per_view && b.light_array_uploads_-before==1);
+    before=b.light_array_uploads_;
+    b.update_local_light();b.update_lamp_shadows(video);
+    b.binding_view_=view_id;
+    SLRR_REQUIRE(!b.light_arrays_current());
+    b.binding_view_=UINT16_MAX;
+    // An unmarked (sorted) view uploads on every draw.
+    b.sequential_views_.reset(view_id);
+    before=b.light_array_uploads_;
+    SLRR_REQUIRE(capture()==per_view && b.light_array_uploads_-before==4);
+    // Submission cost: 2,000 lit draws in one view, per-draw vs per-view arrays.
+    b.set_view_sequential(view_id);
+    const auto submit_cost=[&](bool cache) {
+      b.light_array_cache_=cache;
+      double submit=0,render_thread=0;int samples=0;
+      for(int frame=0;frame<30;++frame) {
+        ++b.frames_;
+        bgfx::setViewFrameBuffer(view_id,fb);bgfx::setViewRect(view_id,0,0,width,height);
+        bgfx::setViewClear(view_id,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+        bgfx::setViewTransform(view_id,view,render);
+        const auto start=std::chrono::steady_clock::now();
+        for(int i=0;i<2000;++i) b.draw_instance(view_id,block,block.transform.data(),false,0);
+        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        bgfx::frame();
+        const auto* stats=bgfx::getStats();
+        if(frame<10) continue;
+        submit+=ms;
+        render_thread+=double(stats->cpuTimeEnd-stats->cpuTimeBegin)*1000.0/double(stats->cpuTimerFreq);
+        ++samples;
+      }
+      return std::pair{submit/samples,render_thread/samples};
+    };
+    const auto uncached=submit_cost(false),cached=submit_cost(true);
+    b.light_array_cache_=true;
+    std::printf("LIGHT UNIFORMS 2000 lit draws: submit %.3f -> %.3f ms, render thread %.3f -> %.3f ms\n",
+                uncached.first,cached.first,uncached.second,cached.second);
+    bgfx::setViewMode(view_id,bgfx::ViewMode::Default);
+    b.sequential_views_.reset(view_id);
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.scenery_lamps_.clear();b.lamp_shadow_dt_override_=-1.f;b.set_lamp_shadow_focus(nullptr);
+    b.update_lamp_shadows(VideoOptions{});
+    b.instances_.clear();b.outdoor_lighting_=false;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
+    std::puts("PASS per-view light uniforms: one upload per Sequential view and frame, same image");
   }
   static void reflection_occupants() {
     Fixture f;Object car,seat,person,pedestrian,world;
@@ -2581,6 +2731,7 @@ int main() {
     SceneShadowRegression::lamp_shadow_stability(backend);
     SceneShadowRegression::car_lamp_shadows(backend);
     SceneShadowRegression::render_debug_overrides(backend);
+    SceneShadowRegression::per_view_light_uniforms(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

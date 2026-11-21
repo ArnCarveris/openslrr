@@ -124,15 +124,21 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   bgfx::submit(view_id, program_);
 }
 
-void LibBgfxBackend::bind_fixture_lights(bool enabled) {
-  const auto count=enabled?std::min(fixture_lights_.size(),kFixtureLights):size_t(0);
+void LibBgfxBackend::bind_fixture_lights(bool enabled, bool upload_arrays) {
+  // Arrays hold every light; the per-draw counts below decide what a draw
+  // reads, so one upload per view serves lit and unlit draws alike (#246).
+  const auto all_fixtures=std::min(fixture_lights_.size(),kFixtureLights);
+  const size_t all_lamp_shadows=lamp_shadow_atlas_bound_
+      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampSpecial}) : size_t(0);
+  const auto all_lamps=std::min(scenery_lamps_.size(),kSceneryLamps);
+  const auto count=enabled?all_fixtures:size_t(0);
   const bool shadows=count && fixture_shadow_active_;
   // Street lamp shadows (#237) use the same atlas outside garages.
-  const size_t lamp_shadows=enabled && lamp_shadow_atlas_bound_
-      ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampSpecial}) : size_t(0);
+  const size_t lamp_shadows=enabled?all_lamp_shadows:size_t(0);
   const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
   bgfx::setUniform(u_fixture_params_,params);
-  if(count) {
+  if(upload_arrays && all_fixtures) {
+    const auto count=all_fixtures;
     std::array<std::array<float,4>,kFixtureLights> positions{},colors{},directions{};
     for(size_t i=0;i<count;++i) {
       const auto& light=fixture_lights_[i];
@@ -150,18 +156,20 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled) {
   const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
                                      1.f/(fixture_shadow_tile_*3),0.f};
   bgfx::setUniform(u_lamp_shadow_params_,lamp_shadow_params);
-  if(lamp_shadows) {
-    bgfx::setUniform(u_lamp_shadow_matrices_,lamp_shadow_matrices_.data(),uint16_t(lamp_shadows));
-    bgfx::setUniform(u_lamp_shadow_tiles_,lamp_shadow_tiles_.data(),uint16_t(lamp_shadows));
-    bgfx::setUniform(u_lamp_car_matrices_,lamp_car_matrices_.data(),uint16_t(lamp_shadows));
-    bgfx::setUniform(u_lamp_car_tiles_,lamp_car_tiles_.data(),uint16_t(lamp_shadows));
+  if(upload_arrays && all_lamp_shadows) {
+    const auto count=uint16_t(all_lamp_shadows);
+    bgfx::setUniform(u_lamp_shadow_matrices_,lamp_shadow_matrices_.data(),count);
+    bgfx::setUniform(u_lamp_shadow_tiles_,lamp_shadow_tiles_.data(),count);
+    bgfx::setUniform(u_lamp_car_matrices_,lamp_car_matrices_.data(),count);
+    bgfx::setUniform(u_lamp_car_tiles_,lamp_car_tiles_.data(),count);
   }
   // Scenery lamps (#237) follow the same enable as the fixtures: previews and
   // emissive lamp glass receive none.
-  const auto lamps=enabled?std::min(scenery_lamps_.size(),kSceneryLamps):size_t(0);
+  const auto lamps=enabled?all_lamps:size_t(0);
   const float lamp_params[4]={float(lamps),0.f,0.f,0.f};
   bgfx::setUniform(u_lamp_params_,lamp_params);
-  if(lamps) {
+  if(upload_arrays && all_lamps) {
+    const auto lamps=all_lamps;
     std::array<std::array<float,4>,kSceneryLamps> positions{},colors{},attenuation{};
     for(size_t i=0;i<lamps;++i) {
       const auto& lamp=scenery_lamps_[i];
@@ -194,7 +202,19 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
 {
     const float filter[4]={float(std::clamp(host_enhanced_graphics().shadow_smoothing,0,2)),0,0,0};
     bgfx::setUniform(u_shadow_filter_,filter);
-    bind_fixture_lights(enabled);
+    // View-invariant arrays once per Sequential view and frame (#246).
+    const bool upload = !light_arrays_current();
+    bind_fixture_lights(enabled, upload);
+    if (upload) {
+      if (point_shadow_active_)
+        bgfx::setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
+      if (shadow_cascades_active_)
+        bgfx::setUniform(u_shadow_cascades_, shadow_cascade_matrices_.data(), 4);
+      ++light_array_uploads_;
+      light_arrays_view_ = binding_view_;
+      light_arrays_frame_ = frames_;
+      light_arrays_revision_ = light_uniform_revision_;
+    }
     bind_interior_sun(enabled, stage == 5 ? 6 : 5);
     const bool receive = enabled && static_shadow_active_ &&
                          debug_overlay_.render_options().map_shadows;
@@ -205,14 +225,12 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
     const float point_params[4] = {point ? 1.f : 0.f, 1.f / (local_shadow_resolution()*3),
                                    1.f / (local_shadow_resolution()*2), .015f};
     bgfx::setUniform(u_point_shadow_params_, point_params);
-    if (point)
-      bgfx::setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
     const bool cascaded = receive && shadow_cascades_active_;
     const float origin[4]={shadow_origin_[0],shadow_origin_[1],shadow_origin_[2],0.f};
     bgfx::setUniform(u_shadow_origin_,origin);
     const float ranges[4] = {cascaded ? cascade_radii()[0] : 0.f, cascade_radii()[1],cascade_radii()[2],cascade_radii()[3]};
     bgfx::setUniform(u_shadow_ranges_,ranges);
-    if (cascaded) bgfx::setUniform(u_shadow_cascades_,shadow_cascade_matrices_.data(),4);
+
     if (receive) {
       const float eye[4] = {static_shadow_eye_[0], static_shadow_eye_[1],
                             static_shadow_eye_[2], static_shadow_distance_};
@@ -316,6 +334,12 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
   }
   void LibBgfxBackend::draw_instance(uint16_t view_id,const SceneInstance& instance,const float* matrix,bool preview,int pass)
 {
+    // The view of this draw, for the per-view light arrays (#246).
+    struct BindingView {
+      uint16_t& slot;
+      BindingView(uint16_t& s, uint16_t view) : slot(s) { slot = view; }
+      ~BindingView() { slot = UINT16_MAX; }
+    } binding(binding_view_, view_id);
     const auto& part=instance_meshes_.at(instance.geometry.get());
     if(!bgfx::isValid(part.vbh)||!bgfx::isValid(part.ibh))return;
     const auto texture = [&](uint16_t slot) {
@@ -603,6 +627,11 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                        bool shadow, bool conservative, bool reversed_depth) {
   const auto program = shadow ? inst_shadow_program_ : inst_program_;
   if (!bgfx::isValid(program) || batches.empty()) return;
+  struct BindingView {
+    uint16_t& slot;
+    BindingView(uint16_t& s, uint16_t view) : slot(s) { slot = view; }
+    ~BindingView() { slot = UINT16_MAX; }
+  } binding(binding_view_, view_id);
   float identity[16];
   bx::mtxIdentity(identity);
   const auto& graphics = host_enhanced_graphics();
