@@ -825,8 +825,10 @@ The three `Painter` natives that this table listed are bound since #64;
 see "Garage paint booth (#64)" below.
 
 Explicit no-ops: `System.analyze` ×3 (faithful).
-`GameRef.setActiveCollision` has a body since PR #22 (§12). Two host-only
-no-ops outside the stock table: `Player.<init>` and `LoadingScreen.<init>`.
+`GameRef.setActiveCollision` has a body since PR #22 (§12). One host-only
+no-op outside the stock table: `LoadingScreen.<init>`. `Player.<init>` runs
+its Java body (#226): without it the boot player had no `parts`, `carlot` or
+`osd`, so `--spawn-car` sessions left the game from Car Lot.
 
 Partial bodies that matter for upcoming work: `GameRef.setState` applies to
 cars only, `GroundRef.getNearestCross` returns null,

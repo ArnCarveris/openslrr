@@ -2685,6 +2685,11 @@ std::string map_texture_key(std::string path) {
       PostQuitMessage(0);
       return 0;
     }
+    // Alt or F10 on its own asks for the window menu. Its modal loop would
+    // block this thread, freezing the game until the next key or click.
+    // Alt+Space (lp == ' ') still opens the menu.
+    if (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_KEYMENU && lp == 0)
+      return 0;
     return DefWindowProcA(hwnd, msg, wp, lp);
   }
 #endif
