@@ -92,6 +92,7 @@ struct PlacementLod {
   float radius = 0.f;
   std::vector<float> sizes;
   int level = -1;
+  uint64_t epoch = 0;  // g_lod_epoch of the update that chose `level` (#257)
 };
 struct GroundPropCell {
   std::vector<GroundProp> props;
@@ -128,6 +129,10 @@ struct GroundPropMap {
   std::vector<PlacementLod> lods;
 };
 ScenePropLodView g_lod_view;
+// Bumped by every updating LOD view (one per main-view collection), so each
+// placement's level is computed once per frame and reused by both of its
+// chain members and by both collection paths (#257).
+uint64_t g_lod_epoch = 1;
 std::unordered_map<uint32_t, GroundPropMap> g_ground_props;
 // The map is cached per render id and outlives its GroundRef: each visit to a
 // city builds a new GroundRef, so the one to parent a promoted prop to is
@@ -2141,7 +2146,10 @@ void scene_instances_set_size_filter(SceneSizeFilter test, void* user) {
   g_size_filter_user = user;
 }
 
-void scene_instances_set_lod_view(const ScenePropLodView& view) { g_lod_view = view; }
+void scene_instances_set_lod_view(const ScenePropLodView& view) {
+  g_lod_view = view;
+  if (view.update) ++g_lod_epoch;
+}
 
 int scene_prop_lod_level(int current, float size, const std::vector<float>& thresholds,
                          float hysteresis) {
@@ -2278,20 +2286,24 @@ bool prop_lod_visible(GroundPropMap& map, const GroundProp& prop, const PartMatr
       static_cast<size_t>(prop.lod_index) >= map.lods.size())
     return true;
   auto& entry = map.lods[static_cast<size_t>(prop.lod_index)];
-  const int highest = static_cast<int>(entry.sizes.size());
-  int level = highest;
+  int level = static_cast<int>(entry.sizes.size());
   if (g_lod_view.valid && !g_lod_view.force_highest) {
-    const auto world = transform_point(shell, entry.center);
-    const float dx = world[0] - g_lod_view.eye[0], dy = world[1] - g_lod_view.eye[1],
-                dz = world[2] - g_lod_view.eye[2];
-    const float distance = std::sqrt(dx * dx + dy * dy + dz * dz) *
-                           std::clamp(g_lod_view.bias, .1f, 10.f);
-    const float size = entry.radius / std::max(distance, .01f);
-    if (!g_lod_view.update && entry.level >= 0) {
-      level = entry.level;  // AO, shadow and reflection passes: the main view's choice
+    if (entry.level >= 0 && (!g_lod_view.update || entry.epoch == g_lod_epoch)) {
+      // Chosen this frame (the other chain member, the other collection
+      // path) or a non-updating pass reusing the main view's choice.
+      level = entry.level;
     } else {
-      level = scene_prop_lod_level(entry.level, size, entry.sizes);
-      if (g_lod_view.update) entry.level = level;
+      const auto world = transform_point(shell, entry.center);
+      const float dx = world[0] - g_lod_view.eye[0], dy = world[1] - g_lod_view.eye[1],
+                  dz = world[2] - g_lod_view.eye[2];
+      const float distance = std::sqrt(dx * dx + dy * dy + dz * dz) *
+                             std::clamp(g_lod_view.bias, .1f, 10.f);
+      level = scene_prop_lod_level(entry.level, entry.radius / std::max(distance, .01f),
+                                   entry.sizes);
+      if (g_lod_view.update) {
+        entry.level = level;
+        entry.epoch = g_lod_epoch;
+      }
     }
   }
   return level >= prop.lod_min && level <= prop.lod_max;
@@ -2438,9 +2450,11 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
         for (const auto index : batch.indices) {
           if (index >= cell.props.size()) continue;
           const auto& prop = cell.props[index];
+          // LOD first (#257): the non-selected chain member costs one cached
+          // lookup instead of a frustum test.
           if (prop.hidden || (prop.night_only && !night_props_visible()) ||
-              !visible(prop.center, prop.radius) ||
-              !prop_lod_visible(found->second, prop, shell)) continue;
+              !prop_lod_visible(found->second, prop, shell) ||
+              !visible(prop.center, prop.radius)) continue;
           if (g_size_filter) {
             const auto prop_world = transform_point(shell, prop.center);
             if (!g_size_filter(prop_world.data(), prop.radius, g_size_filter_user)) continue;

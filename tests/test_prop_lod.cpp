@@ -8,6 +8,8 @@
 #include "standalone_test.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -219,6 +221,51 @@ SLRR_TEST(valo_city_lod_statistics) {
               (unsigned long long)lod.first, (unsigned long long)highest.second,
               (unsigned long long)lod.second);
   SLRR_REQUIRE(scene_instances_lod_placements() > 0 && lod.first < highest.first);
+  {
+    // #257: main-view collection time (instances + batches, LOD on) with a
+    // street-level 60-degree frustum looking along +x (D3D depth 0..1).
+    // Planes in render space (script Z flipped), inward normals, through the eye.
+    const std::array<float, 3> eye{frame[12], frame[13] + 2.f, -frame[14]};
+    const float h = std::atan(16.f / 9.f * std::tan(30.f * 3.14159265f / 180.f));
+    const float v = 30.f * 3.14159265f / 180.f;
+    const std::array<std::array<float, 3>, 4> sides{{{std::sin(h), 0.f, -std::cos(h)},
+                                                     {std::sin(h), 0.f, std::cos(h)},
+                                                     {std::sin(v), -std::cos(v), 0.f},
+                                                     {std::sin(v), std::cos(v), 0.f}}};
+    SceneFrustum frustum;
+    for (size_t i = 0; i < 4; ++i)
+      frustum[i] = {sides[i][0], sides[i][1], sides[i][2],
+                    -(sides[i][0] * eye[0] + sides[i][1] * eye[1] + sides[i][2] * eye[2])};
+    frustum[4] = {1.f, 0.f, 0.f, -(eye[0] + .05f)};
+    frustum[5] = {-1.f, 0.f, 0.f, eye[0] + 5000.f};
+    const auto time_collection = [&](bool force_highest) {
+      ScenePropLodView view_lod;
+      view_lod.eye = {frame[12], frame[13] + 2.f, frame[14]};
+      view_lod.valid = true;
+      view_lod.force_highest = force_highest;
+      size_t records = 0;
+      constexpr int runs = 60;
+      double total = 0;
+      for (int i = 0; i < runs; ++i) {
+        view_lod.update = true;  // one main-view collection per frame
+        scene_instances_set_lod_view(view_lod);
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<SceneBatch> batches;
+        const auto instances = scene_instances_collect(&frustum);
+        scene_instances_collect_batches(&frustum, batches);
+        total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        records = instances.size();
+        for (const auto &batch : batches) records += batch.instances.size();
+      }
+      return std::pair{total / runs, records};
+    };
+    for (int round = 0; round < 2; ++round) {
+      const auto highest_only = time_collection(true), with_lod = time_collection(false);
+      std::printf("Valo City main-view collection: highest LOD only %.3f ms (%zu records), "
+                  "LOD on %.3f ms (%zu records)\n", highest_only.first, highest_only.second,
+                  with_lod.first, with_lod.second);
+    }
+  }
   // Far size cull as the renderer applies it at 2560x1440 (60 degree FOV):
   // projected box = radius * cot(30 deg) * 1440 / distance, everything kept
   // within 40 m. Distance stands in for view depth (all directions).
