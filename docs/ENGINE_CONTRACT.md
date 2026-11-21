@@ -1193,7 +1193,16 @@ and mipmaps before modifying the original textures.
 Scripts create lights with `java.render.LightSource` and its subclasses
 `PointLight`, `SpotLight` and `RectLight`. These classes are new: they are
 OpenSLRR additions shipped in `patch/system/Scripts/render`, not stock API.
-Car head- and taillights stay engine-driven and do not use this API.
+Car head- and taillights stay engine-driven and do not use this API. Since
+#279 they light the scene from the car data: each part owns the lights its
+cfg places as `render <type-13 light>` children, one headlight beam (first
+`flags 4` light of type `spot`) and one brake light (first `flags 1` light)
+at most (`src/resources/part_runtime.cpp:part_car_lights`). A light exists
+only while its part is installed on a car whose engine runs and its part
+condition (wear × tear) is above 0.25; headlights follow the city-lamp night
+window and the brake light the brake pedal, like the part's lamp glass
+(`part_lamp_lit`). The renderer draws them as unshadowed spot lamps ahead of
+the street lamps in the lamp array.
 
 | Native (owner) | Descriptor | Effect |
 | --- | --- | --- |

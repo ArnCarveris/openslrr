@@ -15,6 +15,7 @@
 #include "slrr/osd_registry.hpp"
 #include "slrr/paint_texture.hpp"
 #include "slrr/jvm.hpp"
+#include "slrr/light_resource.hpp"
 #include "slrr/rpk_index.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/scene_collision.hpp"
@@ -38,6 +39,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -128,6 +130,15 @@ struct Record {
   };
   std::vector<LinkVisual> links;
   float max_wear = 1.f;
+  // Car lights placed by this part's cfg (#279): at most one headlight and
+  // one brake light, in the part's local script space.
+  struct Lamp {
+    CarLightKind kind = CarLightKind::Headlight;
+    uint32_t resource = 0, flags = 0;
+    LightResource light;
+    std::array<float, 3> position{}, direction{};
+  };
+  std::vector<Lamp> lamps;
   // Hinge of this part on its parent's CFG `flap` slot (flap_hinge.hpp).
   // The state belongs to one mount; a part moved or taken off starts latched.
   physics::FlapState flap;
@@ -209,6 +220,8 @@ struct Record {
 };
 std::unordered_map<Object *, std::vector<SfxItem>> sfx_items;
 std::unordered_map<Object *, Record> records;
+// Pedal travel above which brake lamps light (#279).
+constexpr float kBrakeLampMin = .05f;
 // Weak, one-shot repair work consumed by the next part update. Stock Java may
 // repair descendants before their parents, so links must not be relinked early.
 std::unordered_set<Object *> repair_relink_pending;
@@ -510,8 +523,45 @@ Object *car(Object *self) {
   }
   return nullptr;
 }
+// The part's own car lights (#279), from its cfg `render` light children.
+void collect_lamps(Record &rec) {
+  rec.lamps.clear();
+  if (!index)
+    return;
+  bool head = false, brake = false;
+  for (const auto &r : rec.config->renders) {
+    if (r.wheel >= 0 || (r.flags & 0x40u) || !(r.flags & 5u) ||
+        !is_light_resource(*index, r.resource))
+      continue;
+    const auto light = load_light_resource(*index, r.resource);
+    if (!light)
+      continue;
+    Record::Lamp lamp;
+    if (!head && (r.flags & 4u) && light->type == LightResourceType::Spot) {
+      lamp.kind = CarLightKind::Headlight;
+      head = true;
+    } else if (!brake && (r.flags & 1u)) {
+      lamp.kind = CarLightKind::Brake;
+      brake = true;
+    } else {
+      continue;
+    }
+    const auto frame = part_pose_matrix(r.pose);
+    const auto &p = light->position, &d = light->direction;
+    for (int i = 0; i < 3; ++i) {
+      lamp.position[i] = frame[i] * p[0] + frame[4 + i] * p[1] +
+                         frame[8 + i] * p[2] + frame[12 + i];
+      lamp.direction[i] = frame[i] * d[0] + frame[4 + i] * d[1] + frame[8 + i] * d[2];
+    }
+    lamp.resource = r.resource;
+    lamp.flags = r.flags;
+    lamp.light = *light;
+    rec.lamps.push_back(lamp);
+  }
+}
 void render_part(Jvm &jvm, Object *self, Record &rec) {
   rec.inline_wheels.clear();
+  collect_lamps(rec);
   auto paint_of = [&](const std::vector<uint32_t> &colors) {
     uint32_t paint = 0xffffff;
     if (!rec.colour_set || colors.empty())
@@ -1386,13 +1436,97 @@ void install_cfg_stock(Jvm &jvm, Object *part, int depth = 0) {
 
 int32_t part_controlled_vehicle() { return controlled_vehicle; }
 
-bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
-  if (!(flags & 4u) || (flags & 0x40u) || !runtime)
+namespace {
+void detach_panel(Object* part, Record& rec, Object* chassis, Record& vehicle);
+} // namespace
+
+float part_lamp_power(float condition) {
+  if (!(condition > kLampBrokenCondition))
+    return 0.f;
+  const float t = std::min(1.f, (condition - kLampBrokenCondition) /
+                                    (kLampFullCondition - kLampBrokenCondition));
+  return .4f + .6f * t;
+}
+
+bool part_tear_off(Object *part) {
+  part = canonical(part);
+  auto *rec = record(part);
+  Object *chassis = rec ? car(part) : nullptr;
+  auto *vehicle = chassis && chassis != part ? record(chassis) : nullptr;
+  if (!vehicle)
     return false;
-  if (!preview) {
-    const auto *chassis = record(car(static_cast<Object *>(part)));
-    if (!chassis || !chassis->engine_running) return false;
+  detach_panel(part, *rec, chassis, *vehicle);
+  return !rec->state.parent;
+}
+
+std::vector<CarLight> part_car_lights(bool lit_only) {
+  std::vector<CarLight> out;
+  for (auto &[part, rec] : records) {
+    if (rec.lamps.empty())
+      continue;
+    Object *chassis = car(part);
+    if (!chassis || chassis == part)
+      continue;
+    float m[16];
+    if (!scene_instances_render_matrix(part, m))
+      continue;
+    const float power = part_lamp_power(rec.state.wear * rec.state.tear);
+    if (lit_only && power <= 0.f)
+      continue;
+    for (const auto &lamp : rec.lamps) {
+      if (lit_only && !part_lamp_lit(part, lamp.kind == CarLightKind::Brake ? 1u : 4u, false))
+        continue;
+      CarLight light;
+      light.part = part;
+      light.car = chassis;
+      light.kind = lamp.kind;
+      light.resource = lamp.resource;
+      const auto &p = lamp.position, &d = lamp.direction;
+      for (int i = 0; i < 3; ++i) {
+        light.position[i] = m[i] * p[0] + m[4 + i] * p[1] + m[8 + i] * p[2] + m[12 + i];
+        light.direction[i] = m[i] * d[0] + m[4 + i] * d[1] + m[8 + i] * d[2];
+      }
+      light.position[2] = -light.position[2];
+      light.direction[2] = -light.direction[2];
+      const float length = std::sqrt(light.direction[0] * light.direction[0] +
+                                     light.direction[1] * light.direction[1] +
+                                     light.direction[2] * light.direction[2]);
+      if (length > 1e-6f)
+        for (auto &v : light.direction) v /= length;
+      light.diffuse = lamp.light.diffuse;
+      light.attenuation = lamp.light.attenuation;
+      light.range = lamp.light.range;
+      light.theta = lamp.light.theta;
+      light.phi = lamp.light.phi;
+      light.power = power;
+      out.push_back(light);
+    }
   }
+  // Records are a hash map: a stable order keeps the renderer's light budget
+  // from shuffling between frames.
+  std::sort(out.begin(), out.end(), [](const CarLight &a, const CarLight &b) {
+    return std::tie(a.car, a.part, a.kind) < std::tie(b.car, b.part, b.kind);
+  });
+  return out;
+}
+
+bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
+  if (!(flags & 5u) || (flags & 0x40u) || !runtime)
+    return false;
+  const Record *chassis = nullptr;
+  if (!preview) {
+    chassis = record(car(static_cast<Object *>(part)));
+    if (!chassis || !chassis->engine_running) return false;
+    // A broken lamp (#279): its part worn or torn past the threshold.
+    if (const auto *own = record(static_cast<Object *>(part));
+        own && part_lamp_power(own->state.wear * own->state.tear) <= 0.f)
+      return false;
+  }
+  // Brake lamps (#279): the pedal of the car the part is installed on.
+  if ((flags & 1u) && chassis && chassis->dynamics.drive.brake > kBrakeLampMin)
+    return true;
+  if (!(flags & 4u))
+    return false;
   Value time = runtime->get_static("java.game.GameLogic", "time");
   float sec = 0.f;
   if (time.tag == ValueTag::Float)

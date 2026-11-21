@@ -10,6 +10,7 @@
 #include "slrr/gameref.hpp"
 #include "slrr/host_game_options.hpp"
 #include "slrr/osd_registry.hpp"
+#include "slrr/part_runtime.hpp"
 #include "slrr/render_backend.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/scene_light.hpp"
@@ -587,6 +588,19 @@ class LibBgfxBackend final : public IRenderBackend {
   // in shaders/scene_shadow.sh (3 x 64 vec4 of the fragment constants).
   static constexpr size_t kSceneryLamps=64;
   std::vector<LampLight> scenery_lamps_;
+  // Car lights (#279) lead the unshadowed part of scenery_lamps_: at most
+  // kCarLights, the followed car's first, then by distance to the eye.
+  static constexpr size_t kCarLights=16;
+  // Tuned in scene_shadow_gpu case car_lights; see KNOWLEDGE_BASE #279.
+  static constexpr float kCarLightMaxDistance=150.f;
+  static constexpr float kHeadlightIntensity=3.f, kHeadlightRange=60.f;
+  static constexpr float kHeadlightInnerDegrees=14.f, kHeadlightOuterDegrees=30.f;
+  static constexpr float kBrakeLightIntensity=1.5f, kBrakeLightRange=6.f, kBrakeLightQuadratic=.3f;
+  static constexpr float kBrakeLightInnerDegrees=55.f, kBrakeLightOuterDegrees=85.f;
+  size_t car_lamp_count_=0;
+  void update_car_lights();
+  // Harness hook: when set, used instead of part_car_lights().
+  std::optional<std::vector<CarLight>> car_lights_override_;
   bgfx::UniformHandle u_lamp_params_=BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
   bool fixture_shadow_active_=false;
