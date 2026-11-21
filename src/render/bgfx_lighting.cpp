@@ -645,7 +645,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       const bool fixture_emitter=group && group->self_illuminated;
       const float settings[4] = {alpha_test, instance.emissive_overlay ? 2.f : instance.sky || blend || vertex_mix || fixture_emitter ? 1.f : preview ? .5f : 0.f,
                                  foliage_coverage ? 2.f : blend ? 1.f : 0.f, material_mix ? -2.f : vertex_mix ? -1.f :
-                                 outdoor_lighting_ && !preview && part.geo.ground_polygons ? -3.f :
+                                 baked_vertex_light(part.geo.ground_polygons && !preview) ? -3.f :
                                  !blend && preview && tex.idx != white_tex_.idx ? 1.f : 0.f};
       const uint32_t color = preview || instance.cull_backfaces ? instance.color : 0xffffffu;
       float tint[4]={((color>>16)&255)/255.f,((color>>8)&255)/255.f,(color&255)/255.f,1};
@@ -790,7 +790,7 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
                                emissive ? 2.f : blend || vertex_mix || fixture_emitter ? 1.f : 0.f,
                                foliage_coverage ? 2.f : blend ? 1.f : 0.f,
                                material_mix ? -2.f : vertex_mix ? -1.f :
-                               outdoor_lighting_ && part.geo.ground_polygons ? -3.f : 0.f};
+                               baked_vertex_light(part.geo.ground_polygons) ? -3.f : 0.f};
     // The tint draw_instance builds from the placement colour, computed in
     // the same order. Its RGB rides per instance (v_tint, with u_color.rgb
     // 1), its alpha never depends on the placement and stays in u_color.

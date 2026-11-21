@@ -3501,3 +3501,34 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   11.7 M (sum of channel differences) over 496 k pixels. 22:00: unchanged,
   lamps 0.80, 6 shadowed, 80.7 M over 500 k pixels. The
   night captures at 640x360, 2560x1440 and crowd match the pre-#271 build.
+
+### Baked vertex light on ground POLY under the dynamic sun (#275)
+
+- Symptom (Elias): the Nevada Desert mountains very dark, blotchy and high
+  in contrast by day. Nevada Desert is MW_Mod's `Nevada_Track` script, which
+  starts `maps\ROC_track.rpk`; the terrain is `maps/roc_track/meshes/roc.scY`,
+  one SCX3 ground POLY (61,038 vertices, normals present).
+- Cause: POLY vertices carry a colour (byte 24 of each 56-byte vertex,
+  `src/resources/scene_instances.cpp` POLY parser). On this terrain it is
+  grey with alpha equal to the grey, mostly 0 or 1 (rock `sziklafal2`: 43 %
+  of vertices near 0; sand `sivatag`: 49 %), brighter on slopes facing the
+  original's sun: baked light. The sections do not overlap (no coinciding
+  triangles), so it is not a layer blend weight. Since 5ca91e7 (2026-11-10)
+  outdoor ground POLY drew with `u_alphaTest.w = -3`, where `fs_mesh`
+  multiplies the texture by it, then our sun, ambient, shadows and AO lit it
+  again: baked-dark vertices stayed black whatever the sun did. Not AO and
+  not the cascades: the same look with AO off and map shadows off.
+- Fix: `src/render/bgfx_lib_backend.hpp:baked_vertex_light` keeps the
+  vertex colour only for outdoor ground POLY without dynamic lighting (where
+  it is the scene's light); under the dynamic sun it is ignored, as the
+  stock lightmap path already does for lightmapped surfaces.
+- Test: `tests/test_scene_shadow_gpu.cpp` `desert_capture`, the desert at
+  noon (sun passes, GTAO High 3 m), the mountain band behind the start
+  gantry: 72.4 % of pixels under luminance 40 (mean 54) before, 0.1 % (mean
+  136) after; it also checks that the data still bakes dark rock vertices.
+- Side effect: Valo City's ground POLY loses its baked vertex light too. The
+  night city captures differ by 3.5 on average per changed pixel (max 69):
+  slightly lighter ground, same picture. `build/city_frame_reference_*.bin`
+  from earlier builds therefore no longer match byte for byte.
+- Not checked: SLRR_rev does not establish the original's use of this
+  colour (its docs call vertex-colour blending unconfirmed and drop alpha).
