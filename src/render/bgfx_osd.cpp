@@ -181,10 +181,10 @@ namespace slrr {
     std::memcpy(tib.data, idx, sizeof(idx));
     float mtx[16];
     bx::mtxIdentity(mtx);
-    bgfx::setTransform(mtx);
-    bgfx::setVertexBuffer(0, &tvb);
-    bgfx::setIndexBuffer(&tib);
-    bgfx::setTexture(0, s_tex_, tex_for_osd_icon(w.icon_path));
+    enc()->setTransform(mtx);
+    enc()->setVertexBuffer(0, &tvb);
+    enc()->setIndexBuffer(&tib);
+    enc()->setTexture(0, s_tex_, tex_for_osd_icon(w.icon_path));
     bind_baked_light(nullptr, nullptr);
     // Icons: cutout low-alpha (kills green JPEG plate).
     // OpeningPic.ptx is a JPEG with no alpha. Blending with tex.a hides it
@@ -202,17 +202,17 @@ namespace slrr {
     // PTX RGB is premultiplied. Discarding a<0.5 chewed the icon edges.
     // tex.a keeps the antialiasing. Splash/loading have no usable alpha.
     const float u[4] = {0.f, 1.f, splash_plate ? 0.f : 1.f, 0.f};
-    bgfx::setUniform(u_alpha_test_, u);
+    enc()->setUniform(u_alpha_test_, u);
     const float tint[4] = {cr, cg, cb, ca};
-    bgfx::setUniform(u_color_, tint);
+    enc()->setUniform(u_color_, tint);
     // PTX RGB is already multiplied by alpha. SRC_ALPHA would darken the
     // menu plate a second time (rgb * a * a). Premultiplied blend keeps
     // the gold frame and lets prime.avi through the transparent center.
-    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+    enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                    BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE,
                                          BGFX_STATE_BLEND_INV_SRC_ALPHA) |
                    BGFX_STATE_MSAA);
-    bgfx::submit(osd_view_, program_);
+    submit_counted(osd_view_, program_);
   }
 #endif
 #ifdef _WIN32
@@ -264,7 +264,7 @@ namespace slrr {
                     t.custom_effects ? &t.effects : nullptr);
     }
     const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
-    bgfx::setUniform(u_color_, white_c);
+    enc()->setUniform(u_color_, white_c);
   }
 #endif
 #ifdef _WIN32
@@ -354,7 +354,7 @@ namespace slrr {
 
     draw_osd_line(font_key, h->tip, bx, by - text_h * 0.5f, 1, 0xFFFFFFFFu);
     const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
-    bgfx::setUniform(u_color_, white_c);
+    enc()->setUniform(u_color_, white_c);
   }
 #endif
 #ifdef _WIN32
@@ -406,7 +406,7 @@ namespace slrr {
     bgfx::setViewRect(view_id, 0, 0, static_cast<uint16_t>(width_),
                       static_cast<uint16_t>(height_));
     bgfx::setViewTransform(view_id, nullptr, ortho);
-    bgfx::touch(view_id);
+    enc()->touch(view_id);
 
     MeshVertex v[4];
     auto setv = [](MeshVertex& o, float x, float y, float uu, float vv) {
@@ -435,20 +435,20 @@ namespace slrr {
     std::memcpy(tib.data, idx, sizeof(idx));
     float mtx[16];
     bx::mtxIdentity(mtx);
-    bgfx::setTransform(mtx);
-    bgfx::setVertexBuffer(0, &tvb);
-    bgfx::setIndexBuffer(&tib);
-    bgfx::setTexture(0, s_tex_, fmv_tex_);
+    enc()->setTransform(mtx);
+    enc()->setVertexBuffer(0, &tvb);
+    enc()->setIndexBuffer(&tib);
+    enc()->setTexture(0, s_tex_, fmv_tex_);
     bind_baked_light(nullptr, nullptr);
     const float white[4] = {1.f, 1.f, 1.f, 1.f};
-    bgfx::setUniform(u_color_, white);
+    enc()->setUniform(u_color_, white);
     // Unlit. The mesh light (~0.44 on a flat quad) was the black filter
     // on intros and on prime.avi.
     const float u_at[4] = {0.f, 1.f, 0.f, 0.f};
-    bgfx::setUniform(u_alpha_test_, u_at);
-    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+    enc()->setUniform(u_alpha_test_, u_at);
+    enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                    BGFX_STATE_MSAA);
-    bgfx::submit(view_id, program_);
+    submit_counted(view_id, program_);
   }
 #endif
 #ifdef _WIN32
@@ -516,18 +516,18 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
                           float(color & 255) * rgb_scale, opacity};
     const float alpha[] = {0.f, 1.f, opaque ? 0.f : 1.f,
                            color_mix && premultiplied ? 2.f : 0.f};
-    bgfx::setTransform(identity);
-    bgfx::setVertexBuffer(0, &vb);
-    bgfx::setIndexBuffer(&ib);
-    bgfx::setTexture(0, s_tex_, texture);
+    enc()->setTransform(identity);
+    enc()->setVertexBuffer(0, &vb);
+    enc()->setIndexBuffer(&ib);
+    enc()->setTexture(0, s_tex_, texture);
     bind_baked_light(nullptr, nullptr);
-    bgfx::setUniform(u_color_, tint);
-    bgfx::setUniform(u_alpha_test_, alpha);
+    enc()->setUniform(u_color_, tint);
+    enc()->setUniform(u_alpha_test_, alpha);
     const uint64_t blend = premultiplied
         ? BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA)
         : BGFX_STATE_BLEND_ALPHA;
-    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | blend);
-    bgfx::submit(osd_view_, program_);
+    enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | blend);
+    submit_counted(osd_view_, program_);
   };
   const auto safe_numeric_format = [](const std::string& fmt) {
     if (fmt.size() < 2 || fmt.size() > 6 || fmt.front() != '%' || fmt.back() != 'f')
@@ -748,7 +748,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
                         static_cast<uint16_t>(height_));
       bgfx::setViewTransform(view, nullptr, ortho);
       bgfx::setViewMode(view, bgfx::ViewMode::Sequential);
-      bgfx::touch(view);
+      enc()->touch(view);
     };
     setup_osd(kOsdUnder);
     setup_osd(kOsdView);
@@ -777,10 +777,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       // White tex + darken via color uniform — draw after setting color.
       // draw_osd_quad owns the tint uniform; pass the color into the draw.
       const float u_at[4] = {0.f, 1.f, 1.f, 0.f};
-      bgfx::setUniform(u_alpha_test_, u_at);
+      enc()->setUniform(u_alpha_test_, u_at);
       draw_osd_quad(plate, 0.05f, 0.05f, 0.07f, 0.82f);
       const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
-      bgfx::setUniform(u_color_, white_c);
+      enc()->setUniform(u_color_, white_c);
     }
 
     // Viewport priority: menu, then the darken shield, then the dialog plate.
@@ -994,19 +994,19 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       std::memcpy(tvb.data, text_vertices_.data(), text_vertices_.size() * sizeof(OsdTextVertex));
       std::memcpy(tib.data, text_indices_.data(), text_indices_.size() * sizeof(uint16_t));
       float mtx[16]; bx::mtxIdentity(mtx);
-      bgfx::setTransform(mtx);
-      bgfx::setVertexBuffer(0, &tvb); bgfx::setIndexBuffer(&tib);
-      bgfx::setTexture(0, s_tex_, tex);
-      bgfx::setUniform(u_color_, col);
-      bgfx::setUniform(u_font_params_, params, 2);
-      bgfx::setUniform(u_font_outline_, outline.data());
-      bgfx::setUniform(u_font_shadow_, shadow.data());
-      bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+      enc()->setTransform(mtx);
+      enc()->setVertexBuffer(0, &tvb); enc()->setIndexBuffer(&tib);
+      enc()->setTexture(0, s_tex_, tex);
+      enc()->setUniform(u_color_, col);
+      enc()->setUniform(u_font_params_, params, 2);
+      enc()->setUniform(u_font_outline_, outline.data());
+      enc()->setUniform(u_font_shadow_, shadow.data());
+      enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                      BGFX_STATE_BLEND_ALPHA | BGFX_STATE_MSAA);
-      bgfx::submit(osd_view_, text_program_);
+      submit_counted(osd_view_, text_program_);
     }
     const float white[4] = {1.f, 1.f, 1.f, 1.f};
-    bgfx::setUniform(u_color_, white);
+    enc()->setUniform(u_color_, white);
   }
 #endif
 
