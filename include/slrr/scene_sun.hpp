@@ -36,6 +36,10 @@ float scene_sun_time();
 // Night window shared by night facades and city lights (group 4):
 // before 06:00 or from 18:30.
 bool scene_sun_is_night();
+// Street lamp strength from the day cycle's sun elevation (#271): 0 while
+// the sun lights the scene, 1 once its light is gone (elevation -0.06, about
+// 18:14 / 05:46), with a smooth ramp from elevation 0.10 (about 17:37 / 06:23).
+float scene_sun_night_factor();
 void scene_sun_apply_day_cycle(SceneSun& light);
 
 }  // namespace slrr

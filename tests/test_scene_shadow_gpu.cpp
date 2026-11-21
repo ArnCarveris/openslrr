@@ -1318,7 +1318,10 @@ struct SceneShadowRegression {
   // front of the camera), a parented car-like subtree of 30 cars.rpk renders
   // whose nodes carry a paint texture id, and the same subtree in an inset
   // script viewport preview.
-  static void city_submission(LibBgfxBackend& b, uint16_t width, uint16_t height, bool crowd=false) {
+  // #271: `day` renders the crowd street at noon with the sun shadow passes
+  // (update_static_shadow: cascades, map and walker casters) before the world.
+  static void city_submission(LibBgfxBackend& b, uint16_t width, uint16_t height, bool crowd=false,
+                              bool day=false) {
     Fixture f;
     const auto game=fs::absolute("game");
     f.vm.set_game_root(game.string());f.packs.set_root(game.string());f.packs.open_all();
@@ -1340,7 +1343,7 @@ struct SceneShadowRegression {
     b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
     b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
     b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};b.fixture_lights_.clear();
-    scene_sun_set_time(22*3600.f);
+    scene_sun_set_time(day?13.5f*3600.f:22*3600.f);
     const int32_t saved_width=b.width_,saved_height=b.height_;
     b.width_=width;b.height_=height;
     struct Walker { Object* render; float phase; };
@@ -1383,6 +1386,7 @@ struct SceneShadowRegression {
       for(uint32_t id=0x57;id<=0x5B;++id)
         if(const auto kind=kind_of(RpkIndex::make_full_id(humans,id));kind.render) kinds.push_back(kind);
       SLRR_REQUIRE(!kinds.empty());
+      if(day) scene_instances_prepare_physics();
       for(int i=0;i<80;++i) {
         const Kind& kind=kinds[size_t(i)%kinds.size()];
         Object* render=f.vm.new_object("java.util.resource.RenderRef");
@@ -1397,6 +1401,9 @@ struct SceneShadowRegression {
         float* m=node->local_matrix;std::fill(m,m+16,0.f);
         m[0]=cy;m[2]=-sy;m[8]=sy;m[10]=cy;m[5]=m[15]=1.f;
         m[12]=frame_matrix[12]+ahead;m[13]=frame_matrix[13]-kind.sole;m[14]=frame_matrix[14]+side;
+        // Feet on the street surface (#271: the daytime case needs their shadows).
+        float floor_y=0.f;
+        if(day&&scene_instances_floor(m[12],m[14],frame_matrix[13]+6.f,nullptr,&floor_y)) m[13]=floor_y-kind.sole;
         if(kind.anim) {character_bind_animation(render,render,int32_t(kind.anim),f.packs);character_play(render,true);}
         walkers.push_back({render,.11f*float(i)});
       }
@@ -1490,6 +1497,23 @@ struct SceneShadowRegression {
         b.sync_instances(view,projection);
         const double sync=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         b.update_local_light();
+        if(day) {
+          VideoOptions video;video.shadows=2;
+          const float script_eye[3]={frame_matrix[12],frame_matrix[13]+2.f,frame_matrix[14]};
+          b.update_static_shadow(script_eye,video);
+          // The game runs the lamp passes every frame, day or night (#271).
+          b.set_lamp_shadow_focus(script_eye);
+          b.update_lamp_shadows(video);
+          static int lamp_report=0;
+          if(lamp_report++==0)
+            std::printf("CITY FRAME day lamps: %zu lit, %zu shadow slots, %zu car tiles, atlas bound %d, registered %zu\n",
+                        b.scenery_lamps_.size(),b.lamp_shadow_count_,b.car_shadow_tiles_.size(),
+                        int(b.lamp_shadow_atlas_bound_),scenery_lights_count());
+          // Elias's settings: GTAO High, 3 m radius.
+          host_enhanced_graphics().ao_method=2;host_enhanced_graphics().ao_quality=2;
+          host_enhanced_graphics().ao_radius=300;host_enhanced_graphics().ao_strength=100;
+          b.update_ambient_occlusion(view,projection,width,height,view_id);
+        }
         bgfx::setViewFrameBuffer(view_id,fb);bgfx::setViewRect(view_id,0,0,width,height);
         bgfx::setViewClear(view_id,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
         bgfx::setViewTransform(view_id,view,render);
@@ -1594,10 +1618,52 @@ struct SceneShadowRegression {
     SLRR_REQUIRE(lit>0);
     SLRR_REQUIRE(on.uniform_skips>0&&on.texture_skips>0&&on.residency_skips>0);
     SLRR_REQUIRE(off.uniform_skips==0&&off.texture_skips==0&&off.residency_skips==0);
+    if(day) {
+      // #271: street lamps against the sun. Each hour renders the street with
+      // street lamp lighting on and off; the difference is what the lamps add
+      // (their light and their shadow tiles). At noon nothing, at dusk a faint
+      // contribution, at night the full lamps.
+      std::printf("CITY FRAME night factor by hour (old gate -> new factor):");
+      for(float hour:{5.5f,5.75f,6.f,6.25f,6.5f,12.f,17.f,17.5f,17.75f,18.f,18.25f,18.5f,22.f}) {
+        scene_sun_set_time(hour*3600.f);
+        std::printf(" %.2fh %d->%.3f",hour,int(scene_sun_is_night()),scene_sun_night_factor());
+      }
+      std::printf("\n");
+      const float saved_dt=b.lamp_shadow_dt_override_;
+      b.lamp_shadow_dt_override_=10.f;  // shadow slots at full weight at once
+      struct Hour { float hour; const char* name; };
+      uint64_t previous=0;
+      for(const Hour hour:{Hour{12.f,"noon"},Hour{17.75f,"dusk"},Hour{22.f,"night"}}) {
+        scene_sun_set_time(hour.hour*3600.f);
+        render_debug().lamp_lighting=true;
+        const auto lit=run(true,6,2);
+        const size_t lamps=b.scenery_lamps_.size(),shadowed=b.lamp_shadow_count_;
+        float strongest=0.f;
+        for(const auto& lamp:b.scenery_lamps_) strongest=std::max(strongest,lamp.intensity);
+        render_debug().lamp_lighting=false;
+        const auto dark=run(true,6,2);
+        render_debug().lamp_lighting=true;
+        uint64_t added=0;size_t pixels=0;
+        for(size_t i=0;i+3<lit.image.size();i+=4) {
+          int d=0;for(int c=0;c<3;++c) d+=std::abs(int(lit.image[i+c])-int(dark.image[i+c]));
+          added+=uint64_t(d);pixels+=d>0;
+        }
+        std::printf("CITY FRAME lamps at %s (%.2fh, factor %.3f): %zu lit, %zu shadowed, strongest %.2f; "
+                    "lamp contribution %llu over %zu pixels\n",hour.name,hour.hour,scene_sun_night_factor(),
+                    lamps,shadowed,strongest,(unsigned long long)added,pixels);
+        if(hour.hour==12.f) SLRR_REQUIRE(lamps==0&&shadowed==0&&added==0);
+        else SLRR_REQUIRE(lamps>0&&added>previous);
+        if(hour.hour==17.75f) SLRR_REQUIRE(strongest>0.f&&strongest<.2f*kSceneryLightIntensity);
+        if(hour.hour==22.f) SLRR_REQUIRE(strongest>=.99f*kSceneryLightIntensity);
+        previous=added;
+      }
+      b.lamp_shadow_dt_override_=saved_dt;
+    }
     // An earlier build's capture (#254, #262, #264): compared when present,
     // written when absent. Delete the file to take a new reference.
     char reference[96];
-    std::snprintf(reference,sizeof(reference),"build/city_frame_reference_%ux%u%s.bin",width,height,crowd?"_crowd":"");
+    std::snprintf(reference,sizeof(reference),"build/city_frame_reference_%ux%u%s%s.bin",width,height,
+                  crowd?"_crowd":"",day?"_day":"");
     if(FILE* in=std::fopen(reference,"rb")) {
       std::vector<uint8_t> base(on.image.size());
       base.resize(std::fread(base.data(),1,base.size(),in));std::fclose(in);
@@ -1615,6 +1681,7 @@ struct SceneShadowRegression {
     b.sequential_views_.reset(view_id);
     bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
     host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    if(day) {b.static_shadow_active_=false;b.shadow_cascades_active_=false;b.shadow_cache_valid_=false;}
     for(const auto& walker:walkers) {character_release_animation(walker.render);gameref_remove(walker.render);}
     for(auto* node:extra_nodes) gameref_remove(node);
     if(paint_id) paint_texture_release(paint_id);
@@ -3254,6 +3321,7 @@ int main() {
     SceneShadowRegression::city_submission(backend,640,360);
     SceneShadowRegression::city_submission(backend,2560,1440);
     SceneShadowRegression::city_submission(backend,2560,1440,true);
+    SceneShadowRegression::city_submission(backend,1280,720,true,true);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

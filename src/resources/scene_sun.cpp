@@ -59,6 +59,15 @@ bool scene_sun_is_night() {
   return hour < 6.f || hour >= 18.5f;
 }
 
+float scene_sun_night_factor() {
+  constexpr float tau = 6.28318530718f;
+  const float phase = std::fmod(g_sun_time, 86400.f) * (tau / 86400.f) - tau * .25f;
+  const float elevation = std::sin(phase);
+  // scene_sun_apply_day_cycle's direct light ("daylight") ends at -0.06.
+  const float t = std::clamp((elevation + 0.06f) / 0.16f, 0.f, 1.f);
+  return 1.f - t * t * (3.f - 2.f * t);
+}
+
 void scene_sun_apply_day_cycle(SceneSun& light) {
   constexpr float tau = 6.28318530718f;
   const float phase = std::fmod(g_sun_time, 86400.f) * (tau / 86400.f) - tau * .25f;

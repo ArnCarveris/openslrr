@@ -2752,8 +2752,9 @@ city at night.
   glow-only (0x16 `fake point`). Drag Track has 318.
 - Rendering: `src/render/bgfx_lib_backend.cpp:update_scenery_lights`, called
   by `update_local_light` outside garages when Local lights (option 4) is on.
-  The city group is enabled by `src/resources/scene_sun.cpp:scene_sun_is_night`
-  (before 06:00 or from 18:30, the night-facade window); other groups (car
+  The city group follows `src/resources/scene_sun.cpp:scene_sun_night_factor`
+  since #271 (lamp power scaled by it, off below 0.01); night facades keep
+  the `scene_sun_is_night` window (before 06:00 or from 18:30). Other groups (car
   brake/indicator bits) stay off; `fake*` lights never light the scene.
   `src/resources/script_lights.cpp:scenery_lights_select` keeps lamps whose
   45 m light sphere meets the view frustum (a lamp outside it lights no visible
@@ -3428,3 +3429,38 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
 - The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
   `city_submission` now accepts up to 64 differing bytes at most 1 apart and
   fails on anything larger.
+
+### Street lamps lit while the sun is up (#271)
+
+- Symptom (Elias, Valo City, evening): a walker had its sun shadow plus a
+  softer second shadow pointing away from a street lamp, and the lamp post
+  had two diagonal shadows. Turning "street lamp lighting" off removed the
+  second shadow. Cause: street lamps switched on at full power on a clock
+  window (`scene_sun_is_night`, 18:30-06:00) independent of the light that
+  lit the scene, so a lamp's shadow tile (#237) added a second shadow beside
+  the sun's. Not a regression of the #244-#269 stack: the harness at 13:30
+  shows 0 lamps lit and single shadows on every merge tested.
+- Fix: `src/resources/scene_sun.cpp:scene_sun_night_factor` gives 0 while
+  the day cycle's sun lights the scene and 1 once its direct light is gone
+  (sun elevation -0.06, where `scene_sun_apply_day_cycle`'s daylight ends),
+  with a smoothstep from elevation 0.10. `src/render/bgfx_lib_backend.cpp:update_scenery_lights`
+  scales every lamp's power by it and lights none below 0.01
+  (`kLampNightMin`); `src/render/bgfx_shadows.cpp:update_lamp_shadows`
+  draws no tiles below 0.01 and scales the lamps it adds itself (shadowed
+  lamps outside the lit set, car-tile lamps). A lamp's shadow is the absence
+  of its light, so its darkening fades with it.
+- Factor by hour (old gate -> new factor): 05:30 1 -> 1, 06:00 0 -> 0.68,
+  06:15 0 -> 0.12, 06:30 0 -> 0, 12:00 0 -> 0, 17:30 0 -> 0, 17:45 0 -> 0.12,
+  18:00 0 -> 0.68, 18:15 0 -> 1, 18:30 1 -> 1, 22:00 1 -> 1. Lamps now light
+  the 18:14-18:30 stretch that used to be dark, and stay on past 06:00
+  while the sun is still below about 6 degrees.
+- Lamp geometry: the light sits at the type-13 light child (the lamp head);
+  `update_lamp_shadows` keeps out of a lamp's own tile any caster whose
+  bounds contain the light position (the pole and housing, `holds_lamp`).
+- Test: `tests/test_scene_shadow_gpu.cpp` `city_submission(..., day=true)`
+  (1280x720, crowd, sun passes and GTAO High 3 m, plus `update_lamp_shadows`)
+  renders noon, 17:45 and 22:00 with street lamp lighting on and off. Noon:
+  no lamp lit, no shadow slot, identical frames. 17:45: 40 lamps at most 0.10
+  (factor 0.12), lamp contribution 9.7 M (sum of channel differences) over
+  494 k pixels. 22:00: unchanged, lamps 0.80, 80.7 M over 500 k pixels. The
+  night captures at 640x360, 2560x1440 and crowd match the pre-#271 build.

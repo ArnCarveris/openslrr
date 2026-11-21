@@ -1414,7 +1414,12 @@ void LibBgfxBackend::publish_debug_stats() {
 
 void LibBgfxBackend::update_scenery_lights() {
     perf::Scope lamp_scope(perf::Zone::LampSelect);
-    const uint32_t groups = scene_sun_is_night() ? kLightGroupCity : 0u;
+    // Street lamps follow the darkness, not a fixed clock window (#271): at
+    // 18:30 the old gate lit them at full power while a sun set from a map
+    // light could still be bright, and their shadow tiles drew a second
+    // shadow beside the sun's.
+    const float night = scene_sun_night_factor();
+    const uint32_t groups = night > kLampNightMin ? kLightGroupCity : 0u;
     if (!groups || !scenery_lights_count() || !render_debug().lamp_lighting)
       return;
     // cull_eye_ is script space (sync_instances); the lights are render space,
@@ -1436,7 +1441,7 @@ void LibBgfxBackend::update_scenery_lights() {
       lamp.position = pick.position;
       lamp.color = pick.color;
       lamp.attenuation = pick.attenuation;
-      lamp.intensity = pick.intensity;
+      lamp.intensity = pick.intensity * night;
       lamp.range = pick.range;
       lamp.source = pick.source;
       if (lamp.valid()) scenery_lamps_.push_back(lamp);
