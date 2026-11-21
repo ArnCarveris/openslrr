@@ -385,6 +385,7 @@ void draw_render_passes(DebugOverlay::RenderOptions& options) {
   ImGui::Checkbox("Character shadow casters", &o.skinned_casters);
   ImGui::Checkbox("Garage fixture shadows", &o.fixture_shadows);
   ImGui::Checkbox("Street lamp lighting", &o.lamp_lighting);
+  ImGui::Checkbox("Car lights (headlight beams, brake lights)", &o.car_lights);
   ImGui::Checkbox("Street lamp shadows", &o.lamp_shadows);
   ImGui::Checkbox("Car lamp shadow tiles", &o.car_lamp_tiles);
   ImGui::Checkbox("Lamp shadow reference path (slow)", &o.lamp_shadow_reference);

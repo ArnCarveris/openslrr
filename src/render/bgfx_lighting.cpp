@@ -232,7 +232,8 @@ void LibBgfxBackend::upload_light_data() {
     put(x, 0, lamp.position[0], lamp.position[1], lamp.position[2], lamp.range);
     put(64 + x, 0, lamp.color[0] * lamp.intensity, lamp.color[1] * lamp.intensity,
         lamp.color[2] * lamp.intensity, 0.f);
-    put(128 + x, 0, lamp.attenuation[0], lamp.attenuation[1], lamp.attenuation[2], 0.f);
+    put(128 + x, 0, lamp.attenuation[0], lamp.attenuation[1], lamp.attenuation[2], lamp.cos_inner);
+    put(192 + x, 0, lamp.direction[0], lamp.direction[1], lamp.direction[2], lamp.cos_outer);
   }
   const size_t shadowed = lamp_shadow_atlas_bound_
       ? std::min({lamp_shadow_count_, scenery_lamps_.size(), kLampSpecial}) : size_t(0);

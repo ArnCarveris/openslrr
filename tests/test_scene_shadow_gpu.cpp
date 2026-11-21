@@ -320,6 +320,130 @@ struct SceneShadowRegression {
   // #237: a street lamp from the scenery light registry lights the road at
   // night through the production fs_mesh path, not by day, and option 4
   // switches it off. Fake (glow-only) and non-city groups never light.
+  // #279: headlight parts cast forward spot beams on the road at night, brake
+  // light parts light the road behind red, and a removed headlight takes its
+  // own beam away. The lights come from the harness hook in the shape
+  // part_car_lights() reports them (render space); tests/test_car_lights.cpp
+  // checks which parts own them and when they are lit.
+  static void car_lights(LibBgfxBackend& b) {
+    Fixture f;scene_instances_set_resources(&f.packs);
+    Object world;gameref_upsert(&world)->flags=kWorldTreeRoot;
+    scene_instances_select(&world,nullptr,false,SceneEnvironment::Exterior);
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_method=0;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};
+    float view[16],projection[16],render[16];
+    constexpr uint16_t width=160,height=120;
+    bx::mtxLookAt(view,{0,14,-26},{0,0,4});bx::mtxProj(projection,60.f,float(width)/height,.05f,200.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    b.cull_eye_[0]=0;b.cull_eye_[1]=14;b.cull_eye_[2]=26;
+    std::copy(view,view+16,b.cull_view_);std::copy(projection,projection+16,b.cull_proj_);
+    auto floor=std::make_shared<ScxGeometry>();floor->info.ok=true;floor->info.version=4;floor->position_scale=1;
+    floor->positions={-30,0,40,30,0,40,-30,0,-30,30,0,-30};floor->normals={0,1,0,0,1,0,0,1,0,0,1,0};
+    floor->uvs.resize(8);floor->indices={0,2,1,1,2,3};ScxGroup group;group.index_count=6;floor->groups={group};
+    SceneInstance road;road.geometry=floor;bx::mtxIdentity(road.transform.data());
+    road.lighting.set=road.lighting.has_direction=true;road.lighting.direction[1]=-1;
+    for(int i=0;i<3;++i){road.lighting.diffuse[i]=0;road.lighting.ambient[i]=.08f;road.lighting.specular[i]=0;}
+    b.instances_={road};b.cache_scene_mesh(floor,nullptr,false);
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    auto capture=[&]() {
+      bgfx::setViewFrameBuffer(5,fb);bgfx::setViewRect(5,0,0,width,height);
+      bgfx::setViewClear(5,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+      bgfx::setViewTransform(5,view,render);
+      b.draw_instance(5,road,road.transform.data(),false,0);
+      bgfx::TextureRegion dst,src;dst.init(readback);src.init(color);bgfx::blit(100,dst,src);bgfx::frame();
+      std::vector<uint8_t> bytes(width*height*4);const auto ready=bgfx::read(dst,bytes.data());
+      for(int i=0;i<16;++i) if(bgfx::frame()>=ready) return bytes;
+      throw std::runtime_error("car light readback timeout");
+    };
+    // Road pixel of a render-space ground point.
+    const auto pixel=[&](float x,float z) {
+      float vp[16];bx::mtxMul(vp,view,projection);
+      const float in[4]={x,0,z,1};float clip[4];bx::vec4MulMtx(clip,in,vp);
+      const int px=int((clip[0]/clip[3]*.5f+.5f)*width);
+      int py=int((1.f-(clip[1]/clip[3]*.5f+.5f))*height);
+      if(!bgfx::getCaps()->originBottomLeft) {} else py=height-1-py;
+      SLRR_REQUIRE(px>=0&&px<width&&py>=0&&py<height);
+      return (size_t(py)*width+px)*4;
+    };
+    // Road luminance over a ground patch (sum of r+g+b over 5x5 metres).
+    const auto patch=[&](const std::vector<uint8_t>& image,float x,float z,int channel) {
+      long sum=0;
+      for(float dz=-2;dz<=2.01f;dz+=1) for(float dx=-2;dx<=2.01f;dx+=1) {
+        const auto at=pixel(x+dx,z+dz);
+        sum+=channel<0?long(image[at])+image[at+1]+image[at+2]:long(image[at+channel]);
+      }
+      return sum;
+    };
+    // A car at the origin facing +Z (render space): headlight parts 1.9 m
+    // ahead, 0.7 m up, beams pitched 5 degrees down; taillights 2 m behind.
+    const float pitch=.087f;
+    const auto headlight=[&](float x) {
+      CarLight l;l.kind=CarLightKind::Headlight;l.part=reinterpret_cast<Object*>(uintptr_t(0x100+int(x*10)));
+      l.position={x,.7f,1.9f};l.direction={0,-std::sin(pitch),std::cos(pitch)};
+      l.diffuse={.2f,.2f,.2f};l.attenuation={1,.03f,0};l.range=400;l.theta=1.896f;l.phi=2.02f;return l;
+    };
+    const auto brake=[&](float x) {
+      CarLight l;l.kind=CarLightKind::Brake;l.part=reinterpret_cast<Object*>(uintptr_t(0x200+int(x*10)));
+      l.position={x,.8f,-2.f};l.direction={0,0,-1};
+      l.diffuse={1,0,0};l.attenuation={1,.03f,0};l.range=5;return l;
+    };
+    scene_sun_set_time(22*3600.f);
+    b.car_lights_override_=std::vector<CarLight>{};b.update_local_light();
+    SLRR_REQUIRE(b.scenery_lamps_.empty() && b.car_lamp_count_==0);
+    const auto unlit=capture();
+    b.car_lights_override_=std::vector<CarLight>{headlight(-.7f),headlight(.7f)};b.update_local_light();
+    SLRR_REQUIRE(b.car_lamp_count_==2 && b.scenery_lamps_.size()==2);
+    SLRR_REQUIRE(b.scenery_lamps_[0].cos_outer>-1.f && b.scenery_lamps_[0].range==LibBgfxBackend::kHeadlightRange);
+    const auto both=capture();
+    b.car_lights_override_=std::vector<CarLight>{headlight(.7f)};b.update_local_light();
+    const auto one=capture();
+    b.car_lights_override_=std::vector<CarLight>{brake(-.6f),brake(.6f)};b.update_local_light();
+    SLRR_REQUIRE(b.car_lamp_count_==2);
+    const auto braking=capture();
+    const long ahead0=patch(unlit,0,10,-1),ahead2=patch(both,0,10,-1),ahead1=patch(one,0,10,-1);
+    const long far0=patch(unlit,0,24,-1),far2=patch(both,0,24,-1);
+    const long rear0=patch(unlit,0,-9,-1),rear2=patch(both,0,-9,-1);
+    const long red0=patch(unlit,0,-3.5f,0),red=patch(braking,0,-3.5f,0);
+    const long green0=patch(unlit,0,-3.5f,1),green=patch(braking,0,-3.5f,1);
+    const long front_red=patch(braking,0,10,-1);
+    std::printf("CAR LIGHTS road 10 m ahead: unlit %ld, two headlights %ld, one %ld; 24 m ahead %ld -> %ld; "
+                "9 m behind %ld -> %ld; brake red 3.5 m behind %ld -> %ld (green %ld -> %ld), ahead while braking %ld\n",
+                ahead0,ahead2,ahead1,far0,far2,rear0,rear2,red0,red,green0,green,front_red);
+    // Beams light the road ahead, a lost headlight takes about half away,
+    // nothing reaches behind the car; brake lights add red only, behind.
+    SLRR_REQUIRE(ahead2>ahead0+25*60 && far2>far0+25*15);
+    SLRR_REQUIRE(ahead1>ahead0+(ahead2-ahead0)/4 && ahead1<ahead2-(ahead2-ahead0)/4);
+    SLRR_REQUIRE(rear2==rear0);
+    SLRR_REQUIRE(red>red0+25*20 && green-green0<(red-red0)/8 && front_red==ahead0);
+    // Debug toggle off: the stock image, no dynamic car lights.
+    render_debug().car_lights=false;
+    b.car_lights_override_=std::vector<CarLight>{headlight(-.7f),headlight(.7f),brake(0)};b.update_local_light();
+    SLRR_REQUIRE(b.car_lamp_count_==0);
+    SLRR_REQUIRE(capture()==unlit);
+    render_debug().car_lights=true;
+    // Local lights (option 4) off: none either.
+    host_enhanced_graphics().local_lights=false;b.update_local_light();
+    SLRR_REQUIRE(b.car_lamp_count_==0 && b.scenery_lamps_.empty());
+    host_enhanced_graphics().local_lights=true;
+    b.car_lights_override_.reset();b.scenery_lamps_.clear();
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.instances_.clear();b.fixture_lights_.clear();b.outdoor_lighting_=false;b.car_lamp_count_=0;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    gameref_remove(&world);
+    std::puts("PASS car lights: headlight beams, brake light, one beam per headlight part");
+  }
+
   static void scenery_lamps(LibBgfxBackend& b) {
     Fixture f;scene_instances_set_resources(&f.packs);
     Object world,shell;
@@ -3477,6 +3601,7 @@ int main() {
     SceneShadowRegression::ambient_occlusion(backend);
     SceneShadowRegression::point_lifetime(backend);
     SceneShadowRegression::scenery_lamps(backend);
+    SceneShadowRegression::car_lights(backend);
     SceneShadowRegression::lamp_cost(backend);
     SceneShadowRegression::lamp_shadows(backend);
     SceneShadowRegression::lamp_shadow_stability(backend);

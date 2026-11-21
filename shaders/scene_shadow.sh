@@ -210,6 +210,15 @@ float lampTileVisibilityFast(mat4 sampleMatrix,vec4 tileInfo,vec2 size,vec3 worl
     float fade=rim?1.0-smoothstep(0.75,0.98,length(p.xy*2.0-vec2(1.0,1.0))):1.0;
     return mix(1.0,mix(1.0,shadow,fade),tileInfo.z);
 }
+// Car lights (#279) are spot lamps: lightData(192+i,0) holds the beam
+// direction and the cosine of the outer half-angle, lightData(128+i,0).w the
+// inner one. Omnidirectional lamps (street lamps) store an outer cosine of -2.
+float lampCone(int i,vec3 toward)
+{
+    vec4 spot=lightData(192+i,0);
+    if(spot.w<-1.5) return 1.0;
+    return smoothstep(spot.w,lightData(128+i,0).w,dot(-toward,spot.xyz));
+}
 vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
 {
     float r2=lightData(i,0).w*lightData(i,0).w;
@@ -219,7 +228,7 @@ vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
     float facing=max(dot(n,delta*inv),0.0);
     float window=saturate(1.0-(d2/r2)*(d2/r2));
     vec3 a=lightData(128+i,0).xyz;
-    return lightData(64+i,0).rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+    return lightData(64+i,0).rgb*(facing*window*window*lampCone(i,delta*inv)/max(a.x+a.y*d2*inv+a.z*d2,0.25));
 }
 vec3 lampLighting(vec3 n,vec3 world)
 {
@@ -275,9 +284,10 @@ vec3 lampLighting(vec3 n,vec3 world)
         d2=max(d2,0.001);
         float inv=inversesqrt(d2);
         float facing=max(dot(n,delta*inv),0.0);
+        if(facing<=0.0) continue;
         float window=saturate(1.0-(d2/r2)*(d2/r2));
         vec3 a=lightData(128+i,0).xyz;
-        sum+=lightData(64+i,0).rgb*(facing*window*window/max(a.x+a.y*d2*inv+a.z*d2,0.25));
+        sum+=lightData(64+i,0).rgb*(facing*window*window*lampCone(i,delta*inv)/max(a.x+a.y*d2*inv+a.z*d2,0.25));
     }
     return sum;
 }
