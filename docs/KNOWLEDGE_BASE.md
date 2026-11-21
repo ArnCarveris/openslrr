@@ -3167,3 +3167,32 @@ instanced prop batches 1.56 ms; world submission 2.91 ms; OSD + debug 0.62;
 reflections 0.5; AO 0.25; shadows 0.2). The renderer snapshot does not list
 the script, traffic, physics and GC zones, which make up most of the
 remaining ~2.8 ms (they are in the menu's "Session and host" section).
+
+### Static prop world cache and persistent batches (#260)
+
+- `src/resources/scene_instances.cpp:refresh_world_cache` stores, per map
+  prop, its script-space world centre and its render-space instance matrix
+  (S·shell·pose·S), plus each cell's world centre, for
+  `GroundPropMap::cached_shell`. Both collection paths call it with the
+  shell's current matrix and it recomputes only when that matrix changes
+  (ground shells are static), instead of a matrix product, two
+  `transform_point` and a sign-flip loop per placement and frame.
+- `scene_instances_collect_batches` keeps a persistent layout: at load each
+  map gets one slot per batchable mesh (`GroundPropMap::batch_ids`,
+  `batch_geometry`, `GroundPropBatch::slot`); the output vector holds one
+  entry per slot and shell, keeps its instance vectors' capacity from frame
+  to frame and is only rebuilt when the shells or slots change. The
+  per-frame `batch_of` hash map is gone. Entries can be empty; every consumer
+  already skips empty batches (the debug stats now count non-empty ones).
+- The world list copy in `scene_instances_collect` was kept: in the harness
+  taking the frame list instead of copying it saved nothing measurable, and
+  it would force reflection and shadow collections to rebuild the list later
+  in the frame.
+- The renderer snapshot (`src/render/debug_overlay.cpp:render_timing_dump`)
+  now lists Scripts, Traffic, Physics (vehicles, pedestrians, collision), GC
+  and the render flush, plus "other main thread" (frame minus scripts,
+  traffic, physics, flush and GC), so the main-thread budget adds up.
+- Harness (`tests/test_prop_lod.cpp`, Valo City, street frustum, 60 frames,
+  frame cache on, batch vector kept across frames as in the renderer):
+  main-view collection 0.60–0.70 ms → 0.17–0.24 ms; identical output
+  (same records and transform checksums with and without LOD).

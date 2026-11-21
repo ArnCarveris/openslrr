@@ -182,7 +182,22 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     {perf::Zone::World, "World submission"},
     {perf::Zone::Osd, "OSD + debug submission"},
     {perf::Zone::Present, "Present wait"},
+    // Main-thread host work outside the renderer (#260).
+    {perf::Zone::Scripts, "Scripts"},
+    {perf::Zone::Traffic, "Traffic"},
+    {perf::Zone::Physics, "Physics (all)"},
+    {perf::Zone::Vehicles, "  vehicles"},
+    {perf::Zone::Pedestrians, "  pedestrians"},
+    {perf::Zone::Collision, "  collision"},
+    {perf::Zone::Gc, "GC"},
+    {perf::Zone::Flush, "Render flush (all renderer zones)"},
 };
+// Frame time not covered by scripts, traffic, physics, flush and GC.
+double other_main_thread(const perf::Snapshot& timing) {
+  const auto ms = [&](perf::Zone z) { return timing.zones[static_cast<size_t>(z)]; };
+  return std::max(0., timing.frame_ms - ms(perf::Zone::Scripts) - ms(perf::Zone::Traffic) -
+                          ms(perf::Zone::Physics) - ms(perf::Zone::Flush) - ms(perf::Zone::Gc));
+}
 
 // Session state the snapshot header reports (set by draw_render).
 struct DumpContext {
@@ -239,12 +254,16 @@ std::string render_timing_dump() {
     out += line;
   }
   const auto timing = perf::snapshot();
-  if (timing.ready)
+  if (timing.ready) {
     for (const auto& [zone, name] : kRenderZones) {
       std::snprintf(line, sizeof(line), "CPU %s: %.3f ms\n", name,
                     timing.zones[static_cast<size_t>(zone)]);
       out += line;
     }
+    std::snprintf(line, sizeof(line), "CPU other main thread: %.3f ms (frame %.3f ms)\n",
+                  other_main_thread(timing), timing.frame_ms);
+    out += line;
+  }
   return out;
 }
 
@@ -328,6 +347,7 @@ void draw_render_timings() {
     ImGui::SeparatorText("CPU frame phases (1 s average)");
     for (const auto& [zone, name] : kRenderZones)
       ImGui::Text("%-32s %.3f ms", name, timing.zones[static_cast<size_t>(zone)]);
+    ImGui::Text("%-32s %.3f ms", "Other main thread", other_main_thread(timing));
   }
 }
 
