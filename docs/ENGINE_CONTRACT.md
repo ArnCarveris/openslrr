@@ -355,6 +355,12 @@ See `ptx_image.cpp`.
 
 ## 9. Scene, maps, and native objects
 
+Map placements keep the stock LOD chain of their object type (#252): `lod
+first last` on a render and the object's `lods N s0 s1 ...` size ratios. The
+main camera chooses one level per placement, with 10 % hysteresis and the debug
+LOD bias, and every other pass (AO, sun cascades, reflections, lamp tiles)
+draws that same level. Types without `lods` keep only their highest LOD.
+
 `ResState` and `GameRefState` represent instances, their identities, parents,
 and children. A type resource is not its live instance. A script alias and
 reference wrappers do not justify duplicating the underlying object.

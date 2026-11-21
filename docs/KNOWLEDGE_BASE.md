@@ -3027,3 +3027,39 @@ city at night.
   about 1.1 → 0.86 ms. The harness lamps all reach the visible road, so the
   range early-out saves more in the city, where most pixels are out of range
   of most shadowed lamps.
+
+### Map prop LOD and far size cull (#252)
+
+- Stock data (read-only scan of the game root, `tests/test_prop_lod.cpp`):
+  `lod first last` follows a `render` line and marks the levels it draws at,
+  `lods N s0 s1` is one object-wide line with ascending size ratios
+  (thresholds for levels 1..N). In practice N = 2 and every chain is a pair:
+  the high mesh `lod 2 2` and a `_lod` mesh `lod 0 1` (e.g. `lamp_base`
+  0x118 / 0x13, tree `fa03a` 0xd8 / 0x5d5 `lod_fa3.scx`). Two threshold sets
+  exist: `0.01 0.025` (trees, lamp posts, some buildings) and
+  `0.001 0.0025` (most building fronts). 32 object types in the stock packs
+  have chains. The ratio's definition is not documented; it is implemented as
+  placement bounding radius / distance (not confirmed against the original
+  engine): a fa03a tree switches to its low mesh at about 150 m going out and
+  back at 122 m.
+- Code: `src/resources/part_config.cpp:parse_part_config` reads `lods` into
+  `PartConfig::lod_sizes`. `scene_instances_add_ground_props` keeps the whole
+  chain for types with `lods` (others keep only the highest LOD, as before),
+  tags each prop with its level range and one `PlacementLod` per placement
+  (shell-local centre, radius covering all its LOD renders, thresholds, level).
+  `src/resources/scene_instances.cpp:prop_lod_visible` picks the level with
+  `src/resources/scene_instances.cpp:scene_prop_lod_level` (10 % hysteresis)
+  in both collection paths. The renderer sets `ScenePropLodView` in
+  `sync_instances`: only the main view's collection stores levels; AO, sun
+  cascades, reflections and lamp tiles reuse them. Low meshes are resident
+  with the map (`resources`), a small memory cost.
+- Far size cull: `screen_size_visible` drops props beyond 40 m whose
+  projected box is under `render_debug().far_cull_px` (default 4, was 2).
+- Debug overrides: `lod_bias` (distance multiplier), `force_highest_lod`
+  (pre-#252 behaviour) and `far_cull_px`, all in the snapshot header.
+- Valo City (whole city, no frustum): 16,602 placements with a chain; prop
+  triangles 3.37 M with the highest LOD → 1.94 M with LOD (−42 %) from the
+  first shell origin. With a 2560×1440 projection model the far cull gives
+  1.69 M triangles / 26,728 records at 2 px and 1.47 M / 23,152 at 4 px (of
+  31,075). Draw calls are not reduced by LOD itself (a low mesh replaces the
+  high one); the size cull removes records.

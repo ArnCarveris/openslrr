@@ -42,6 +42,9 @@ struct RenderDebugOverrides {
   int sun_shadow_size = 0;         // 0: from Shadow quality, else 1024/2048/4096
   float cascade_scale = 1.f;       // multiplies the four cascade radii
   float ao_resolution_scale = 1.f; // multiplies the half-res AO buffer (0.25-2, 2 = full)
+  float lod_bias = 1.f;            // map prop LOD distance multiplier (>1: lower detail sooner)
+  bool force_highest_lod = false;  // map props always at their highest LOD (pre-#252)
+  float far_cull_px = 4.f;         // beyond 40 m, props under this projected size are dropped
   bool operator==(const RenderDebugOverrides &) const = default;
 };
 
@@ -117,6 +120,9 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   number("sun cascade tile", o.sun_shadow_size, d.sun_shadow_size, " px");
   number("cascade radius scale", o.cascade_scale, d.cascade_scale, "x");
   number("AO resolution scale", o.ao_resolution_scale, d.ao_resolution_scale, "x");
+  number("prop LOD bias", o.lod_bias, d.lod_bias, "x");
+  flag("force highest prop LOD", o.force_highest_lod, d.force_highest_lod);
+  number("far size cull", o.far_cull_px, d.far_cull_px, " px");
   return out;
 }
 

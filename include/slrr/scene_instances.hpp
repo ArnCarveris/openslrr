@@ -77,6 +77,25 @@ void* scene_instances_world();
 // data is read. Null disables filtering for shadow maps and reflection faces.
 using SceneSizeFilter = bool (*)(const float center[3], float radius, void* user);
 void scene_instances_set_size_filter(SceneSizeFilter test, void* user);
+// Map prop LOD (#252). The stock `lods` thresholds are size ratios; the
+// ratio used here is the placement's bounding radius over its distance to
+// `eye` (script space) times `bias`. Only a collection with `update` set (the
+// main view) stores each placement's level, so AO, shadow and reflection
+// passes reuse the main view's choice. `force_highest` restores the old
+// behaviour (highest LOD only). Without a valid view the highest LOD is used.
+struct ScenePropLodView {
+  std::array<float, 3> eye{};
+  float bias = 1.f;
+  bool force_highest = false, update = false, valid = false;
+};
+void scene_instances_set_lod_view(const ScenePropLodView& view);
+// LOD level for size ratio `size` with ascending `thresholds`: the number of
+// thresholds reached. From `current` (>= 0) a level changes only when the
+// ratio passes the threshold by the factor `hysteresis` (no flicker).
+int scene_prop_lod_level(int current, float size, const std::vector<float>& thresholds,
+                         float hysteresis = 1.1f);
+// Placements with a LOD chain in the loaded maps, for tests and statistics.
+size_t scene_instances_lod_placements();
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum = nullptr,
     std::vector<std::shared_ptr<const ScxGeometry>>* resident_props = nullptr,

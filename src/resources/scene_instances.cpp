@@ -81,6 +81,17 @@ struct GroundProp {
   bool night_only = false;
   bool signal = false;
   RoadPoint signal_position{};
+  int8_t lod_min = -1, lod_max = -1;  // stock `lod first last`; -1 always drawn
+  int32_t lod_index = -1;             // GroundPropMap::lods entry of its placement
+};
+// One per placement with a LOD chain (#252): shell-local centre and radius
+// covering all its LOD renders, the type's thresholds and the level chosen
+// by the main view (-1 until first chosen).
+struct PlacementLod {
+  std::array<float, 3> center{};
+  float radius = 0.f;
+  std::vector<float> sizes;
+  int level = -1;
 };
 struct GroundPropCell {
   std::vector<GroundProp> props;
@@ -114,7 +125,9 @@ struct GroundPropMap {
   // Type-13 `render` children of the placements, shell-local (#237). Each
   // new shell of this map attaches the same list to the light registry.
   SceneryLightList lights;
+  std::vector<PlacementLod> lods;
 };
+ScenePropLodView g_lod_view;
 std::unordered_map<uint32_t, GroundPropMap> g_ground_props;
 // The map is cached per render id and outlives its GroundRef: each visit to a
 // city builds a new GroundRef, so the one to parent a promoted prop to is
@@ -2128,6 +2141,30 @@ void scene_instances_set_size_filter(SceneSizeFilter test, void* user) {
   g_size_filter_user = user;
 }
 
+void scene_instances_set_lod_view(const ScenePropLodView& view) { g_lod_view = view; }
+
+int scene_prop_lod_level(int current, float size, const std::vector<float>& thresholds,
+                         float hysteresis) {
+  const int count = static_cast<int>(thresholds.size());
+  if (!std::isfinite(size)) return count;
+  if (current < 0 || current > count) {
+    int level = 0;
+    while (level < count && size >= thresholds[static_cast<size_t>(level)]) ++level;
+    return level;
+  }
+  const float h = std::max(hysteresis, 1.f);
+  int level = current;
+  while (level < count && size >= thresholds[static_cast<size_t>(level)] * h) ++level;
+  while (level > 0 && size < thresholds[static_cast<size_t>(level - 1)] / h) --level;
+  return level;
+}
+
+size_t scene_instances_lod_placements() {
+  size_t count = 0;
+  for (const auto& [id, map] : g_ground_props) count += map.lods.size();
+  return count;
+}
+
 namespace {
 std::shared_ptr<const ScxGeometry> signal_lens(int state) {
   static std::array<std::shared_ptr<const ScxGeometry>, 3> lenses;
@@ -2234,6 +2271,31 @@ std::shared_ptr<const ScxGeometry> signal_geometry(GroundPropMap &map) {
   return map.signal_geometry = merged;
 }
 bool night_props_visible() { return scene_sun_is_night(); }
+
+// Whether `prop` draws at its placement's current LOD (#252).
+bool prop_lod_visible(GroundPropMap& map, const GroundProp& prop, const PartMatrix& shell) {
+  if (prop.lod_min < 0 || prop.lod_index < 0 ||
+      static_cast<size_t>(prop.lod_index) >= map.lods.size())
+    return true;
+  auto& entry = map.lods[static_cast<size_t>(prop.lod_index)];
+  const int highest = static_cast<int>(entry.sizes.size());
+  int level = highest;
+  if (g_lod_view.valid && !g_lod_view.force_highest) {
+    const auto world = transform_point(shell, entry.center);
+    const float dx = world[0] - g_lod_view.eye[0], dy = world[1] - g_lod_view.eye[1],
+                dz = world[2] - g_lod_view.eye[2];
+    const float distance = std::sqrt(dx * dx + dy * dy + dz * dz) *
+                           std::clamp(g_lod_view.bias, .1f, 10.f);
+    const float size = entry.radius / std::max(distance, .01f);
+    if (!g_lod_view.update && entry.level >= 0) {
+      level = entry.level;  // AO, shadow and reflection passes: the main view's choice
+    } else {
+      level = scene_prop_lod_level(entry.level, size, entry.sizes);
+      if (g_lod_view.update) entry.level = level;
+    }
+  }
+  return level >= prop.lod_min && level <= prop.lod_max;
+}
 }
 
 bool scene_instances_has_ground_props() {
@@ -2297,6 +2359,7 @@ std::vector<SceneInstance> scene_instances_collect(
         }
         for (const auto& prop : cell.props) {
           if (prop.signal || prop.batched || prop.hidden || (prop.night_only && !night_props_visible())) continue;
+          if (!prop_lod_visible(found->second, prop, shell)) continue;
           if (!visible(prop.center, prop.radius)) continue;
           if (g_size_filter) {
             const auto prop_world = transform_point(shell, prop.center);
@@ -2376,7 +2439,8 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
           if (index >= cell.props.size()) continue;
           const auto& prop = cell.props[index];
           if (prop.hidden || (prop.night_only && !night_props_visible()) ||
-              !visible(prop.center, prop.radius)) continue;
+              !visible(prop.center, prop.radius) ||
+              !prop_lod_visible(found->second, prop, shell)) continue;
           if (g_size_filter) {
             const auto prop_world = transform_point(shell, prop.center);
             if (!g_size_filter(prop_world.data(), prop.radius, g_size_filter_user)) continue;
@@ -2800,6 +2864,9 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
         return render.variants.empty() ? !is_visible(render.resource)
             : std::none_of(render.variants.begin(), render.variants.end(), is_visible);
       });
+      // A type with stock `lods` thresholds keeps its whole LOD chain (#252);
+      // one with `lod` lines but no thresholds keeps only its highest LOD.
+      if (!object_types[types[i]].lod_sizes.empty()) continue;
       const auto score = [](const PartRender& render) {
         return std::pair{render.lod_level + render.lod_last, render.lod_last};
       };
@@ -2878,16 +2945,31 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
           props_map.collision_shapes.add_sphere(frame, body.sphere_radius);
       }
     if (type->second.renders.empty()) continue;
+    int32_t lod_index = -1;
     for (const auto& render : type->second.renders) {
       const auto resource = render.variants.empty() ? render.resource
           : render.variants[seed % render.variants.size()];
       if (!is_visible(resource)) continue;
+      const bool lod_render = render.lod_level >= 0 && !type->second.lod_sizes.empty();
+      if (lod_render && lod_index < 0) {
+        lod_index = static_cast<int32_t>(props_map.lods.size());
+        PlacementLod entry;
+        entry.center = {pose[12], pose[13], pose[14]};
+        entry.sizes = type->second.lod_sizes;
+        props_map.lods.push_back(std::move(entry));
+      }
       const auto color = render.colors.empty() ? 0xffffffu : render.colors[seed % render.colors.size()];
       const auto transform = part_matrix_multiply(pose, part_pose_matrix(render.pose));
       auto& render_cell = cells[floor_cell(prop_cell(transform[12]), prop_cell(transform[14]))];
       render_cell.props.push_back({resource, transform, color});
       render_cell.props.back().dormant = dormant_index;
       render_cell.props.back().night_only = ground_prop_is_night(*g_resources, resource);
+      if (lod_render) {
+        render_cell.props.back().lod_min = static_cast<int8_t>(std::clamp(render.lod_level, 0, 127));
+        render_cell.props.back().lod_max =
+            static_cast<int8_t>(std::clamp(std::max(render.lod_last, render.lod_level), 0, 127));
+        render_cell.props.back().lod_index = lod_index;
+      }
       if(type->second.native_kind=="trlight"){
         render_cell.props.push_back({resource,pose,0xffffff});auto&glow=render_cell.props.back();glow.signal=true;glow.signal_position=placement.position;
       }
@@ -2931,6 +3013,15 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
         lower[axis] = std::min(lower[axis], prop.center[axis] - prop.radius);
         upper[axis] = std::max(upper[axis], prop.center[axis] + prop.radius);
       }
+    }
+    // LOD radius of each placement: the sphere around its origin that holds
+    // every one of its LOD renders, so all its levels switch together.
+    for (const auto& prop : cell.props) {
+      if (prop.lod_index < 0) continue;
+      auto& entry = props_map.lods[static_cast<size_t>(prop.lod_index)];
+      const float dx = prop.center[0] - entry.center[0], dy = prop.center[1] - entry.center[1],
+                  dz = prop.center[2] - entry.center[2];
+      entry.radius = std::max(entry.radius, std::sqrt(dx * dx + dy * dy + dz * dz) + prop.radius);
     }
     if (cell.props.empty()) continue;
     for (int axis = 0; axis < 3; ++axis) cell.center[axis] = (lower[axis] + upper[axis]) * .5f;
