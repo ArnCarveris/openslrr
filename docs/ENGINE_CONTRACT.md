@@ -1323,9 +1323,18 @@ a neutral car outline and one blip per region in one coordinate system,
 front up. Each blip shows the worst condition (stock `wear × tear`) of the
 installed parts it covers and is not drawn when no such part is installed:
 engine parts (category 1) light the drivetrain blips, body panels
-(category 2) the body blips, each placed by where its meshes sit on the car
-seen from above, and the parts on a corner's wheel slot (type 101 + corner)
-light that corner's wheel blip. Do not key this on car or part names.
+(category 2) the body blips, and parts on a corner's wheel slot (type 101 +
+corner) light that wheel blip. For the stock damage font, only instances of
+script `Quarterpanel` (including subclasses) own the fender blips `q/p/u/v`,
+selected by their rest-installed side and front/rear. Unrelated nearby body
+parts must not light or change a fender indicator. Other regions keep spatial
+aggregation. Use closed mount frames, excluding flap/damage motion, and stable
+chassis bounds; do not let detached panels rescale surviving indicators.
+This is a host approximation, not recovered native part-to-glyph mapping.
+Do not key it on car names or CFG filenames. Custom HUD fonts retain spatial
+mapping. Correct the stock `q` tile's longitudinal flip by horizontally
+mirroring `p` only when its resource and exact stock UV layout match; never
+rewrite the shared atlas or mesh, or force that correction onto custom UVs.
 
 `host_game_options` centralizes driving, video, and gameplay options.
 The stock store is `save/game/options`. Applying a resolution live must
@@ -1347,8 +1356,15 @@ announce a persistent option before testing a restart.
 
 ## 14. Audio and video
 
-`host_sfx` handles effects. `host_music` handles playlists. `video_fmv*`
-handles video playback. Engine loops use the scripts' SfxTables.
+`host_sfx` handles effects. `host_music` handles playlists. Both use one
+`host_audio` FMOD Core system with separate effects/music channel groups;
+`host_music_update` updates it in the normal and modal frame pumps even when
+music is stopped. Sound owners retain the shared system through shutdown.
+Stock Cinepak FMV PCM uses a third, independent FMOD group. Its playback
+position drives the picture, with continuous wall-clock fallback if audio
+ends or fails; the FMV pump also updates FMOD during boot intros. Optional
+VLC/Windows codec fallbacks keep their library-owned audio outputs.
+Engine loops use the scripts' SfxTables.
 `scene_ambience` plays the `sfx_loop`/`sfx_random` lines of map placements
 through `host_sfx`; it owns those voices and stops them when their ground
 shell leaves the active world.
