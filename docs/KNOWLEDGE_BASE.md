@@ -571,7 +571,13 @@ job has just stored gets the same answer. Fewer than 16 visible cells, or
 fewer than 4 pool threads, keep the loop on the host thread (on two cores the
 pool was slower than the serial loop). A new per-frame user must follow the
 same rules: lazy caches and bgfx stay on the host thread, results are
-appended in serial order.
+appended in serial order. Walker palettes (#268) follow it too:
+`src/resources/scene_instances.cpp:scene_instances_collect` finds or loads
+each character on the host thread (`character_skin_prepare`), the jobs run
+`character_skin_palette_prepared` for different characters
+(`src/resources/character.cpp:rebuild` touches only its own character and
+reads its immutable skeleton and clip), and the host thread publishes the
+palettes into the frame cache in order.
 
 **Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
 lists the planned steps for the frame loop: measure where the CPU limits,
@@ -3379,3 +3385,46 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   The cause is not found; it is not thread related (it happens with the
   serial #264 code). `city_submission` prints the warm/cold comparison and
   requires only caches on/off and pooled/serial equality.
+
+### Walker palettes, camera list and world list costs (#268)
+
+- Walker palettes were already built once per frame and shared by every
+  collection (`g_frame_characters`); the cost is the pose rebuild. New ones
+  now run on the job pool (8 or more, with 4 or more pool threads), see §5.10.
+  Walkers outside a view's frustum still get no palette; walkers that are
+  merely far keep theirs, because the renderer skips a walker without one and
+  dropping them would change the image.
+- `src/resources/gameref.cpp:gameref_active_cameras` read every GameRef of
+  the scene, and `fullscreen_script_camera`, `sync_instances` and
+  `draw_previews` call it each frame. It now reads `g_camera_refs`, the keys
+  given kind Camera (`gameref_upsert`, `gameref_bind_scene_camera`), dropping
+  the ones that are gone. Ties in `cam_pri` are now broken by `cam_seq`
+  (activation order) instead of the node table's hash order. Harness: a full
+  scan of 6,000 extra nodes takes 34.5 us warm; the registry ~0.
+- `src/resources/character.cpp:character_posed` checks for skin weights
+  before the character lookup, which used to insert a `Character` entry for
+  every render node of the world list.
+- The world list (`collect_root`) costs about 1 us per node, spread over the
+  transform chain, paint and texture matching, and moving the large
+  `SceneInstance` into the list. The mesh side of the texture matching is now
+  cached per mesh and revision (`mesh_texture_keys`), and the list is
+  reserved once. No per-node revision exists (`g_scene_revision` is global
+  and texture and paint fields change without it), so caching whole nodes or
+  whole previews across frames would need change tracking first. Memoising
+  parent matrices would change the float association of `chain_matrix`, so
+  the captures would no longer match.
+- Harness: `city_submission` has a third case, `crowd` (2560x1440): 80
+  walkers of the Valo City types (humans 0x57-0x5B, 60 ahead of the camera),
+  a car-like subtree of 30 cars.rpk renders whose nodes carry a paint id
+  (approximation: the paint id matches no texture, so the matching loops run
+  but nothing is repainted), and the same subtree in an inset preview drawn
+  by `draw_previews`. The walker clock ends at the same value in every run,
+  because a step computed at a different absolute time rounds differently.
+  Before -> after: walker palettes 0.30-0.32 -> 0.15-0.17 ms, previews
+  0.05-0.06 -> 0.04 ms, world list 0.12-0.13 ms (unchanged within noise),
+  sync_instances 0.95-1.0 -> 0.92-0.97 ms. The crowd frame's bgfx render
+  thread is 9-11 ms before and after (not investigated: 80 skinned walkers
+  and 30 overlapping car meshes at 2560x1440).
+- The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
+  `city_submission` now accepts up to 64 differing bytes at most 1 apart and
+  fails on anything larger.
