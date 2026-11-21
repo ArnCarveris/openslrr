@@ -134,12 +134,31 @@ struct SceneShadowRegression {
       SLRR_REQUIRE(half_contact>10 && half_contact*10>full_contact*6 && half_contact*10<full_contact*17);
       SLRR_REQUIRE(differ<width*height/50);
     }
+    // #256: AO pass 1 samples the AO-resolution linear depth; the reference
+    // path samples the full-resolution depth. The image must stay close.
+    for(int method=1;method<=2;++method) for(int quality=0;quality<3;++quality) {
+      render_debug().ao_reference=true;
+      const auto reference=capture(method,quality);
+      render_debug().ao_reference=false;
+      const auto fast=capture(method,quality);
+      int worst=0;unsigned differ=0,contact_ref=0,contact_fast=0;
+      for(size_t i=0;i<fast.size();i+=4) {
+        const int d=std::abs(int(fast[i])-int(reference[i]));
+        worst=std::max(worst,d);differ+=d>8;
+        contact_ref+=int(plain[i])-int(reference[i])>3;contact_fast+=int(plain[i])-int(fast[i])>3;
+      }
+      std::printf("AO depth method=%d quality=%d: max difference %d, %u pixels differ by >8, contact %u vs %u\n",
+                  method,quality,worst,differ,contact_fast,contact_ref);
+      SLRR_REQUIRE(differ<=width*height/100);
+      SLRR_REQUIRE(contact_fast*10>=contact_ref*8 && contact_fast*10<=contact_ref*12);
+    }
     // #248: GPU time of the AO passes at 2560x1440, per method and quality,
     // with High also forced to the old full resolution (scale 2).
     {
       bgfx::setDebug(BGFX_DEBUG_PROFILER);
       const auto ao_ms=[&](int method,int quality,float scale) {
         host_enhanced_graphics().ao_method=method;host_enhanced_graphics().ao_quality=quality;
+        host_enhanced_graphics().ao_radius=300;  // Elias uses 3 m (#256)
         render_debug().ao_resolution_scale=scale;
         float big[16];bx::mtxProj(big,60.f,2560.f/1440.f,.05f,100.f,bgfx::getCaps()->homogeneousDepth);
         double pass1=0,all=0;int samples=0;
@@ -152,8 +171,8 @@ struct SceneShadowRegression {
           for(uint16_t i=0;i<stats->numViews;++i) {
             const auto& v=stats->viewStats[i];
             const double ms=double(v.gpuTimeEnd-v.gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
-            if(v.view==141) pass1+=ms;
-            if(v.view>=140&&v.view<144) all+=ms;
+            if(v.view==142) pass1+=ms;
+            if(v.view>=140&&v.view<145) all+=ms;
           }
         }
         render_debug().ao_resolution_scale=1.f;
@@ -168,6 +187,49 @@ struct SceneShadowRegression {
       }
       bgfx::setDebug(BGFX_DEBUG_NONE);
       b.destroy_ao_targets();
+    }
+    // #256: GTAO High at 2560x1440, 3 m radius, on a street-like scene that
+    // fills the screen (a 400 m ground and 400 boxes), per AO view.
+    {
+      auto ground=std::make_shared<ScxGeometry>();*ground=*floor;
+      ground->positions={-200,0,200,200,0,200,-200,0,-200,200,0,-200};++ground->revision;
+      b.cache_scene_mesh(ground,nullptr,false);
+      SceneInstance street;street.geometry=ground;bx::mtxIdentity(street.transform.data());
+      std::vector<SceneInstance> scene{street};
+      for(int i=0;i<400;++i) {
+        SceneInstance box;box.geometry=cube;bx::mtxIdentity(box.transform.data());
+        box.transform[12]=float((i*37)%41)-20.f;box.transform[14]=float((i*53)%97)+3.f;
+        box.transform[0]=box.transform[10]=1.5f;box.transform[5]=2.f+float(i%5);
+        scene.push_back(box);
+      }
+      const auto saved_instances=b.instances_;
+      b.instances_=scene;
+      float street_view[16],street_proj[16];
+      bx::mtxLookAt(street_view,{0,1.6f,0},{0,1.2f,10});
+      bx::mtxProj(street_proj,60.f,2560.f/1440.f,.05f,500.f,bgfx::getCaps()->homogeneousDepth);
+      bgfx::setDebug(BGFX_DEBUG_PROFILER);
+      host_enhanced_graphics().ao_method=2;host_enhanced_graphics().ao_quality=2;
+      host_enhanced_graphics().ao_radius=300;
+      std::map<uint16_t,double> per_view;int samples=0;
+      for(int frame=0;frame<60;++frame) {
+        b.update_ambient_occlusion(street_view,street_proj,2560,1440,5);
+        bgfx::frame();
+        const auto* stats=bgfx::getStats();
+        if(frame<20||stats->gpuTimerFreq<=0) continue;
+        ++samples;
+        for(uint16_t i=0;i<stats->numViews;++i) {
+          const auto& v=stats->viewStats[i];
+          if(v.view>=140&&v.view<146)
+            per_view[v.view]+=double(v.gpuTimeEnd-v.gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
+        }
+      }
+      std::printf("AO street GTAO High 2560x1440 radius 3 m (ms):");
+      for(const auto& [id,ms]:per_view) std::printf(" view %u %.3f",unsigned(id),ms/std::max(samples,1));
+      std::printf("\n");
+      bgfx::setDebug(BGFX_DEBUG_NONE);
+      b.destroy_ao_targets();
+      b.instances_=saved_instances;
+      host_enhanced_graphics().ao_radius=100;
     }
     SLRR_REQUIRE(methods[0]!=methods[1]);
     b.instances_={receiver};
@@ -976,7 +1038,7 @@ struct SceneShadowRegression {
       double sum=0;for(const auto& [id,value]:t) if(id>=128&&id<136) sum+=value;return sum;
     };
     const auto ao_views=[](const std::map<uint16_t,double>& t) {
-      double sum=0;for(const auto& [id,value]:t) if(id>=140&&id<144) sum+=value;return sum;
+      double sum=0;for(const auto& [id,value]:t) if(id>=140&&id<145) sum+=value;return sum;
     };
     const auto has=[](const std::map<uint16_t,double>& t,uint16_t lo,uint16_t hi) {
       for(const auto& [id,value]:t) if(id>=lo&&id<hi) return true;
@@ -991,7 +1053,7 @@ struct SceneShadowRegression {
     auto all=run(60);
     std::printf("RENDER DEBUG per-view GPU ms (1280x720, 50 lamps, caching off: 6 lamp + 7 car tiles redrawn, HBAO):\n");
     for(const auto& [id,value]:all) std::printf("  view %3u %-32s %.3f\n",unsigned(id),render_debug_view_name(id),value);
-    SLRR_REQUIRE(has(all,128,136) && has(all,136,137) && has(all,140,144));
+    SLRR_REQUIRE(has(all,128,136) && has(all,136,137) && has(all,140,145));
     auto& o=render_debug();
     // Each toggle removes its views and restores them.
     o.lamp_shadows=false;auto t=run(20);
@@ -1004,13 +1066,13 @@ struct SceneShadowRegression {
     o.car_lamp_tiles=true;
     o.ambient_occlusion=false;t=run(20);
     std::printf("RENDER DEBUG AO off: AO views %.3f ms (on %.3f)\n",ao_views(t),ao_views(all));
-    SLRR_REQUIRE(!has(t,140,144) && !b.ao_active_);
+    SLRR_REQUIRE(!has(t,140,145) && !b.ao_active_);
     o.ambient_occlusion=true;
     o.lamp_lighting=false;t=run(10);
     SLRR_REQUIRE(b.scenery_lamps_.empty() && !has(t,128,137));
     o.lamp_lighting=true;
     t=run(20);
-    SLRR_REQUIRE(has(t,128,136) && has(t,136,137) && has(t,140,144));
+    SLRR_REQUIRE(has(t,128,136) && has(t,136,137) && has(t,140,145));
     // Budgets.
     o.shadowed_lamps=2;o.car_tiles=3;o.lamp_budget=5;o.lamp_distance=60.f;
     run(10);

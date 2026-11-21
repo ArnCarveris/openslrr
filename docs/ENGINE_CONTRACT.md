@@ -1060,8 +1060,9 @@ to `vs_mesh` must therefore be added to every fragment shader paired with it.
 Startup reports each failed program as `[bgfx] program <name> failed to link`.
 
 Ambient occlusion uses a separate camera-matched reversed-Z D32F prepass in view
-140, then R8 horizon evaluation and separable depth-aware filtering in views
-141–143 before the main world draw. It does not replace the swapchain or require
+140, an AO-resolution geometry pass (linear depth and normal) in view 141,
+then R8 horizon evaluation and separable depth-aware filtering in views
+142–144 before the main world draw. It does not replace the swapchain or require
 a colour post-process chain. Every AO quality runs at half resolution (#248); high
 uses more directions/slices (HBAO 10×6, GTAO 5×8) instead of full resolution.
 HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.

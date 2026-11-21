@@ -4,12 +4,13 @@
 #include <cmath>
 namespace slrr {
 void LibBgfxBackend::destroy_ao_targets() {
-  for (auto *fb : {&ao_depth_fb_, &ao_raw_fb_, &ao_filter_fb_}) {
+  for (auto *fb : {&ao_depth_fb_, &ao_raw_fb_, &ao_filter_fb_, &ao_geometry_fb_}) {
     if (bgfx::isValid(*fb))
       bgfx::destroy(*fb);
     *fb = BGFX_INVALID_HANDLE;
   }
   ao_depth_tex_ = ao_raw_tex_ = ao_filter_tex_ = BGFX_INVALID_HANDLE;
+  ao_linear_tex_ = ao_normal_tex_ = BGFX_INVALID_HANDLE;
   ao_width_ = ao_height_ = ao_screen_width_ = ao_screen_height_ = 0;
   ao_active_ = false;
   ao_world_view_ = UINT16_MAX;
@@ -68,12 +69,24 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     texture = BGFX_INVALID_HANDLE;
     return false;
   };
+  // Linear depth + normal at AO resolution (#256), one framebuffer.
+  auto geometry_target = [&] {
+    const uint64_t flags = BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
+                           BGFX_SAMPLER_POINT;
+    ao_linear_tex_ = bgfx::createTexture2D(aw, ah, false, 1, bgfx::TextureFormat::R32F, flags);
+    ao_normal_tex_ = bgfx::createTexture2D(aw, ah, false, 1, bgfx::TextureFormat::RGBA32F, flags);
+    if (!bgfx::isValid(ao_linear_tex_) || !bgfx::isValid(ao_normal_tex_)) return false;
+    const bgfx::TextureHandle attachments[] = {ao_linear_tex_, ao_normal_tex_};
+    ao_geometry_fb_ = bgfx::createFrameBuffer(2, attachments, true);
+    return bgfx::isValid(ao_geometry_fb_);
+  };
   if (!bgfx::isValid(ao_depth_fb_)) {
     if (!target(bgfx::TextureFormat::D32F, width, height, ao_depth_tex_,
                 ao_depth_fb_) ||
         !target(bgfx::TextureFormat::R8, aw, ah, ao_raw_tex_, ao_raw_fb_) ||
         !target(bgfx::TextureFormat::R8, aw, ah, ao_filter_tex_,
-                ao_filter_fb_)) {
+                ao_filter_fb_) ||
+        !geometry_target()) {
       destroy_ao_targets();
       return;
     }
@@ -155,15 +168,19 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                            projection[5]};
   const float config[4] = {float(std::clamp(options.ao_method, 1, 2)),
                            float(quality),
-                           std::clamp(options.ao_radius, 25, 300) * .01f, 0};
+                           std::clamp(options.ao_radius, 25, 300) * .01f,
+                           render_debug().ao_reference ? 1.f : 0.f};
   constexpr uint32_t sampler = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
                                BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT;
-  for (uint16_t pass = 0; pass < 3; ++pass) {
-    const uint16_t id = 141 + pass;
-    const auto fb = pass == 1 ? ao_filter_fb_ : ao_raw_fb_;
+  // View 141: geometry (shader pass 3); views 142-144: AO and the two filters.
+  for (uint16_t step = 0; step < 4; ++step) {
+    const uint16_t id = 141 + step;
+    const bool geometry = step == 0;
+    const uint16_t pass = geometry ? 3 : uint16_t(step - 1);
+    const auto fb = geometry ? ao_geometry_fb_ : pass == 1 ? ao_filter_fb_ : ao_raw_fb_;
     bgfx::setViewFrameBuffer(id, fb);
     bgfx::setViewRect(id, 0, 0, aw, ah);
-    bgfx::setViewClear(id, BGFX_CLEAR_COLOR, 0xffffffff);
+    bgfx::setViewClear(id, BGFX_CLEAR_COLOR, geometry ? 0x00000000 : 0xffffffff);
     bgfx::touch(id);
     if (bgfx::getAvailTransientVertexBuffer(3, layout_) < 3) {
       ao_active_ = false;
@@ -184,12 +201,15 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     bgfx::setUniform(u_ao_params_, params);
     bgfx::setTexture(0, s_ao_depth_, ao_depth_tex_, sampler);
     bgfx::setTexture(1, s_ao_input_,
-                     pass == 0   ? white_tex_
-                     : pass == 1 ? ao_raw_tex_
-                                 : ao_filter_tex_,
+                     pass == 1   ? ao_raw_tex_
+                     : pass == 2 ? ao_filter_tex_
+                                 : white_tex_,
                      sampler);
+    // The geometry pass writes these; it must not read them.
+    bgfx::setTexture(2, s_ao_linear_, geometry ? white_tex_ : ao_linear_tex_, sampler);
+    bgfx::setTexture(3, s_ao_normal_, geometry ? white_tex_ : ao_normal_tex_, sampler);
     bgfx::setVertexBuffer(0, &vb);
-    bgfx::setState(BGFX_STATE_WRITE_RGB);
+    bgfx::setState(geometry ? BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A : BGFX_STATE_WRITE_RGB);
     bgfx::submit(id, ao_program_);
   }
 }

@@ -398,6 +398,11 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::FrameBufferHandle ao_depth_fb_=BGFX_INVALID_HANDLE,ao_raw_fb_=BGFX_INVALID_HANDLE,ao_filter_fb_=BGFX_INVALID_HANDLE;
   bgfx::TextureHandle ao_depth_tex_=BGFX_INVALID_HANDLE,ao_raw_tex_=BGFX_INVALID_HANDLE,ao_filter_tex_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle s_ao_depth_=BGFX_INVALID_HANDLE,s_ao_input_=BGFX_INVALID_HANDLE,s_ao_field_=BGFX_INVALID_HANDLE;
+  // AO geometry pass (#256): AO-resolution linear depth (R32F) and normal
+  // (RGBA32F), written by view 141 and read by AO pass 1 and the filters.
+  bgfx::UniformHandle s_ao_linear_=BGFX_INVALID_HANDLE,s_ao_normal_=BGFX_INVALID_HANDLE;
+  bgfx::FrameBufferHandle ao_geometry_fb_=BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle ao_linear_tex_=BGFX_INVALID_HANDLE,ao_normal_tex_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_ao_screen_=BGFX_INVALID_HANDLE,u_ao_projection_=BGFX_INVALID_HANDLE,u_ao_config_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_ao_params_=BGFX_INVALID_HANDLE,u_ao_sampling_=BGFX_INVALID_HANDLE,u_ao_field_size_=BGFX_INVALID_HANDLE;
   std::array<float,4> ao_projection_{};

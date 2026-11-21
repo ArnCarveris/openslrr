@@ -2,10 +2,16 @@ $input v_texcoord0
 #include <bgfx_shader.sh>
 SAMPLER2D(s_aoDepth,0);
 SAMPLER2D(s_aoInput,1);
+// AO geometry (#256), written once per frame at AO resolution by pass 3:
+// linear view depth (0 = no surface) and the reconstructed normal (w = 1 when
+// valid). Every AO texel stands for the full-resolution depth texel under its
+// centre, so positions rebuilt from it match positionAt exactly.
+SAMPLER2D(s_aoLinear,2);
+SAMPLER2D(s_aoNormal,3);
 uniform vec4 u_aoScreen; // inverse depth size, projection scale
 uniform vec4 u_aoProjection; // projection A/B, homogeneous depth, bottom-left texture
-uniform vec4 u_aoConfig; // method, quality, world radius
-uniform vec4 u_aoParams; // pass, inverse AO size
+uniform vec4 u_aoConfig; // method, quality, world radius, reference sampling (#256)
+uniform vec4 u_aoParams; // pass (0 AO, 1/2 filters, 3 geometry), inverse AO size
 const float PI=3.14159265359;
 float depthAt(vec2 uv) {return texture2DLod(s_aoDepth,uv,0.0).r;}
 float linearDepth(float d) {
@@ -59,10 +65,34 @@ vec3 surfaceNormal(vec2 uv,vec3 p) {
     n*=inversesqrt(n2);
     return dot(n,-p)<0.0?-n:n;
 }
+vec2 fullTexelCentre(vec2 uv) {
+    return clamp((floor(uv/u_aoScreen.xy)+vec2(0.5,0.5))*u_aoScreen.xy,
+                 u_aoScreen.xy*0.5,vec2(1.0,1.0)-u_aoScreen.xy*0.5);
+}
+vec3 positionFromDepth(vec2 centre,float z) {
+    vec2 ndc=centre*2.0-1.0;
+    if(u_aoProjection.w<0.5) ndc.y=-ndc.y;
+    return vec3(ndc/u_aoScreen.zw*z,z);
+}
+// AO texel holding uv (clamped) and its full-resolution depth texel centre.
+ivec2 aoTexel(vec2 uv) {
+    vec2 size=vec2(1.0,1.0)/u_aoParams.yz;
+    return ivec2(clamp(floor(uv*size),vec2(0.0,0.0),size-vec2(1.0,1.0)));
+}
+vec2 aoTexelCentre(ivec2 t) { return (vec2(t)+vec2(0.5,0.5))*u_aoParams.yz; }
 vec3 sampleDelta(vec2 uv,vec3 p) {
-    if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0))) || depthAt(uv)<=0.0)
+    if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0))))
         return vec3(0.0,0.0,0.0);
-    return positionAt(uv)-p;
+    if(u_aoConfig.w>0.5) {
+        // Reference (#256 off): the full-resolution depth, one fetch.
+        vec2 centre=fullTexelCentre(uv);
+        float d=depthAt(centre);
+        return d<=0.0?vec3(0.0,0.0,0.0):positionFromDepth(centre,linearDepth(d))-p;
+    }
+    // AO-resolution linear depth: a quarter of the texels over the radius.
+    ivec2 t=aoTexel(uv);
+    float z=texelFetch(s_aoLinear,t,0).r;
+    return z<=0.0?vec3(0.0,0.0,0.0):positionFromDepth(fullTexelCentre(aoTexelCentre(t)),z)-p;
 }
 float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
     // High runs at half resolution like Medium (#248) with more directions.
@@ -137,20 +167,36 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
 }
 void main() {
     vec2 uv=v_texcoord0;
-    float depth=depthAt(uv);
-    if(depth<=0.0) {gl_FragColor=vec4(1.0,1.0,1.0,1.0);return;}
-    vec2 receiverUv=clamp((floor(uv/u_aoScreen.xy)+vec2(0.5,0.5))*u_aoScreen.xy,
-                          u_aoScreen.xy*0.5,vec2(1.0,1.0)-u_aoScreen.xy*0.5);
-    vec3 p=positionAt(receiverUv);
-    vec3 n=surfaceNormal(receiverUv,p);
-    if(dot(n,n)<0.5) {gl_FragColor=vec4(1.0,1.0,1.0,1.0);return;}
+    vec2 receiverUv=fullTexelCentre(uv);
+    // One shader serves the geometry pass (two targets) and the single-target
+    // passes: initialise the second output for the latter.
+    gl_FragData[1]=vec4(0.0,0.0,0.0,0.0);
+    if(u_aoParams.x>2.5) {
+        // Geometry pass (#256): depth and the 9-tap normal, once per frame.
+        float depth=depthAt(uv);
+        if(depth<=0.0) {gl_FragData[0]=vec4(0.0,0.0,0.0,0.0);gl_FragData[1]=vec4(0.0,0.0,0.0,0.0);return;}
+        vec3 p=positionAt(receiverUv);
+        vec3 n=surfaceNormal(receiverUv,p);
+        gl_FragData[0]=vec4(p.z,0.0,0.0,0.0);
+        gl_FragData[1]=vec4(n,dot(n,n)<0.5?0.0:1.0);
+        return;
+    }
+    ivec2 texel=aoTexel(uv);
+    float z=texelFetch(s_aoLinear,texel,0).r;
+    if(z<=0.0) {gl_FragData[0]=vec4(1.0,1.0,1.0,1.0);return;}
+    vec4 stored=texelFetch(s_aoNormal,texel,0);
+    if(stored.w<0.5) {gl_FragData[0]=vec4(1.0,1.0,1.0,1.0);return;}
+    vec3 p=positionFromDepth(receiverUv,z);
+    vec3 n=stored.xyz;
     if(u_aoParams.x>0.5) {
         vec2 direction=u_aoParams.x<1.5?vec2(u_aoParams.y,0.0):vec2(0.0,u_aoParams.z);
         float sum=0.0,weight=0.0;
         for(int k=-2;k<=2;++k) {
             vec2 q=clamp(uv+direction*float(k),vec2(0.0,0.0),vec2(1.0,1.0));
-            if(depthAt(q)<=0.0) continue;
-            vec3 samplePosition=positionAt(q);
+            ivec2 tq=aoTexel(q);
+            float zq=texelFetch(s_aoLinear,tq,0).r;
+            if(zq<=0.0) continue;
+            vec3 samplePosition=positionFromDepth(fullTexelCentre(aoTexelCentre(tq)),zq);
             // [1,2,2,2,1]/8 spans exactly one 4-texel noise period, so a flat
             // receiver averages all sixteen rotation/jitter cells after both
             // passes. A Gaussian leaves the per-pixel pattern visible as
@@ -163,7 +209,7 @@ void main() {
             sum+=texture2DLod(s_aoInput,q,0.0).r*w;weight+=w;
         }
         float result=weight>0.0001?sum/weight:1.0;
-        gl_FragColor=vec4(result,result,result,1.0);return;
+        gl_FragData[0]=vec4(result,result,result,1.0);return;
     }
     vec2 radiusUv=u_aoConfig.z*u_aoScreen.zw/(2.0*max(p.z,0.05));
     // Radius is in metres: a fixed pixel cap shrinks contact AO as the camera
@@ -178,5 +224,5 @@ void main() {
     float rotation=(mod(index*5.0,16.0)+0.5)/16.0;
     float jitter=(mod(dot(cell,vec2(4.0,1.0))+5.0,16.0)+0.5)/16.0;
     float visibility=u_aoConfig.x<1.5?hbao(receiverUv,p,n,radiusUv,rotation,jitter):gtao(receiverUv,p,n,radiusUv,rotation,jitter);
-    gl_FragColor=vec4(visibility,visibility,visibility,1.0);
+    gl_FragData[0]=vec4(visibility,visibility,visibility,1.0);
 }
