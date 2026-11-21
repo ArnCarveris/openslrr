@@ -602,7 +602,10 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
           enc()->setUniform(u_reflection_box_max_, high);
         }
         enc()->setTransform(matrix);enc()->setVertexBuffer(0,part.vbh);enc()->setIndexBuffer(part.ibh,group.index_start,group.index_count);
-        uint64_t state=BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_A|BGFX_STATE_MSAA|BGFX_STATE_DEPTH_TEST_GREATER;
+        // Lamp glass sits 0.5 mm in front of its lens since #284
+        // (snap_lamp_glass): a depth tie with the lens must keep the glass.
+        uint64_t state=BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_A|BGFX_STATE_MSAA|
+            (instance.light_flags ? BGFX_STATE_DEPTH_TEST_GEQUAL : BGFX_STATE_DEPTH_TEST_GREATER);
         // Like map SCX4, vehicle materials cull unless explicitly two-sided.
         // Interior backs can protrude through thin outer panels when drawn.
         if (!two_sided) state |= BGFX_STATE_CULL_CW;
