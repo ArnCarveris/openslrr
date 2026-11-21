@@ -76,6 +76,7 @@ add_executable(slrr_host
   src/natives/native_registry.cpp
   src/natives/natives_boot.cpp
   src/natives/natives_io.cpp
+  src/natives/save_json.cpp
   src/natives/natives_lang.cpp
   src/natives/natives_osd.cpp
   src/natives/natives_physicsref.cpp
@@ -358,6 +359,11 @@ if(BUILD_TESTING)
   target_compile_definitions(audio_recovery PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_link_libraries(audio_recovery PRIVATE FMOD::Core)
   add_test(NAME audio_recovery COMMAND audio_recovery)
+  add_executable(save_json tests/test_save_json.cpp src/natives/save_json.cpp)
+  target_include_directories(save_json PRIVATE src/natives)
+  target_compile_features(save_json PRIVATE cxx_std_20)
+  target_compile_options(save_json PRIVATE /W3 /utf-8)
+  add_test(NAME save_json COMMAND save_json)
 endif()
 
 foreach(_slrr_audio_target IN ITEMS slrr_host audio_recovery)
