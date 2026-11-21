@@ -399,7 +399,8 @@ bool string_of(const Json& j, Leaf& leaf) {
   leaf = Leaf{};
   leaf.type = LeafType::String;
   if (j.type == Json::Null) { leaf.null_string = true; return true; }
-  if (j.type != Json::String || j.text.size() >= (1u << 20)) return false;
+  // Same bound as File.write: readString then applies its own 1 MiB limit.
+  if (j.type != Json::String || j.text.size() >= 0xfffffffeu) return false;
   leaf.text = j.text;
   return true;
 }

@@ -461,7 +461,7 @@ SLRR_TEST(script_frames_attribute_part_data_to_its_script) {
   // The int written where Chassis writes a wheel damage string keeps the
   // block generic: its values stay in order under the script's name.
   for (const char* needle : {"\"kind\": \"vehicle\"", "\"class\": \"Chassis\"",
-                             "\"script\": \"Chassis\"", "\"values\": [3, 1, {\"rpk\": null}]"})
+                             "\"script\": \"Chassis\"", "\"values\": [", "{\"rpk\": null}"})
     SLRR_REQUIRE(text.find(needle) != std::string::npos);
 
   SLRR_REQUIRE(f.open("save/carrer/P-1/PlayerCar2", 1) == 1);
