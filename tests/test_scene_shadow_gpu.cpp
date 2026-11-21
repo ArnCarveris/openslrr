@@ -444,6 +444,105 @@ struct SceneShadowRegression {
     std::puts("PASS car lights: headlight beams, brake light, one beam per headlight part");
   }
 
+  // #281: emissive overlays (night facade masks, traffic-light glass) sit
+  // flush with the surface they light. They used to be pushed 2 mm along
+  // their normal, so glass authored behind or level with a body floated in
+  // front of it. A coplanar overlay with another tessellation must still win
+  // every depth tie against its surface, seen at a slant.
+  static void emissive_overlay_flush(LibBgfxBackend& b) {
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    host_enhanced_graphics().ao_method=0;
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};
+    b.scenery_lamps_.clear();b.fixture_lights_.clear();
+    scene_sun_set_time(12*3600.f);b.update_local_light();
+    constexpr uint16_t width=160,height=120;
+    float view[16],projection[16],render[16];
+    bx::mtxLookAt(view,{3.f,1.f,-5.f},{0,0,0});
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,500.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    // A 4 x 4 m wall in z = 0 facing the camera, as one quad;
+    // the glass is the same plane as an 8 x 8 grid with the other diagonal.
+    const auto plane=[](int cells,bool flip,float emission) {
+      auto g=std::make_shared<ScxGeometry>();g->info.ok=true;g->info.version=4;g->position_scale=1;
+      for(int y=0;y<=cells;++y) for(int x=0;x<=cells;++x) {
+        g->positions.insert(g->positions.end(),{-2.f+4.f*x/cells,-2.f+4.f*y/cells,0.f});
+        // +Z here is toward the camera once drawn (render space flips Z).
+        g->normals.insert(g->normals.end(),{0.f,0.f,1.f});g->uvs.insert(g->uvs.end(),{0.f,0.f});
+      }
+      for(int y=0;y<cells;++y) for(int x=0;x<cells;++x) {
+        const uint32_t a=uint32_t(y*(cells+1)+x),c=a+1,d=a+uint32_t(cells+1),e=d+1;
+        if(flip) g->indices.insert(g->indices.end(),{a,d,c,c,d,e});
+        else g->indices.insert(g->indices.end(),{a,d,e,a,e,c});
+      }
+      ScxGroup group;group.index_count=uint32_t(g->indices.size());
+      group.emission_color[0]=group.emission_color[1]=group.emission_color[2]=emission;
+      g->groups={group};return g;
+    };
+    const auto wall_mesh=plane(1,false,0.f),glass_mesh=plane(8,true,1.f);
+    SceneInstance wall;wall.geometry=wall_mesh;bx::mtxIdentity(wall.transform.data());
+    wall.lighting.set=wall.lighting.has_direction=true;wall.lighting.direction[2]=1;
+    for(int i=0;i<3;++i){wall.lighting.diffuse[i]=.3f;wall.lighting.ambient[i]=.1f;wall.lighting.specular[i]=0;}
+    b.cache_scene_mesh(wall_mesh,nullptr,false);b.cache_scene_mesh(glass_mesh,nullptr,false);
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    // offset: glass position along +Z (away from the camera) in metres;
+    // nan draws no glass. with_wall false draws the glass alone.
+    auto capture=[&](float offset,bool with_wall=true) {
+      bgfx::setViewFrameBuffer(5,fb);bgfx::setViewRect(5,0,0,width,height);
+      bgfx::setViewClear(5,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+      bgfx::setViewTransform(5,view,render);
+      bgfx::setViewMode(5,bgfx::ViewMode::Sequential);  // the wall's depth first, as in the world view
+      if(with_wall) b.draw_instance(5,wall,wall.transform.data(),false,0);
+      if(!std::isnan(offset)) {
+        SceneInstance glass=wall;glass.geometry=glass_mesh;glass.emissive_overlay=true;
+        glass.transform[14]=offset;
+        b.draw_instance(5,glass,glass.transform.data(),false,1);
+      }
+      bgfx::TextureRegion dst,src;dst.init(readback);src.init(color);bgfx::blit(100,dst,src);bgfx::frame();
+      std::vector<uint8_t> bytes(width*height*4);const auto ready=bgfx::read(dst,bytes.data());
+      for(int i=0;i<16;++i) if(bgfx::frame()>=ready) return bytes;
+      throw std::runtime_error("overlay readback timeout");
+    };
+    const auto bare=capture(std::nanf(""));
+    const auto behind=capture(.0015f);  // 1.5 mm behind the wall
+    const auto level=capture(0.f);
+    const auto front=capture(-.0015f);
+    // The glass drawn alone covers exactly the wall's pixels.
+    const auto alone=capture(0.f,false);
+    size_t wall_pixels=0,lit_level=0,lit_behind=0,lit_front=0,edge_misses=0;
+    int weakest_level=255;
+    const auto inside=[&](int x,int y){return x>=0&&y>=0&&x<width&&y<height&&alone[(size_t(y)*width+x)*4]>=200;};
+    for(size_t i=0;i<bare.size();i+=4) {
+      const int x=int(i/4%width),y=int(i/4/width);
+      if(!inside(x,y)) continue;
+      // Silhouette pixels: the two tessellations cover them differently.
+      if(!inside(x-1,y)||!inside(x+1,y)||!inside(x,y-1)||!inside(x,y+1)) {edge_misses+=level[i]<=bare[i]+60;continue;}
+      ++wall_pixels;
+      lit_level+=level[i]>bare[i]+60;lit_behind+=behind[i]>bare[i]+60;lit_front+=front[i]>bare[i]+60;
+      weakest_level=std::min(weakest_level,int(level[i])-int(bare[i]));
+    }
+    std::printf("EMISSIVE OVERLAY wall %zu px: glass level lit %zu (weakest gain %d), 1.5 mm in front %zu, 1.5 mm behind %zu; edge misses %zu\n",
+                wall_pixels,lit_level,weakest_level,lit_front,lit_behind,edge_misses);
+    SLRR_REQUIRE(wall_pixels>4000);
+    // Flush and in front: every wall pixel shows the glass (no depth ties lost).
+    SLRR_REQUIRE(lit_level==wall_pixels && lit_front==wall_pixels);
+    // Behind the surface: hidden, as authored.
+    SLRR_REQUIRE(lit_behind==0);
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);b.outdoor_lighting_=false;
+    b.instances_.clear();
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    std::puts("PASS emissive overlays sit flush: level glass shows, glass behind the surface stays hidden");
+  }
+
   static void scenery_lamps(LibBgfxBackend& b) {
     Fixture f;scene_instances_set_resources(&f.packs);
     Object world,shell;
@@ -3600,6 +3699,7 @@ int main() {
     SceneShadowRegression::vehicle_wall(backend);
     SceneShadowRegression::ambient_occlusion(backend);
     SceneShadowRegression::point_lifetime(backend);
+    SceneShadowRegression::emissive_overlay_flush(backend);
     SceneShadowRegression::scenery_lamps(backend);
     SceneShadowRegression::car_lights(backend);
     SceneShadowRegression::lamp_cost(backend);
