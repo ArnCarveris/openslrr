@@ -579,6 +579,44 @@ each character on the host thread (`character_skin_prepare`), the jobs run
 reads its immutable skeleton and clip), and the host thread publishes the
 palettes into the frame cache in order.
 
+**Worker bgfx encoders (#270).** Off by default (renderer debug option
+"Worker encoders", `render_debug().worker_encoders`). When on,
+`src/render/bgfx_lib_backend.cpp:parallel_submission_ready` is true with 3 or
+more pool threads; `queue_or_run` then queues the AO prepass
+(`src/render/bgfx_ao.cpp`), each car lamp tile (`src/render/bgfx_shadows.cpp`)
+and each reflection face draw instead of submitting it, and
+`src/render/bgfx_lib_backend.cpp:run_worker_submits` runs the queue on the
+pool while the host thread draws the sky and the world on encoder 0. Rules:
+
+- One job per Sequential view, so the order inside a view is the serial one.
+  Each job calls `bgfx::begin(true)` and sets the thread-local `t_encoder_`
+  and `t_bind_`; every draw helper goes through `enc()` and `bind()`. The host
+  caches encoder 0 in `host_encoder_` (reset at `bgfx::shutdown`): one
+  `bgfx::begin()` or TLS lookup per draw call doubled world submission.
+- Binding caches (#246 light arrays, #262 uniforms and textures) live in a
+  `BindState`; each worker owns one (`worker_binds_`), the host uses
+  `main_bind_`. The harness reads `main_bind_` counters.
+- No shared writes from jobs: `draw_prop_batches` takes the shadow-local
+  choice as a parameter instead of toggling `static_shadow_local_`;
+  `snapshot_textures` resolves every texture of the queued objects into
+  `resolved_textures_` first (lookups that would insert run on the host);
+  `upload_light_data` runs in frame setup and is skipped inside the window;
+  profiler zones are off on worker threads (`perf::worker_thread`), whose time
+  is summed in `worker_submit`, with the host's wait in `submit_wait`.
+- `draw_prop_batches` allocates one instance buffer per list: bgfx takes its
+  resource lock per transient allocation, and a granted count can be smaller
+  than asked when another encoder allocates in between.
+- Fewer than 3 threads, or the option off: the queued draws run on the host
+  thread in submission order.
+
+Harness (`tests/test_scene_shadow_gpu.cpp`, crowd city 1280x720 with lamp
+tiles, GTAO and a reflection probe; lamp fades use a fixed step so the runs
+compare): threaded and one-thread images are identical at 24, 2 and 1 cores.
+At 24 threads host submission was 1.54 ms threaded against 1.61 ms on one
+thread, worker submission 0.50 ms, host wait 0.002 ms; bgfx's shared submit
+state (sort keys, atomics, transient buffers) took back most of what the host
+saved, so the option stays off until measured in game.
+
 **Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
 lists the planned steps for the frame loop: measure where the CPU limits,
 cull scene collection in parallel, record draws with bgfx encoders, run

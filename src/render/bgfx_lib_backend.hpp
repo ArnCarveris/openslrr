@@ -22,6 +22,7 @@
 #include <array>
 #include <bitset>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -187,20 +188,11 @@ class LibBgfxBackend final : public IRenderBackend {
   // cascades, point faces) are set on the first lit draw of each view and
   // frame and skipped after. Unknown or sorted views keep uploading per draw.
   std::bitset<256> sequential_views_;
-  uint16_t binding_view_ = UINT16_MAX;  // view of the draw being bound
-  uint16_t light_arrays_view_ = UINT16_MAX;
-  int32_t light_arrays_frame_ = -1;
-  uint64_t light_uniform_revision_ = 1, light_arrays_revision_ = 0;
-  uint64_t light_array_uploads_ = 0;  // for tests and the debug menu
+  uint64_t light_uniform_revision_ = 1;
   bool light_array_cache_ = true;     // tests: false uploads on every draw
   void set_view_sequential(uint16_t view) {
     bgfx::setViewMode(view, bgfx::ViewMode::Sequential);
     sequential_views_.set(view);
-  }
-  bool light_arrays_current() const {
-    return light_array_cache_ && binding_view_ < sequential_views_.size() &&
-           sequential_views_.test(binding_view_) && light_arrays_view_ == binding_view_ &&
-           light_arrays_frame_ == frames_ && light_arrays_revision_ == light_uniform_revision_;
   }
   // Per-view uniform values (#262), the same rule for the single-value sun,
   // fog, sky, shadow, interior sun, point/local light, car depth, AO and
@@ -213,19 +205,6 @@ class LibBgfxBackend final : public IRenderBackend {
     uint32_t generation = 0;
     std::array<float, 16> value{};
   };
-  std::vector<UniformSlot> uniform_values_;
-  uint32_t uniform_generation_ = 1;
-  uint16_t uniform_view_ = UINT16_MAX;
-  int32_t uniform_frame_ = -1;
-  bool uniform_cache_ = true;      // tests: false sets every value
-  bool uniform_pending_ = false;   // cached values set since the last submit
-  bool uniform_scope_ = false;     // inside a Sequential BindingScope
-  uint64_t uniform_sets_ = 0, uniform_skips_ = 0;  // for tests
-  void set_uniform(bgfx::UniformHandle handle, const float* value, uint16_t floats = 4);
-  void forget_uniforms() {
-    ++uniform_generation_;
-    light_arrays_view_ = UINT16_MAX;
-  }
   // Texture stages kept across submits (#262). In the same scope, submits use
   // BGFX_DISCARD_ALL without BGFX_DISCARD_BINDINGS, so a stage keeps its
   // texture and only stages that change are set again. A draw that leaves a
@@ -252,15 +231,62 @@ class LibBgfxBackend final : public IRenderBackend {
   static constexpr float kLampNightMin = .01f;
   static constexpr float kLampShadowNightMin = .3f;
   static constexpr size_t kPropInstanceChunk = 1024;  // was 128 before #262
-  std::array<TextureSlot, kTextureStages> texture_bindings_{};
-  uint32_t texture_set_mask_ = 0;  // stages the current draw set
-  bool texture_run_ = false;
+  // Everything the binding caches (#246, #262) know about the encoder they
+  // feed (#270). The host thread uses main_bind_ with encoder 0; a worker
+  // that submits a view on its own encoder binds its own state, so the
+  // caches always describe the encoder that receives the values.
+  struct BindState {
+    uint16_t binding_view = UINT16_MAX;  // view of the draw being bound
+    uint16_t light_arrays_view = UINT16_MAX;
+    int32_t light_arrays_frame = -1;
+    uint64_t light_arrays_revision = 0;
+    uint64_t light_array_uploads = 0;  // for tests and the debug menu
+    std::vector<UniformSlot> uniform_values;
+    uint32_t uniform_generation = 1;
+    uint16_t uniform_view = UINT16_MAX;
+    int32_t uniform_frame = -1;
+    bool uniform_pending = false;   // cached values set since the last submit
+    bool uniform_scope = false;     // inside a Sequential BindingScope
+    uint64_t uniform_sets = 0, uniform_skips = 0;  // for tests
+    std::array<TextureSlot, kTextureStages> texture_bindings{};
+    uint32_t texture_set_mask = 0;  // stages the current draw set
+    bool texture_run = false;
+    uint64_t texture_sets = 0, texture_skips = 0;  // for tests
+  };
+  BindState main_bind_;
+  static thread_local BindState* t_bind_;
+  static thread_local bgfx::Encoder* t_encoder_;
+  BindState& bind() { return t_bind_ ? *t_bind_ : main_bind_; }
+  const BindState& bind() const { return t_bind_ ? *t_bind_ : main_bind_; }
+  // The encoder of the current thread: a worker's own (bgfx::begin(true)),
+  // else encoder 0, which bgfx::begin() returns on the API thread (#270).
+  // Encoder 0 is a fixed member of the bgfx context: cached once instead of
+  // calling bgfx::begin() for every draw call.
+  static bgfx::Encoder* host_encoder_;
+  static bgfx::Encoder* enc() {
+    if (t_encoder_) return t_encoder_;
+    if (!host_encoder_) host_encoder_ = bgfx::begin();
+    return host_encoder_;
+  }
+  bool light_arrays_current() const {
+    const auto& state = bind();
+    return light_array_cache_ && state.binding_view < sequential_views_.size() &&
+           sequential_views_.test(state.binding_view) &&
+           state.light_arrays_view == state.binding_view &&
+           state.light_arrays_frame == frames_ &&
+           state.light_arrays_revision == light_uniform_revision_;
+  }
+  bool uniform_cache_ = true;      // tests: false sets every value
+  void set_uniform(bgfx::UniformHandle handle, const float* value, uint16_t floats = 4);
+  void forget_uniforms() {
+    ++bind().uniform_generation;
+    bind().light_arrays_view = UINT16_MAX;
+  }
   bool texture_cache_ = true;      // tests: false sets every stage
-  uint64_t texture_sets_ = 0, texture_skips_ = 0;  // for tests
   void set_texture(uint8_t stage, bgfx::UniformHandle sampler, bgfx::TextureHandle texture,
                    uint32_t flags = UINT32_MAX);
   void forget_textures() {
-    for (auto& slot : texture_bindings_) slot.valid = false;
+    for (auto& slot : bind().texture_bindings) slot.valid = false;
   }
   // Draws submitted per view this frame (#264), for the debug snapshot.
   // Every bgfx::submit of the renderer goes through submit_counted.
@@ -268,8 +294,31 @@ class LibBgfxBackend final : public IRenderBackend {
   void submit_counted(uint16_t view, bgfx::ProgramHandle program,
                       uint8_t flags = BGFX_DISCARD_ALL) {
     if (view < view_draws_.size()) ++view_draws_[view];
-    bgfx::submit(view, program, 0, flags);
+    enc()->submit(view, program, 0, flags);
   }
+  // Worker encoders (#270). During a frame whose passes may run on workers,
+  // the AO depth prepass, the car lamp tiles and each reflection face queue
+  // one job per view instead of submitting; run_worker_submits runs them on
+  // the job pool, each on its own encoder (bgfx::begin(true)) with its own
+  // BindState, while the host thread submits the world on encoder 0. Outside
+  // such a frame (tests, menus) queue_or_run submits at once, as before.
+  bool parallel_submission_ = true;    // tests: false keeps one thread
+  bool defer_submits_ = false;         // queue the worker passes
+  bool parallel_window_ = false;       // workers running: no shared cache writes
+  std::vector<std::function<void()>> worker_jobs_;
+  std::vector<std::unique_ptr<BindState>> worker_binds_;
+  uint64_t worker_submit_runs_ = 0;    // frames whose passes ran on workers, for tests
+  void queue_or_run(std::function<void()> job) {
+    if (defer_submits_) worker_jobs_.push_back(std::move(job));
+    else job();
+  }
+  bool parallel_submission_ready() const;
+  void run_worker_submits(const std::function<void()>& host_work);
+  // Texture lookups by path (replacements, paint) create textures on a miss.
+  // During the parallel window they read a snapshot taken on the host thread.
+  std::unordered_map<std::string, bgfx::TextureHandle> resolved_textures_;
+  bgfx::TextureHandle resolve_texture(const std::string& path);
+  void snapshot_textures(const std::vector<SceneInstance>& list);
   // Every submit inside a BindingScope goes through here.
   void submit_bound(uint16_t view, bgfx::ProgramHandle program, uint32_t index_count);
   // The view of the draw being bound (#246, #262): draw_instance and
@@ -297,8 +346,11 @@ class LibBgfxBackend final : public IRenderBackend {
 
 
   void draw_instance(uint16_t view_id,const SceneInstance& instance,const float* matrix,bool preview,int pass);
+  // `shadow_local` < 0 reads static_shadow_local_; 0 / 1 override it, so a
+  // worker pass never toggles a member the host thread reads (#270).
   void draw_prop_batches(uint16_t view_id, const std::vector<SceneBatch>& batches,
-                         bool shadow, bool conservative = false, bool reversed_depth = false);
+                         bool shadow, bool conservative = false, bool reversed_depth = false,
+                         int shadow_local = -1);
   // Map props that draw_prop_batches cannot take, instanced per mesh in the
   // world view (#264): night overlays (`emissive`, from night_batches_) and
   // props with a blended section (grouped from instances_). Same material

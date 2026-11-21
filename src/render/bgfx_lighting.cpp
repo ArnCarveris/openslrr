@@ -26,85 +26,94 @@
 
 namespace slrr {
 
+thread_local LibBgfxBackend::BindState* LibBgfxBackend::t_bind_ = nullptr;
+thread_local bgfx::Encoder* LibBgfxBackend::t_encoder_ = nullptr;
+bgfx::Encoder* LibBgfxBackend::host_encoder_ = nullptr;
+
 LibBgfxBackend::BindingScope::BindingScope(LibBgfxBackend& b, uint16_t view) : backend(b) {
-  b.binding_view_ = view;
+  auto& st = b.bind();
+  st.binding_view = view;
   const bool sequential = view < b.sequential_views_.size() && b.sequential_views_.test(view);
-  b.uniform_scope_ = b.uniform_cache_ && sequential;
-  if (b.uniform_scope_ && (b.uniform_view_ != view || b.uniform_frame_ != b.frames_)) {
-    ++b.uniform_generation_;
-    b.uniform_view_ = view;
-    b.uniform_frame_ = b.frames_;
+  st.uniform_scope = b.uniform_cache_ && sequential;
+  if (st.uniform_scope && (st.uniform_view != view || st.uniform_frame != b.frames_)) {
+    ++st.uniform_generation;
+    st.uniform_view = view;
+    st.uniform_frame = b.frames_;
   }
-  b.uniform_pending_ = false;
-  b.texture_run_ = b.texture_cache_ && sequential;
+  st.uniform_pending = false;
+  st.texture_run = b.texture_cache_ && sequential;
   b.forget_textures();
-  b.texture_set_mask_ = 0;
+  st.texture_set_mask = 0;
 }
 
 LibBgfxBackend::BindingScope::~BindingScope() {
   auto& b = backend;
+  auto& st = b.bind();
   // Values set after the last submit attach to the next submit anywhere.
-  if (b.uniform_pending_) b.forget_uniforms();
-  b.uniform_pending_ = false;
-  b.uniform_scope_ = false;
-  if (b.texture_run_) bgfx::discard(BGFX_DISCARD_BINDINGS);
-  b.texture_run_ = false;
-  b.texture_set_mask_ = 0;
-  b.binding_view_ = UINT16_MAX;
+  if (st.uniform_pending) b.forget_uniforms();
+  st.uniform_pending = false;
+  st.uniform_scope = false;
+  if (st.texture_run) enc()->discard(BGFX_DISCARD_BINDINGS);
+  st.texture_run = false;
+  st.texture_set_mask = 0;
+  st.binding_view = UINT16_MAX;
 }
 
 void LibBgfxBackend::set_uniform(bgfx::UniformHandle handle, const float* value, uint16_t floats) {
+  auto& st = bind();
   if (!bgfx::isValid(handle)) return;
-  if (handle.idx >= uniform_values_.size()) uniform_values_.resize(size_t(handle.idx) + 1);
-  auto& slot = uniform_values_[handle.idx];
-  ++uniform_sets_;
-  if (!uniform_scope_) {
+  if (handle.idx >= st.uniform_values.size()) st.uniform_values.resize(size_t(handle.idx) + 1);
+  auto& slot = st.uniform_values[handle.idx];
+  ++st.uniform_sets;
+  if (!st.uniform_scope) {
     slot.generation = 0;
-    bgfx::setUniform(handle, value);
+    enc()->setUniform(handle, value);
     return;
   }
   const size_t bytes = size_t(std::min<uint16_t>(floats, 16)) * sizeof(float);
-  if (slot.generation == uniform_generation_ && std::memcmp(slot.value.data(), value, bytes) == 0) {
-    --uniform_sets_;
-    ++uniform_skips_;
+  if (slot.generation == st.uniform_generation && std::memcmp(slot.value.data(), value, bytes) == 0) {
+    --st.uniform_sets;
+    ++st.uniform_skips;
     return;
   }
   std::memcpy(slot.value.data(), value, bytes);
-  slot.generation = uniform_generation_;
-  uniform_pending_ = true;
-  bgfx::setUniform(handle, value);
+  slot.generation = st.uniform_generation;
+  st.uniform_pending = true;
+  enc()->setUniform(handle, value);
 }
 
 void LibBgfxBackend::set_texture(uint8_t stage, bgfx::UniformHandle sampler,
                                  bgfx::TextureHandle texture, uint32_t flags) {
-  if (!texture_run_ || stage >= kTextureStages) {
-    bgfx::setTexture(stage, sampler, texture, flags);
+  auto& st = bind();
+  if (!st.texture_run || stage >= kTextureStages) {
+    enc()->setTexture(stage, sampler, texture, flags);
     return;
   }
-  texture_set_mask_ |= 1u << stage;
-  auto& slot = texture_bindings_[stage];
+  st.texture_set_mask |= 1u << stage;
+  auto& slot = st.texture_bindings[stage];
   if (slot.valid && slot.sampler == sampler.idx && slot.texture == texture.idx && slot.flags == flags) {
-    ++texture_skips_;
+    ++st.texture_skips;
     return;
   }
   slot = {true, sampler.idx, texture.idx, flags};
-  ++texture_sets_;
-  bgfx::setTexture(stage, sampler, texture, flags);
+  ++st.texture_sets;
+  enc()->setTexture(stage, sampler, texture, flags);
 }
 
 void LibBgfxBackend::submit_bound(uint16_t view, bgfx::ProgramHandle program, uint32_t index_count) {
+  auto& st = bind();
   uint8_t flags = BGFX_DISCARD_ALL;
-  if (texture_run_) {
+  if (st.texture_run) {
     uint32_t kept = 0;
     for (size_t i = 0; i < kTextureStages; ++i)
-      if (texture_bindings_[i].valid) kept |= 1u << i;
+      if (st.texture_bindings[i].valid) kept |= 1u << i;
     // A stage this draw did not set must stay unbound, as with a full discard.
-    if (kept & ~texture_set_mask_) forget_textures();
+    if (kept & ~st.texture_set_mask) forget_textures();
     else flags = BGFX_DISCARD_ALL & ~BGFX_DISCARD_BINDINGS;
   }
   submit_counted(view, program, flags);
-  texture_set_mask_ = 0;
-  uniform_pending_ = false;
+  st.texture_set_mask = 0;
+  st.uniform_pending = false;
   // bgfx drops a draw without indices together with its uniforms.
   if (!index_count) forget_uniforms();
 }
@@ -195,13 +204,13 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   // Gate every ghost/ray with the same camera-to-sun visibility, not its own
   // screen position. This includes the alpha window/frame and room occluders.
   bind_interior_sun(interior_sun_active_, 5);
-  bgfx::setUniform(u_color_, tint);
-  bgfx::setUniform(u_alpha_test_, settings);
-  bgfx::setTransform(identity);
-  bgfx::setVertexBuffer(0, &vb);
-  bgfx::setIndexBuffer(&ib);
+  enc()->setUniform(u_color_, tint);
+  enc()->setUniform(u_alpha_test_, settings);
+  enc()->setTransform(identity);
+  enc()->setVertexBuffer(0, &vb);
+  enc()->setIndexBuffer(&ib);
   set_texture(0, s_tex_, texture);
-  bgfx::setState(BGFX_STATE_WRITE_RGB |
+  enc()->setState(BGFX_STATE_WRITE_RGB |
                  (interior_sun_active_ ? uint64_t(0) : BGFX_STATE_DEPTH_TEST_GREATER) |
                  BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
   submit_counted(view_id, program_);
@@ -268,7 +277,9 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled, bool upload_arrays) {
   const size_t all_lamp_shadows=lamp_shadow_atlas_bound_
       ? std::min({lamp_shadow_count_,scenery_lamps_.size(),kLampSpecial}) : size_t(0);
   const auto all_lamps=std::min(scenery_lamps_.size(),kSceneryLamps);
-  if(upload_arrays) upload_light_data();
+  // The light data texture is uploaded in frame setup before workers start
+  // (#270); during the parallel window nobody touches light_data_.
+  if(upload_arrays && !parallel_window_) upload_light_data();
   const auto count=enabled?all_fixtures:size_t(0);
   const bool shadows=count && fixture_shadow_active_;
   // Street lamp shadows (#237) use the same atlas outside garages.
@@ -314,14 +325,14 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
     bind_fixture_lights(enabled, upload);
     if (upload) {
       if (point_shadow_active_)
-        bgfx::setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
+        enc()->setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
       if (shadow_cascades_active_)
-        bgfx::setUniform(u_shadow_cascades_, shadow_cascade_matrices_.data(), 4);
-      ++light_array_uploads_;
-      if (uniform_scope_) uniform_pending_ = true;
-      light_arrays_view_ = binding_view_;
-      light_arrays_frame_ = frames_;
-      light_arrays_revision_ = light_uniform_revision_;
+        enc()->setUniform(u_shadow_cascades_, shadow_cascade_matrices_.data(), 4);
+      ++bind().light_array_uploads;
+      if (bind().uniform_scope) bind().uniform_pending = true;
+      bind().light_arrays_view = bind().binding_view;
+      bind().light_arrays_frame = frames_;
+      bind().light_arrays_revision = light_uniform_revision_;
     }
     bind_interior_sun(enabled, stage == 5 ? 6 : 5);
     const bool receive = enabled && static_shadow_active_ &&
@@ -450,7 +461,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
     const auto texture = [&](uint16_t slot) {
       for (const auto& [index, path] : instance.texture_replacements)
         if (slot == index && !path.empty()) {
-          const auto replacement = tex_for_osd_icon(path);
+          const auto replacement = resolve_texture(path);
           if (replacement.idx != white_tex_.idx) return replacement;
         }
       return slot < part.tex.size() && bgfx::isValid(part.tex[slot]) ? part.tex[slot] : white_tex_;
@@ -459,7 +470,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       for (const auto& group : part.geo.groups) {
         auto base = texture(group.texture_index);
         const bool painted = instance.paint_slot >= 0 && group.texture_index == instance.paint_slot;
-        if (painted && !instance.paint_texture.empty()) base = tex_for_osd_icon(instance.paint_texture);
+        if (painted && !instance.paint_texture.empty()) base = resolve_texture(instance.paint_texture);
         auto mix = texture(group.mix_index);
         bool mixed = group.mix_index != 0xffff && group.mix_index != group.texture_index && mix.idx != white_tex_.idx;
         auto env = texture(group.reflection_index);
@@ -502,9 +513,9 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         const float layers[4] = {mixed?1.f:0.f, has_reflection?reflection_strength:0.f, group.material_type==0x15&&mixed?1.f:0.f, kind};
         const float channels[4] = {static_cast<float>(group.base_map.channel),static_cast<float>(group.mix_map.channel),static_cast<float>(group.reflection_map.channel),lens?2.f:generated?1.f:0.f};
         auto map = [&](bgfx::UniformHandle uniform, const ScxTextureMap& uv) {
-          const float value[4]={uv.scale_u,uv.scale_v,uv.offset_u,uv.offset_v}; bgfx::setUniform(uniform,value);
+          const float value[4]={uv.scale_u,uv.scale_v,uv.offset_u,uv.offset_v}; enc()->setUniform(uniform,value);
         };
-        bgfx::setUniform(u_layers_,layers); bgfx::setUniform(u_channels_,channels);
+        enc()->setUniform(u_layers_,layers); enc()->setUniform(u_channels_,channels);
         // Paint replaces the slot, so the body keeps the texture color.
         // Tex / TexSpecular (tyre is 0x04) replace colour 0 with white:
         // the tread is the texture. A second multiply by the file diffuse
@@ -553,10 +564,10 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         set_uniform(u_sun_dir_, sun_r);
         bind_point_light(!preview && !instance.light_flags);
         bind_ambient_occlusion(!preview && !transparent && !instance.light_flags && view_id==ao_world_view_);
-        bgfx::setUniform(u_diffuse_,diffuse);
+        enc()->setUniform(u_diffuse_,diffuse);
         const float spec[4] = {group.specular[0], group.specular[1], group.specular[2],
                                group.shininess > 0.f ? group.shininess : 1.f};
-        bgfx::setUniform(u_spec_, spec);
+        enc()->setUniform(u_spec_, spec);
         map(u_base_uv_,group.base_map);map(u_mix_uv_,group.mix_map);map(u_env_uv_,group.reflection_map);
         bgfx::TextureHandle bake = white_tex_;
         float bake_u[4] = {0.f, static_cast<float>(group.base_map.channel), 1.f, 0.f};
@@ -578,18 +589,18 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
             (group.material_flags & 0x02000000u) != 0;
         const float reflection[4] = {live_env ? 1.f : enhanced_env ? 2.f : 0.f,
                                      two_sided ? 1.f : 0.f, 0.f, 0.f};
-        bgfx::setUniform(u_dynamic_reflection_, reflection);
+        enc()->setUniform(u_dynamic_reflection_, reflection);
         if (live_env) {
           set_texture(4, s_reflection_cube_, reflection_cubes_[reflection_write_ ^ 1]);
           const float probe[4] = {reflection_sample_origin_[0], reflection_sample_origin_[1],
               reflection_sample_origin_[2], reflection_box_valid_ ? 1.f : 0.f};
           const float low[4] = {reflection_box_min_[0], reflection_box_min_[1], reflection_box_min_[2], 0.f};
           const float high[4] = {reflection_box_max_[0], reflection_box_max_[1], reflection_box_max_[2], 0.f};
-          bgfx::setUniform(u_reflection_probe_, probe);
-          bgfx::setUniform(u_reflection_box_min_, low);
-          bgfx::setUniform(u_reflection_box_max_, high);
+          enc()->setUniform(u_reflection_probe_, probe);
+          enc()->setUniform(u_reflection_box_min_, low);
+          enc()->setUniform(u_reflection_box_max_, high);
         }
-        bgfx::setTransform(matrix);bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
+        enc()->setTransform(matrix);enc()->setVertexBuffer(0,part.vbh);enc()->setIndexBuffer(part.ibh,group.index_start,group.index_count);
         uint64_t state=BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_A|BGFX_STATE_MSAA|BGFX_STATE_DEPTH_TEST_GREATER;
         // Like map SCX4, vehicle materials cull unless explicitly two-sided.
         // Interior backs can protrude through thin outer panels when drawn.
@@ -600,7 +611,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
           state |= BGFX_STATE_BLEND_ALPHA;
         else
           state |= BGFX_STATE_WRITE_Z;
-        bgfx::setState(state);submit_bound(view_id,vehicle_program_,group.index_count);
+        enc()->setState(state);submit_bound(view_id,vehicle_program_,group.index_count);
       }
       return;
     }
@@ -665,12 +676,12 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       const float mix_xf[4] = {mix_uv.scale_u, mix_uv.scale_v, mix_uv.offset_u, mix_uv.offset_v};
       set_uniform(u_mesh_base_uv_, base_xf);
       set_uniform(u_mesh_mix_uv_, mix_xf);
-      bgfx::setUniform(u_alpha_test_,settings);bgfx::setUniform(u_color_,tint);bgfx::setTransform(matrix);
+      enc()->setUniform(u_alpha_test_,settings);enc()->setUniform(u_color_,tint);enc()->setTransform(matrix);
       const bool skinned = instance.gpu_skin && bgfx::isValid(part.skin_vbh) &&
           bgfx::isValid(skin_program_) && instance.skin.size() >= 48u * 16u;
-      if (skinned) bgfx::setUniform(u_skin_bones_, instance.skin.data(), 48);
-      bgfx::setVertexBuffer(0, skinned ? part.skin_vbh : part.vbh);
-      bgfx::setIndexBuffer(part.ibh,first,count);
+      if (skinned) enc()->setUniform(u_skin_bones_, instance.skin.data(), 48);
+      enc()->setVertexBuffer(0, skinned ? part.skin_vbh : part.vbh);
+      enc()->setIndexBuffer(part.ibh,first,count);
       set_texture(0, s_tex_, tex, preview ? BGFX_SAMPLER_NONE : world_sampler());
       bgfx::TextureHandle mix = BGFX_INVALID_HANDLE;
       if (group && part.geo.position_scale == 1.f && group->mix_index != 0xffff) {
@@ -720,7 +731,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       } else if (!instance.sky) {
         state |= BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
       }
-      bgfx::setState(state);
+      enc()->setState(state);
       submit_bound(view_id, skinned ? skin_program_ : program_, count);
     };
     if(part.geo.groups.empty())draw(0,static_cast<uint32_t>(part.geo.index_count),0,0,nullptr);
@@ -846,10 +857,12 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
     }
     for (size_t base = 0; base < count;) {
       const auto want = static_cast<uint32_t>(std::min<size_t>(kPropInstanceChunk, count - base));
-      const uint32_t chunk = bgfx::getAvailInstanceDataBuffer(want, stride);
-      if (!chunk) break;
+      if (!bgfx::getAvailInstanceDataBuffer(want, stride)) break;
       bgfx::InstanceDataBuffer idb;
-      bgfx::allocInstanceDataBuffer(&idb, chunk, stride);
+      // Another encoder may allocate in between (#270): use what was granted.
+      bgfx::allocInstanceDataBuffer(&idb, want, stride);
+      const uint32_t chunk = idb.num;
+      if (!chunk) break;
       auto* dst = reinterpret_cast<PropInstance*>(idb.data);
       for (uint32_t i = 0; i < chunk; ++i) {
         const auto& placement = placements[base + i];
@@ -863,11 +876,11 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
       }
       set_uniform(u_mesh_base_uv_, base_xf);
       set_uniform(u_mesh_mix_uv_, mix_xf);
-      bgfx::setUniform(u_alpha_test_, settings);
-      bgfx::setUniform(u_color_, color_uniform);
-      bgfx::setTransform(identity);
-      bgfx::setVertexBuffer(0, part.vbh);
-      bgfx::setIndexBuffer(part.ibh, first, index_count);
+      enc()->setUniform(u_alpha_test_, settings);
+      enc()->setUniform(u_color_, color_uniform);
+      enc()->setTransform(identity);
+      enc()->setVertexBuffer(0, part.vbh);
+      enc()->setIndexBuffer(part.ibh, first, index_count);
       set_texture(0, s_tex_, tex, world_sampler());
       bind_baked_light(group, &part.tex, mix, world_mesh, scene_light ? &lighting : nullptr,
                        nullptr);
@@ -881,8 +894,8 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
         set_uniform(u_lightmap_uv_, transform);
         set_texture(1, s_lightmap_, mask);
       }
-      bgfx::setState(state);
-      bgfx::setInstanceDataBuffer(&idb);
+      enc()->setState(state);
+      enc()->setInstanceDataBuffer(&idb);
       submit_bound(view_id, inst_program_, index_count);
       base += chunk;
     }
@@ -896,7 +909,9 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
 
 void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                        const std::vector<SceneBatch>& batches,
-                                       bool shadow, bool conservative, bool reversed_depth) {
+                                       bool shadow, bool conservative, bool reversed_depth,
+                                       int shadow_local) {
+  const bool local = shadow_local < 0 ? static_shadow_local_ : shadow_local != 0;
   const auto program = shadow ? inst_shadow_program_ : inst_program_;
   if (!bgfx::isValid(program) || batches.empty()) return;
   BindingScope binding(*this, view_id);
@@ -908,14 +923,36 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
     float color[4];
   };
   static_assert(sizeof(PropInstance) == 80);
-  for (const auto& batch : batches) {
-    if (batch.instances.empty() || !batch.geometry) continue;
+  const auto drawable = [&](const SceneBatch& batch) -> const ScenePart* {
+    if (batch.instances.empty() || !batch.geometry) return nullptr;
     const auto found = instance_meshes_.find(batch.geometry.get());
-    if (found == instance_meshes_.end()) continue;
+    if (found == instance_meshes_.end()) return nullptr;
     const auto& part = found->second;
-    if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh)) continue;
+    if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh)) return nullptr;
+    if (shadow && part.shadow_groups.empty()) return nullptr;
+    return &part;
+  };
+  // One transient allocation for the whole list (#270): bgfx takes its
+  // resource lock per allocation, and the worker encoders allocate too.
+  const auto stride = static_cast<uint16_t>(sizeof(PropInstance));
+  size_t total = 0;
+  for (const auto& batch : batches)
+    if (drawable(batch)) total += batch.instances.size();
+  if (!total) return;
+  bgfx::InstanceDataBuffer idb;
+  {
+    const uint32_t want = bgfx::getAvailInstanceDataBuffer(uint32_t(std::min<size_t>(total, UINT32_MAX)), stride);
+    if (!want) return;
+    // Another encoder may allocate in between: use what was granted.
+    bgfx::allocInstanceDataBuffer(&idb, want, stride);
+    if (!idb.num) return;
+  }
+  uint32_t cursor = 0;
+  for (const auto& batch : batches) {
+    const ScenePart* found_part = drawable(batch);
+    if (!found_part) continue;
+    const auto& part = *found_part;
     const auto& groups = shadow ? part.shadow_groups : part.geo.groups;
-    if(shadow && groups.empty()) continue;
     const uint32_t group_count = groups.empty() ? 1u : static_cast<uint32_t>(groups.size());
     for (size_t base = 0; base < batch.instances.size();) {
       // One submit per group for up to kPropInstanceChunk placements (#262).
@@ -923,16 +960,15 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
       // by default, 80 bytes per placement), whatever the chunk size: a
       // larger chunk only means fewer submits and fewer stride paddings.
       const auto want = static_cast<uint32_t>(std::min<size_t>(kPropInstanceChunk, batch.instances.size() - base));
-      const auto stride = static_cast<uint16_t>(sizeof(PropInstance));
-      const uint32_t count = bgfx::getAvailInstanceDataBuffer(want, stride);
+      const uint32_t count = std::min(want, idb.num - cursor);
       if (!count) break;
-      bgfx::InstanceDataBuffer idb;
-      bgfx::allocInstanceDataBuffer(&idb, count, stride);
-      auto* dst = reinterpret_cast<PropInstance*>(idb.data);
+      auto* dst = reinterpret_cast<PropInstance*>(idb.data) + cursor;
+      const uint32_t first_instance = cursor;
+      cursor += count;
       for (uint32_t i = 0; i < count; ++i) {
         const auto& src = batch.instances[base + i];
         std::memcpy(dst[i].matrix, src.transform.data(), sizeof(dst[i].matrix));
-        if(shadow && !static_shadow_local_)
+        if(shadow && !local)
           for(int axis=0;axis<3;++axis) dst[i].matrix[12+axis]-=shadow_origin_[axis];
         dst[i].color[0] = ((src.color >> 16) & 255) / 255.f;
         dst[i].color[1] = ((src.color >> 8) & 255) / 255.f;
@@ -961,13 +997,13 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                    group ? static_cast<float>(group->base_map.channel) : 0.f, 0.f};
           set_uniform(u_static_shadow_params_, params);
           set_texture(0, s_tex_, tex);
-          bgfx::setTransform(identity);
-          bgfx::setVertexBuffer(0, part.vbh);
-          bgfx::setIndexBuffer(part.ibh, first, index_count);
+          enc()->setTransform(identity);
+          enc()->setVertexBuffer(0, part.vbh);
+          enc()->setIndexBuffer(part.ibh, first, index_count);
           // Like a single caster in update_static_shadow: both faces cast.
           uint64_t state = BGFX_STATE_WRITE_Z | (reversed_depth ? BGFX_STATE_DEPTH_TEST_GREATER : BGFX_STATE_DEPTH_TEST_LESS);
           if (conservative) state |= BGFX_STATE_CONSERVATIVE_RASTER;
-          bgfx::setState(state);
+          enc()->setState(state);
         } else {
           const float alpha_test = !cut ? 0.f : v4 && group
               ? -(1.f + group->alpha_reference) / 255.f : 1.f;
@@ -991,16 +1027,16 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           const float mix_xf[4] = {mix_uv.scale_u, mix_uv.scale_v, mix_uv.offset_u, mix_uv.offset_v};
           set_uniform(u_mesh_base_uv_, base_xf);
           set_uniform(u_mesh_mix_uv_, mix_xf);
-          bgfx::setUniform(u_alpha_test_, settings);
+          enc()->setUniform(u_alpha_test_, settings);
           // The placement colour comes per instance; ColorMixTex multiplies
           // it by the section diffuse in fs_mesh, like draw_instance's tint.
           const float mix_tint[4] = {group && material_mix ? group->diffuse[0] : 1.f,
                                      group && material_mix ? group->diffuse[1] : 1.f,
                                      group && material_mix ? group->diffuse[2] : 1.f, 1.f};
-          bgfx::setUniform(u_color_, material_mix ? mix_tint : white);
-          bgfx::setTransform(identity);
-          bgfx::setVertexBuffer(0, part.vbh);
-          bgfx::setIndexBuffer(part.ibh, first, index_count);
+          enc()->setUniform(u_color_, material_mix ? mix_tint : white);
+          enc()->setTransform(identity);
+          enc()->setVertexBuffer(0, part.vbh);
+          enc()->setIndexBuffer(part.ibh, first, index_count);
           set_texture(0, s_tex_, tex, world_sampler());
           bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
@@ -1014,9 +1050,9 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                            BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
           if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;
           if (!(flags & 0x02000000u)) state |= BGFX_STATE_CULL_CW;
-          bgfx::setState(state);
+          enc()->setState(state);
         }
-        bgfx::setInstanceDataBuffer(&idb);
+        enc()->setInstanceDataBuffer(&idb, first_instance, count);
         submit_bound(view_id, program, index_count);
       }
       base += count;
