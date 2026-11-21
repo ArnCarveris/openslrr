@@ -1318,6 +1318,113 @@ struct SceneShadowRegression {
   // front of the camera), a parented car-like subtree of 30 cars.rpk renders
   // whose nodes carry a paint texture id, and the same subtree in an inset
   // script viewport preview.
+  // #275: Nevada Desert (MW_Mod's Nevada_Track starts maps\ROC_track.rpk) at
+  // noon, the full daytime pipeline (sun passes, GTAO High 3 m). The terrain
+  // POLY carries baked per-vertex light (grey, mostly 0 or 1); multiplied into
+  // the texture under our own sun it turned the sunlit mountains black.
+  static void desert_capture(LibBgfxBackend& b) {
+    Fixture f;
+    const auto game=fs::absolute("game");
+    f.vm.set_game_root(game.string());f.packs.set_root(game.string());f.packs.open_all();
+    scene_instances_set_resources(&f.packs);
+    const auto pack=f.packs.open_lib("maps/ROC_track.rpk");
+    const auto ground_id=RpkIndex::make_full_id(pack,1);
+    Object* root=f.vm.new_object("java.util.resource.GroundRef");
+    gameref_upsert(root,GameRefKind::GroundRef)->type_id=static_cast<int32_t>(ground_id);
+    gameref_get(root)->flags|=kWorldTreeRoot;
+    spawn_ground_shell(f.vm,f.packs,root);
+    scene_instances_select(root,nullptr,false,SceneEnvironment::Exterior);
+    float frame_matrix[16];
+    SLRR_REQUIRE(scene_instances_ground_frame(root,frame_matrix));
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.car_depth_active_=false;b.fixture_shadow_active_=false;
+    b.point_light_.reset();b.local_light_={};b.fixture_lights_.clear();
+    scene_sun_set_time(13.5f*3600.f);
+    constexpr uint16_t width=1280,height=720;
+    const int32_t saved_width=b.width_,saved_height=b.height_;b.width_=width;b.height_=height;
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    const uint16_t view_id=5;b.set_view_sequential(view_id);
+    std::printf("DESERT start %.1f %.1f %.1f\n",frame_matrix[12],frame_matrix[13],frame_matrix[14]);
+    const auto frame_at=[&](float yaw,bool ao,bool shadows) {
+      const bx::Vec3 eye{frame_matrix[12],frame_matrix[13]+3.f,-frame_matrix[14]};
+      float view[16],projection[16],render[16];
+      bx::mtxLookAt(view,eye,bx::add(eye,bx::Vec3{std::cos(yaw),.05f,std::sin(yaw)}));
+      bx::mtxProj(projection,60.f,float(width)/height,.1f,5000.f,bgfx::getCaps()->homogeneousDepth);
+      std::copy(projection,projection+16,render);
+      for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+      host_enhanced_graphics().ao_method=ao?2:0;host_enhanced_graphics().ao_quality=2;
+      host_enhanced_graphics().ao_radius=300;host_enhanced_graphics().ao_strength=100;
+      b.debug_overlay_.render_options().map_shadows=shadows;
+      std::vector<uint8_t> image(size_t(width)*height*4);
+      for(int frame=0;frame<4;++frame) {
+        ++b.frames_;
+        scene_instances_frame_cache(true);
+        b.sync_instances(view,projection);
+        b.update_local_light();
+        VideoOptions video;video.shadows=2;
+        const float script_eye[3]={eye.x,eye.y,-eye.z};
+        b.update_static_shadow(script_eye,video);
+        b.update_ambient_occlusion(view,projection,width,height,view_id);
+        b.draw_previews();
+        bgfx::setViewFrameBuffer(view_id,fb);bgfx::setViewRect(view_id,0,0,width,height);
+        bgfx::setViewClear(view_id,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0x8090a0ff),0.f);
+        bgfx::setViewTransform(view_id,view,render);
+        b.draw_sky(view_id,view,render);
+        b.draw_dynamic_world(view_id);
+        scene_instances_frame_cache(false);
+        bgfx::TextureRegion dst,src;
+        if(frame==3){dst.init(readback);src.init(color);bgfx::blit(100,dst,src);}
+        bgfx::frame();
+        if(frame==3) {const auto ready=bgfx::read(dst,image.data());for(int i=0;i<16&&bgfx::frame()<ready;++i){}}
+      }
+      return image;
+    };
+    {
+      // Heading 1 faces the start gantry and the mountains behind it.
+      const auto image=frame_at(1.5707963f,true,true);
+      // The terrain mesh and its baked vertex light.
+      size_t dark_vertices=0,rock_vertices=0;
+      for(const auto& inst:b.instances_) {
+        const auto& g=*inst.geometry;
+        if(!g.ground_polygons) continue;
+        for(const auto& group:g.groups)
+          if(group.texture_index<g.textures.size()&&fs::path(g.textures[group.texture_index]).filename()=="sziklafal2.dds")
+            for(uint32_t k=group.index_start;k<group.index_start+group.index_count;++k) {
+              ++rock_vertices;dark_vertices+=(g.vertex_colors[g.indices[k]]&0xffu)<26;
+            }
+      }
+      size_t dark=0,pixels=0;double sum=0;
+      for(int y=310;y<360;++y) for(int x=600;x<1150;++x) {
+        const uint8_t* px=&image[(size_t(y)*width+x)*4];
+        const double lum=0.2126*px[0]+0.7152*px[1]+0.0722*px[2];
+        dark+=lum<40.0;sum+=lum;++pixels;
+      }
+      std::printf("DESERT noon mountains: %zu of %zu rock vertex colours under 0.1; mountain band %.1f %% under luminance 40, mean %.1f\n",
+                  dark_vertices,rock_vertices,100.0*double(dark)/double(pixels),sum/double(pixels));
+      SLRR_REQUIRE(rock_vertices>1000&&dark_vertices*5>rock_vertices);  // the data still bakes dark vertices
+      // Before #275: 72 % of the band under 40 (mean 54).
+      SLRR_REQUIRE(dark*5<pixels);
+    }
+    b.debug_overlay_.render_options().map_shadows=true;
+    bgfx::setViewMode(view_id,bgfx::ViewMode::Default);b.sequential_views_.reset(view_id);
+    bgfx::setViewOrder();
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.static_shadow_active_=false;b.shadow_cascades_active_=false;b.shadow_cache_valid_=false;b.ao_active_=false;
+    b.width_=saved_width;b.height_=saved_height;
+    b.scenery_lamps_.clear();b.instances_.clear();b.prop_batches_.clear();b.night_batches_.clear();b.outdoor_lighting_=false;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    for(auto* child:std::vector<void*>(gameref_get(root)->children)) gameref_remove(child);
+    gameref_remove(root);scene_instances_set_resources(nullptr);
+    std::puts("PASS desert mountains lit by the sun, not by baked vertex light");
+  }
   // #271: `day` renders the crowd street at noon with the sun shadow passes
   // (update_static_shadow: cascades, map and walker casters) before the world.
   static void city_submission(LibBgfxBackend& b, uint16_t width, uint16_t height, bool crowd=false,
@@ -3323,6 +3430,7 @@ int main() {
     SceneShadowRegression::per_view_light_uniforms(backend);
     SceneShadowRegression::city_submission(backend,640,360);
     SceneShadowRegression::city_submission(backend,2560,1440);
+    SceneShadowRegression::desert_capture(backend);
     SceneShadowRegression::city_submission(backend,2560,1440,true);
     SceneShadowRegression::city_submission(backend,1280,720,true,true);
     backend.close();

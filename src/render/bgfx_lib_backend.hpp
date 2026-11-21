@@ -238,6 +238,15 @@ class LibBgfxBackend final : public IRenderBackend {
     uint32_t flags = 0;
   };
   static constexpr size_t kTextureStages = 16;
+  // Ground POLY vertex colours are baked light (#275): grey, mostly 0 or 1,
+  // darker on slopes away from the original's sun. Outdoors without dynamic
+  // lighting they are the scene's light (fs_mesh multiplies them in). Under
+  // the dynamic sun they would light the terrain twice and leave the baked
+  // dark areas black whatever the sun does, so the sun and its shadows
+  // replace them.
+  bool baked_vertex_light(bool ground_polygons) const {
+    return ground_polygons && outdoor_lighting_ && !host_enhanced_graphics().dynamic_lighting;
+  }
   // Below this night factor street lamps do not light (#271), and below the
   // second they cast no shadow tile.
   static constexpr float kLampNightMin = .01f;
