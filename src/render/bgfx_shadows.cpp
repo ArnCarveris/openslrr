@@ -108,7 +108,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
       stamps == fixture_shadow_casters_)
     return;
   const float no_apertures[4]{};
-  bgfx::setUniform(u_aperture_params_, no_apertures);
+  enc()->setUniform(u_aperture_params_, no_apertures);
   for (size_t i = 0; i < fixture_lights_.size(); ++i) {
     const uint16_t view = uint16_t(128 + i);
     bgfx::setViewFrameBuffer(view, fixture_shadow_fb_);
@@ -116,7 +116,7 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
                       tile, tile);
     bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, 0, 1.f);
     bgfx::setViewTransform(view, views[i].data(), projections[i].data());
-    bgfx::touch(view);
+    enc()->touch(view);
     const auto frustum = view_frustum(views[i].data(), projections[i].data());
     for (const auto &stamp : stamps) {
       const auto &part = instance_meshes_.at(stamp.source);
@@ -133,14 +133,14 @@ void LibBgfxBackend::update_fixture_shadows(const VideoOptions &video) {
                                  0};
         const auto slot = group.texture_index;
         set_uniform(u_static_shadow_params_, params);
-        bgfx::setTexture(0, s_tex_,
+        enc()->setTexture(0, s_tex_,
                          slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                              ? part.tex[slot]
                              : white_tex_);
-        bgfx::setVertexBuffer(0, part.vbh);
-        bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-        bgfx::setTransform(stamp.transform.data());
-        bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+        enc()->setVertexBuffer(0, part.vbh);
+        enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+        enc()->setTransform(stamp.transform.data());
+        enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
         submit_counted(view, static_shadow_program_);
       }
     }
@@ -381,23 +381,23 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
       set_uniform(u_static_shadow_params_, params);
       const auto slot = group.texture_index;
-      bgfx::setTexture(0, s_tex_, slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+      enc()->setTexture(0, s_tex_, slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                                       ? part.tex[slot] : white_tex_);
-      bgfx::setTransform(transform.data());
+      enc()->setTransform(transform.data());
       if (skinned) {
-        bgfx::setUniform(u_skin_bones_, skinned->skin.data(), 48);
-        bgfx::setVertexBuffer(0, part.skin_vbh);
+        enc()->setUniform(u_skin_bones_, skinned->skin.data(), 48);
+        enc()->setVertexBuffer(0, part.skin_vbh);
       } else {
-        bgfx::setVertexBuffer(0, part.vbh);
+        enc()->setVertexBuffer(0, part.vbh);
       }
-      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+      enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+      enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                      (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
       submit_counted(view, skinned ? ao_skin_depth_program_ : static_shadow_program_);
     }
   };
   const float no_apertures[4]{};
-  bgfx::setUniform(u_aperture_params_, no_apertures);
+  enc()->setUniform(u_aperture_params_, no_apertures);
   // Car tiles: every lamp whose light reaches the cover sphere around the
   // followed car, nearest first, up to kCarShadowTiles. Strength fades over
   // kCarShadowFade metres before the reach (or the first lamp past the
@@ -493,7 +493,10 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
       float identity[16];
       bx::mtxIdentity(identity);
       bgfx::setViewTransform(kCarShadowView, identity, identity);
-      bgfx::touch(kCarShadowView);
+      // The tile draws are one job (#270): it may run on a worker encoder.
+      const bool bottom_left = caps->originBottomLeft;
+      queue_or_run([this, cars, tile, half, conservative, bottom_left] {
+      enc()->touch(kCarShadowView);
       for (size_t k = 0; k < car_shadow_tiles_.size(); ++k) {
         const auto &tile_info = car_shadow_tiles_[k];
         const int column = int(k % 8), row = int(k / 8);
@@ -503,7 +506,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
         remap[0] = .125f;
         remap[12] = -1.f + .125f + .25f * float(column);
         remap[5] = .5f;
-        remap[13] = caps->originBottomLeft ? -.5f + float(row) : .5f - float(row);
+        remap[13] = bottom_left ? -.5f + float(row) : .5f - float(row);
         float view_proj[16], to_tile[16];
         bx::mtxMul(view_proj, tile_info.view.data(), tile_info.proj.data());
         bx::mtxMul(to_tile, view_proj, remap);
@@ -516,17 +519,18 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
             if (surface.blend) continue;
             const float params[4] = {0, -1.f, 0, 0};
             set_uniform(u_static_shadow_params_, params);
-            bgfx::setTexture(0, s_tex_, white_tex_);
-            bgfx::setTransform(model);
-            bgfx::setVertexBuffer(0, part.vbh);
-            bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-            bgfx::setScissor(uint16_t(column * half), uint16_t(2 * tile + row * half), half, half);
-            bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+            enc()->setTexture(0, s_tex_, white_tex_);
+            enc()->setTransform(model);
+            enc()->setVertexBuffer(0, part.vbh);
+            enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+            enc()->setScissor(uint16_t(column * half), uint16_t(2 * tile + row * half), half, half);
+            enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                            (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
             submit_counted(kCarShadowView, static_shadow_program_);
           }
         }
       }
+      });
       car_shadow_stamps_ = std::move(stamps);
       car_shadow_valid_ = true;
       ++car_shadow_redraws_;
@@ -585,7 +589,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     bgfx::setViewRect(view_id, uint16_t(s % 4 * tile), uint16_t(s / 4 * tile), tile, tile);
     bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f);
     bgfx::setViewTransform(view_id, view, proj);
-    bgfx::touch(view_id);
+    enc()->touch(view_id);
     for (const auto &instance : slot.statics) {
       const auto found = instance_meshes_.find(instance.geometry.get());
       if (found == instance_meshes_.end() || !bgfx::isValid(found->second.vbh) ||
@@ -837,7 +841,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
   bgfx::setViewTransform(view, projection.view.data(),
                          projection.projection.data());
-  bgfx::touch(view);
+  enc()->touch(view);
   std::array<std::array<float, 16>, 32> matrices{};
   std::array<std::array<float, 4>, 32> uvs{}, edges{};
   for (size_t i = 0; i < apertures.size(); ++i) {
@@ -867,33 +871,33 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
                                   : .5f;
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
       set_uniform(u_static_shadow_params_, params);
-      bgfx::setUniform(u_aperture_params_, aperture_params);
+      enc()->setUniform(u_aperture_params_, aperture_params);
       if (part.geo.ground_polygons) {
-        bgfx::setUniform(u_aperture_matrices_, matrices.data(),
+        enc()->setUniform(u_aperture_matrices_, matrices.data(),
                          uint16_t(apertures.size()));
-        bgfx::setUniform(u_aperture_uv_, uvs.data(),
+        enc()->setUniform(u_aperture_uv_, uvs.data(),
                          uint16_t(apertures.size()));
-        bgfx::setUniform(u_aperture_edge_, edges.data(),
+        enc()->setUniform(u_aperture_edge_, edges.data(),
                          uint16_t(apertures.size()));
       }
-      bgfx::setTexture(1, s_aperture_, window_texture,
+      enc()->setTexture(1, s_aperture_, window_texture,
                        BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
       const auto slot = group.texture_index;
-      bgfx::setTexture(0, s_tex_,
+      enc()->setTexture(0, s_tex_,
                        window ? window_texture
                        : surface.blend ? white_tex_
                        : slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                            ? part.tex[slot]
                            : white_tex_);
-      bgfx::setTransform(stamp.transform.data());
-      bgfx::setVertexBuffer(0, part.vbh);
-      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+      enc()->setTransform(stamp.transform.data());
+      enc()->setVertexBuffer(0, part.vbh);
+      enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+      enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
       submit_counted(view, static_shadow_program_);
     }
   }
   const float none[4]{};
-  bgfx::setUniform(u_aperture_params_, none);
+  enc()->setUniform(u_aperture_params_, none);
   // Only authored apertures may admit direct sunlight into this interior.
   // Store their light-space depth as well as transmission, so a window
   // behind the receiver cannot illuminate it. The regular depth field still
@@ -902,7 +906,7 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   bgfx::setViewRect(66,0,0,size,size);
   bgfx::setViewClear(66,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0),1.f);
   bgfx::setViewTransform(66,projection.view.data(),projection.projection.data());
-  bgfx::touch(66);
+  enc()->touch(66);
   for(const auto& stamp:stamps) {
     const auto& part=instance_meshes_.at(stamp.source);
     for(const auto& group:part.geo.groups) {
@@ -913,16 +917,16 @@ void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
       const float mode[4]={0,4,0,0};
       const auto& uv=group.base_map;
       const float transform[4]={uv.scale_u,uv.scale_v,uv.offset_u,uv.offset_v};
-      bgfx::setUniform(u_alpha_test_,mode);
+      enc()->setUniform(u_alpha_test_,mode);
       set_uniform(u_mesh_base_uv_,transform);
-      bgfx::setTexture(0,s_tex_,window_texture);
-      bgfx::setTransform(stamp.transform.data());
-      bgfx::setVertexBuffer(0,part.vbh);bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
-      bgfx::setState(BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
+      enc()->setTexture(0,s_tex_,window_texture);
+      enc()->setTransform(stamp.transform.data());
+      enc()->setVertexBuffer(0,part.vbh);enc()->setIndexBuffer(part.ibh,group.index_start,group.index_count);
+      enc()->setState(BGFX_STATE_WRITE_RGB|BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS);
       submit_counted(66,program_);
     }
   }
-  const float reset_mode[4]{};bgfx::setUniform(u_alpha_test_,reset_mode);
+  const float reset_mode[4]{};enc()->setUniform(u_alpha_test_,reset_mode);
   interior_sun_mask_ = window_texture.idx;
   interior_sun_casters_ = std::move(stamps);
   interior_sun_cached_matrix_ = interior_sun_matrix_;
@@ -941,7 +945,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   perf::Scope perf_scope(perf::Zone::Shadows);
   perf::Scope detail_scope(perf::Zone::SunShadows);
   const float no_apertures[4]{};
-  bgfx::setUniform(u_aperture_params_, no_apertures);
+  enc()->setUniform(u_aperture_params_, no_apertures);
   static_shadow_active_ = false;
   static_shadow_local_ = false;
   shadow_cascades_active_ = false;
@@ -1018,7 +1022,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
       bgfx::setViewClear(view, BGFX_CLEAR_DEPTH, uint32_t(0), 1.f, 0);
       bgfx::setViewTransform(view, projection.view.data(),
                              projection.projection.data());
-      bgfx::touch(view);
+      enc()->touch(view);
       for (const auto *instance : casters) {
         auto matrix = instance->transform;
         for (int axis = 0; axis < 3; ++axis)
@@ -1042,11 +1046,11 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           const float params[4] = {0, threshold, float(group.base_map.channel),
                                    0};
           set_uniform(u_static_shadow_params_, params);
-          bgfx::setTexture(0, s_tex_, texture);
-          bgfx::setTransform(matrix.data());
-          bgfx::setVertexBuffer(0, part.vbh);
-          bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-          bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+          enc()->setTexture(0, s_tex_, texture);
+          enc()->setTransform(matrix.data());
+          enc()->setVertexBuffer(0, part.vbh);
+          enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+          enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
           submit_counted(view, static_shadow_program_);
         }
       }
@@ -1195,7 +1199,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
     bgfx::setViewTransform(view_id, projection.view.data(),
                            projection.projection.data());
-    bgfx::touch(view_id);
+    enc()->touch(view_id);
     // Debug toggle (#243): an off cascade stays cleared (fully lit).
     if (!render_debug().sun_cascades[cascade]) continue;
     for (const auto &instance : casters) {
@@ -1231,17 +1235,17 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
         const float params[4] = {
             0.f, threshold, static_cast<float>(group.base_map.channel), 0.f};
         set_uniform(u_static_shadow_params_, params);
-        bgfx::setTexture(0, s_tex_, tex);
+        enc()->setTexture(0, s_tex_, tex);
         auto relative=instance.transform;
         for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
-        bgfx::setTransform(relative.data());
-        bgfx::setVertexBuffer(0, part.vbh);
-        bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+        enc()->setTransform(relative.data());
+        enc()->setVertexBuffer(0, part.vbh);
+        enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
         // Preserve narrow casters that overlap a texel without covering its
         // centre.
         const uint64_t coverage =
             conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0;
-        bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+        enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                        coverage);
         submit_counted(view_id, static_shadow_program_);
       }
@@ -1271,13 +1275,13 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           const float params[4]={0.f,threshold,static_cast<float>(group.base_map.channel),0.f};
           set_uniform(u_static_shadow_params_,params);
           const auto slot=group.texture_index;
-          bgfx::setTexture(0,s_tex_,slot<part.tex.size() && bgfx::isValid(part.tex[slot])
+          enc()->setTexture(0,s_tex_,slot<part.tex.size() && bgfx::isValid(part.tex[slot])
                                         ? part.tex[slot] : white_tex_);
-          bgfx::setTransform(relative.data());
-          bgfx::setUniform(u_skin_bones_,instance->skin.data(),48);
-          bgfx::setVertexBuffer(0,part.skin_vbh);
-          bgfx::setIndexBuffer(part.ibh,group.index_start,group.index_count);
-          bgfx::setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS|
+          enc()->setTransform(relative.data());
+          enc()->setUniform(u_skin_bones_,instance->skin.data(),48);
+          enc()->setVertexBuffer(0,part.skin_vbh);
+          enc()->setIndexBuffer(part.ibh,group.index_start,group.index_count);
+          enc()->setState(BGFX_STATE_WRITE_Z|BGFX_STATE_DEPTH_TEST_LESS|
                          (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
           submit_counted(view_id,ao_skin_depth_program_);
         }
@@ -1340,7 +1344,7 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
   bgfx::setViewRect(id, 0, 0, size, size);
   bgfx::setViewClear(id, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
   bgfx::setViewTransform(id, view, proj);
-  bgfx::touch(id);
+  enc()->touch(id);
 
   for (const auto& instance : instances_) {
     if (!instance.vehicle_material || instance.light_flags) continue;
@@ -1352,11 +1356,11 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
       if ((group.material_flags & 0x40000000u) || group.diffuse[3] < .99f) continue;
       const float opaque[4] = {0.f, -1.f, 0.f, 0.f};
       set_uniform(u_static_shadow_params_, opaque);
-      bgfx::setTexture(0, s_tex_, white_tex_);
-      bgfx::setTransform(instance.transform.data());
-      bgfx::setVertexBuffer(0, part.vbh);
-      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
+      enc()->setTexture(0, s_tex_, white_tex_);
+      enc()->setTransform(instance.transform.data());
+      enc()->setVertexBuffer(0, part.vbh);
+      enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+      enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS);
       submit_counted(id, static_shadow_program_);
     }
   }

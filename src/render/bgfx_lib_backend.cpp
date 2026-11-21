@@ -35,8 +35,10 @@
 #include <bx/math.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <future>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -178,7 +180,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     if (!bgfx::isValid(program_)) {
       std::fprintf(stderr, "[bgfx] mesh program creation failed for renderer %d\n",
                    static_cast<int>(rt));
-      bgfx::shutdown();
+      { bgfx::shutdown(); host_encoder_ = nullptr; }
       return false;
     }
     text_program_ = create_owned_program(
@@ -319,7 +321,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_mesh_base_uv_ = bgfx::createUniform("u_meshBaseUv", bgfx::UniformType::Vec4);
     u_mesh_mix_uv_ = bgfx::createUniform("u_meshMixUv", bgfx::UniformType::Vec4);
     const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
-    bgfx::setUniform(u_color_, white_c);
+    enc()->setUniform(u_color_, white_c);
 
     bgfx::setViewClear(kWorldView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
                        0x1c1814ff, 0.f, 0);
@@ -485,7 +487,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     fmv_tex_ = BGFX_INVALID_HANDLE;
     fmv_tex_w_ = fmv_tex_h_ = 0;
     fmv_tex_serial_ = 0;
-    if (ready_) bgfx::shutdown();
+    if (ready_) { bgfx::shutdown(); host_encoder_ = nullptr; }
 #ifdef _WIN32
     if (hwnd_) {
       DestroyWindow(hwnd_);
@@ -785,10 +787,14 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     }
     bgfx::setViewTransform(world_view, view, render_proj);
     set_view_sequential(world_view);
-    bgfx::touch(world_view);
+    enc()->touch(world_view);
 
     // Menu/Splash: no garage SCX — stock MainMenu uses FMV or Dummy scene.
     if (!covered) {
+      // Worker encoders (#270): the AO prepass, car lamp tiles and reflection
+      // faces queue their draws and run beside the world submission.
+      resolved_textures_.clear();
+      defer_submits_ = parallel_submission_ready();
       update_local_light();
       update_static_shadow(world_cam ? world_eye : nullptr, video);
       {
@@ -864,12 +870,18 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
         }
       }
       update_reflections(capture_position);
-      if (world_cam && (outdoor_lighting_ ||
-          std::any_of(instances_.begin(), instances_.end(),
-                      [](const SceneInstance& instance) { return instance.sky; })))
-        draw_sky(world_view, view, render_proj);
-      draw_dynamic_world(world_view);
-      if (garage_ && !parts_.empty()) draw_scene(world_view);
+      // Every light is final: upload the light data texture before any
+      // encoder binds it (#270).
+      upload_light_data();
+      defer_submits_ = false;
+      run_worker_submits([&] {
+        if (world_cam && (outdoor_lighting_ ||
+            std::any_of(instances_.begin(), instances_.end(),
+                        [](const SceneInstance& instance) { return instance.sky; })))
+          draw_sky(world_view, view, render_proj);
+        draw_dynamic_world(world_view);
+        if (garage_ && !parts_.empty()) draw_scene(world_view);
+      });
 
       if (debug_render.sun_flare && video.flares) draw_sun_flare(view, render_proj, world_view);
     }
@@ -1632,17 +1644,30 @@ void LibBgfxBackend::update_reflections(const float* eye) {
       bgfx::setViewClear(reflection_view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x577493ff, 0.f);
       bgfx::setViewTransform(reflection_view, view, proj);
       set_view_sequential(reflection_view);
-      bgfx::touch(reflection_view);
-      if (outdoor_lighting_ || std::any_of(objects.begin(), objects.end(),
-          [](const SceneInstance& object) { return object.sky; }))
-        draw_sky(reflection_view, view, proj);
+      // The face's draws are one job (#270): collection, view setup and the
+      // blit stay on the host thread; the job may run on a worker encoder.
+      auto face_objects = std::make_shared<std::vector<SceneInstance>>(std::move(objects));
+      auto face_batches = std::make_shared<std::vector<SceneBatch>>();
+      scene_instances_collect_batches(&frustum, *face_batches, reflection_origin_.data());
+      if (defer_submits_) snapshot_textures(*face_objects);
+      const bool face_sky = outdoor_lighting_ || std::any_of(face_objects->begin(), face_objects->end(),
+          [](const SceneInstance& object) { return object.sky; });
+      std::array<float, 16> face_view, face_proj;
+      std::copy(view, view + 16, face_view.begin());
+      std::copy(proj, proj + 16, face_proj.begin());
+      const std::array<float, 3> face_origin = reflection_origin_;
+      queue_or_run([this, reflection_view, face_objects, face_batches, face_sky, face_view,
+                    face_proj, face_origin] {
+      enc()->touch(reflection_view);
+      if (face_sky)
+        draw_sky(reflection_view, face_view.data(), face_proj.data());
       // The garage shell is preloaded SCX geometry outside the instance list.
       // Without it the paint and glass mirror the clear colour, not the room.
       if (garage_ && !parts_.empty()) draw_scene(reflection_view);
-      const float origin_x = reflection_origin_[0];
-      const float origin_y = reflection_origin_[1];
-      const float origin_z = reflection_origin_[2];
-      for (const auto& object : objects) {
+      const float origin_x = face_origin[0];
+      const float origin_y = face_origin[1];
+      const float origin_z = face_origin[2];
+      for (const auto& object : *face_objects) {
         if (!reflection_capture_visible(object) ||
             (object.gpu_skin && object.skin.empty()) ||
             !instance_meshes_.contains(object.geometry.get()))
@@ -1660,9 +1685,8 @@ void LibBgfxBackend::update_reflections(const float* eye) {
         if (dist > 12.f && extent > 0.f && extent / dist * 128.f < 4.f) continue;
         draw_instance(reflection_view, object, object.transform.data(), false, 0);
       }
-      std::vector<SceneBatch> reflection_batches;
-      scene_instances_collect_batches(&frustum, reflection_batches, reflection_origin_.data());
-      draw_prop_batches(reflection_view, reflection_batches, false);
+      draw_prop_batches(reflection_view, *face_batches, false);
+      });
       // Blits run before draws within a view, so copy in the following view
       // before the next face clears the shared 2D target.
       bgfx::TextureRegion source, destination;
@@ -1675,11 +1699,87 @@ void LibBgfxBackend::update_reflections(const float* eye) {
     }
 }
 
+bgfx::TextureHandle LibBgfxBackend::resolve_texture(const std::string& path) {
+  if (!parallel_window_) return tex_for_osd_icon(path);
+  const auto found = resolved_textures_.find(path);
+  return found != resolved_textures_.end() ? found->second : white_tex_;
+}
+
+void LibBgfxBackend::snapshot_textures(const std::vector<SceneInstance>& list) {
+  for (const auto& instance : list) {
+    for (const auto& [slot, path] : instance.texture_replacements)
+      if (!path.empty() && !resolved_textures_.contains(path))
+        resolved_textures_.emplace(path, tex_for_osd_icon(path));
+    if (!instance.paint_texture.empty() && !resolved_textures_.contains(instance.paint_texture))
+      resolved_textures_.emplace(instance.paint_texture, tex_for_osd_icon(instance.paint_texture));
+  }
+}
+
+bool LibBgfxBackend::parallel_submission_ready() const {
+  // The host thread, a worker per pass and the bgfx render thread: below
+  // three pool threads the passes stay on the host thread.
+  return parallel_submission_ && render_debug().worker_encoders && jobs_concurrency() >= 3;
+}
+
+void LibBgfxBackend::run_worker_submits(const std::function<void()>& host_work) {
+  if (worker_jobs_.empty() || !parallel_submission_ready()) {
+    // Same order as before #270: the queued passes, then the world.
+    for (auto& job : worker_jobs_) job();
+    worker_jobs_.clear();
+    host_work();
+    return;
+  }
+  snapshot_textures(instances_);
+  const size_t count = worker_jobs_.size();
+  while (worker_binds_.size() < count) worker_binds_.push_back(std::make_unique<BindState>());
+  std::vector<char> ran(count, 0);
+  std::atomic<int64_t> worker_ticks{0};
+  parallel_window_ = true;
+  auto workers = std::async(std::launch::async, [&] {
+    jobs_parallel_for(count, [&](size_t i) {
+      auto* encoder = bgfx::begin(true);
+      if (!encoder) return;  // no free encoder: the host thread runs it after
+      const int64_t start = perf::now_ticks();
+      t_encoder_ = encoder;
+      t_bind_ = worker_binds_[i].get();
+      perf::worker_thread() = true;
+      try {
+        worker_jobs_[i]();
+      } catch (...) {
+        perf::worker_thread() = false;
+        t_bind_ = nullptr;
+        t_encoder_ = nullptr;
+        bgfx::end(encoder);
+        throw;
+      }
+      perf::worker_thread() = false;
+      t_bind_ = nullptr;
+      t_encoder_ = nullptr;
+      bgfx::end(encoder);
+      ran[i] = 1;
+      worker_ticks += perf::now_ticks() - start;
+    });
+  });
+  host_work();
+  {
+    perf::Scope wait(perf::Zone::SubmitWait);
+    workers.get();
+  }
+  parallel_window_ = false;
+  for (size_t i = 0; i < count; ++i)
+    if (!ran[i]) worker_jobs_[i]();
+  worker_jobs_.clear();
+  ++worker_submit_runs_;
+  if (perf::enabled()) perf::add(perf::Zone::WorkerSubmit, worker_ticks.load());
+}
+
 void LibBgfxBackend::draw_sky(uint16_t view_id, const float* view, const float* projection) {
     perf::Scope perf_scope(perf::Zone::World);
     if (bgfx::getAvailTransientVertexBuffer(6, layout_) < 6) return;
     bgfx::TransientVertexBuffer vertices;
     bgfx::allocTransientVertexBuffer(&vertices, 6, layout_);
+    // Another encoder may allocate in between (#270).
+    if (vertices.size < 6u * layout_.getStride()) return;
     auto* output = reinterpret_cast<MeshVertex*>(vertices.data);
     float view_projection[16], inverse[16], camera[16], identity[16];
     bx::mtxMul(view_projection, view, projection);
@@ -1698,10 +1798,10 @@ void LibBgfxBackend::draw_sky(uint16_t view_id, const float* view, const float* 
     const float sky[4] = {camera[12], camera[13], camera[14],
                           host_enhanced_graphics().volumetric_clouds && render_debug().clouds ? 2.f : 1.f};
     bind_baked_light(nullptr, nullptr, BGFX_INVALID_HANDLE, false, &sun, sky);
-    const float sky_mode[4]={0,1,0,0};bgfx::setUniform(u_alpha_test_,sky_mode);
-    bgfx::setTransform(identity);
-    bgfx::setVertexBuffer(0, &vertices);
-    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA);
+    const float sky_mode[4]={0,1,0,0};enc()->setUniform(u_alpha_test_,sky_mode);
+    enc()->setTransform(identity);
+    enc()->setVertexBuffer(0, &vertices);
+    enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA);
     submit_counted(view_id, program_);
 }
 
@@ -2111,18 +2211,18 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
                               bgfx::TextureHandle tex, bool alpha_cutout,
                               const ScxGroup* group) {
         const float u[4] = {alpha_cutout ? 1.f : 0.f, 0.f, 0.f, 0.f};
-        bgfx::setUniform(u_alpha_test_, u);
+        enc()->setUniform(u_alpha_test_, u);
         const float white_c[4] = {1.f, 1.f, 1.f, 1.f};
-        bgfx::setUniform(u_color_, white_c);
-        bgfx::setTransform(mtx);
-        bgfx::setVertexBuffer(0, part.vbh);
-        bgfx::setIndexBuffer(part.ibh, start, count);
-        bgfx::setTexture(0, s_tex_,
+        enc()->setUniform(u_color_, white_c);
+        enc()->setTransform(mtx);
+        enc()->setVertexBuffer(0, part.vbh);
+        enc()->setIndexBuffer(part.ibh, start, count);
+        enc()->setTexture(0, s_tex_,
                          bgfx::isValid(tex) ? tex : white_tex_, world_sampler());
         const auto light = scene_instances_light();
         bind_baked_light(group, &part.tex, BGFX_INVALID_HANDLE, true,
                          host_enhanced_graphics().dynamic_lighting ? &light : nullptr);
-        bgfx::setState(alpha_cutout ? state_cutout : state_opaque);
+        enc()->setState(alpha_cutout ? state_cutout : state_opaque);
         submit_counted(view_id, program_);
       };
       // v4: always honour DDS alpha (SLRR_rev scxDiffuseUsesAlpha).

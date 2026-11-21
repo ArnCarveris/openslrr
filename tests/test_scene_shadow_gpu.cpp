@@ -1383,30 +1383,30 @@ struct SceneShadowRegression {
       throw std::runtime_error("light uniform readback timeout");
     };
     b.light_array_cache_=false;
-    auto before=b.light_array_uploads_;
+    auto before=b.main_bind_.light_array_uploads;
     const auto per_draw=capture();
-    const auto per_draw_uploads=b.light_array_uploads_-before;
+    const auto per_draw_uploads=b.main_bind_.light_array_uploads-before;
     b.light_array_cache_=true;
-    before=b.light_array_uploads_;
+    before=b.main_bind_.light_array_uploads;
     const auto per_view=capture();
-    const auto per_view_uploads=b.light_array_uploads_-before;
+    const auto per_view_uploads=b.main_bind_.light_array_uploads-before;
     unsigned lit=0;for(size_t i=0;i<per_view.size();i+=4) lit+=per_view[i]>30;
     std::printf("LIGHT UNIFORMS per-draw uploads=%llu per-view uploads=%llu lit pixels=%u, images %s\n",
                 (unsigned long long)per_draw_uploads,(unsigned long long)per_view_uploads,lit,
                 per_draw==per_view?"identical":"DIFFER");
     SLRR_REQUIRE(per_draw_uploads==4 && per_view_uploads==1 && per_draw==per_view && lit>1000);
     // Next frame: one upload again. Changed light data within a frame: another.
-    before=b.light_array_uploads_;
-    SLRR_REQUIRE(capture()==per_view && b.light_array_uploads_-before==1);
-    before=b.light_array_uploads_;
+    before=b.main_bind_.light_array_uploads;
+    SLRR_REQUIRE(capture()==per_view && b.main_bind_.light_array_uploads-before==1);
+    before=b.main_bind_.light_array_uploads;
     b.update_local_light();b.update_lamp_shadows(video);
-    b.binding_view_=view_id;
+    b.main_bind_.binding_view=view_id;
     SLRR_REQUIRE(!b.light_arrays_current());
-    b.binding_view_=UINT16_MAX;
+    b.main_bind_.binding_view=UINT16_MAX;
     // An unmarked (sorted) view uploads on every draw.
     b.sequential_views_.reset(view_id);
-    before=b.light_array_uploads_;
-    SLRR_REQUIRE(capture()==per_view && b.light_array_uploads_-before==4);
+    before=b.main_bind_.light_array_uploads;
+    SLRR_REQUIRE(capture()==per_view && b.main_bind_.light_array_uploads-before==4);
     // #250: the early-out lamp shadow path against the #237 reference loop.
     // Sharp and Soft must match closely (only the receiver gradient is
     // computed differently); Very soft uses the capped 4-tap kernel.
@@ -1606,8 +1606,11 @@ struct SceneShadowRegression {
   }
   // #271: `day` renders the crowd street at noon with the sun shadow passes
   // (update_static_shadow: cascades, map and walker casters) before the world.
+  // #270: `workers` runs the night crowd street with the passes that may go
+  // to worker encoders (AO prepass, car lamp tiles, a reflection face) queued
+  // as in a game frame, then renders it again on one thread and compares.
   static void city_submission(LibBgfxBackend& b, uint16_t width, uint16_t height, bool crowd=false,
-                              bool day=false) {
+                              bool day=false, bool workers=false) {
     Fixture f;
     const auto game=fs::absolute("game");
     f.vm.set_game_root(game.string());f.packs.set_root(game.string());f.packs.open_all();
@@ -1707,6 +1710,9 @@ struct SceneShadowRegression {
       const auto build_car=[&](void* parent,const float* at) {
         Object* chassis=f.vm.new_object("java.util.resource.RenderRef");
         auto* node=gameref_upsert(chassis,GameRefKind::RenderRef);node->script=chassis;
+        // #270 needs the car where its lamp tiles are; the older cases keep
+        // their captures (the chassis matrix was ignored there).
+        node->matrix_override=workers;
         gameref_set_parent(chassis,parent);
         float* m=node->local_matrix;std::fill(m,m+16,0.f);m[0]=m[5]=m[10]=m[15]=1.f;
         m[12]=at[0];m[13]=at[1];m[14]=at[2];
@@ -1716,7 +1722,7 @@ struct SceneShadowRegression {
           Object* part=f.vm.new_object("java.util.resource.RenderRef");
           auto* pn=gameref_upsert(part,GameRefKind::RenderRef);
           gameref_set_type(*pn,int32_t(parts[i]));
-          pn->script=part;pn->empty=false;
+          pn->script=part;pn->empty=false;pn->vehicle_material=workers;
           pn->paint_source=paint_id;pn->texture_replacements={{paint_id,paint_id}};
           gameref_set_parent(part,i%3==0?chassis:group);
           float* pm=pn->local_matrix;std::fill(pm,pm+16,0.f);pm[0]=pm[5]=pm[10]=pm[15]=1.f;
@@ -1768,7 +1774,7 @@ struct SceneShadowRegression {
     auto run=[&](bool caches,int frames,int warmup,bool cold=false) {
       b.uniform_cache_=b.texture_cache_=b.residency_cache_=caches;
       Run out;int samples=0;
-      const auto u0=b.uniform_sets_,s0=b.uniform_skips_,t0=b.texture_sets_,k0=b.texture_skips_,r0=b.residency_skips_;
+      const auto u0=b.main_bind_.uniform_sets,s0=b.main_bind_.uniform_skips,t0=b.main_bind_.texture_sets,k0=b.main_bind_.texture_skips,r0=b.residency_skips_;
       for(int frame=0;frame<frames;++frame) {
         ++b.frames_;
         // Walkers animate every frame (a fresh pose to build), yet show the
@@ -1783,6 +1789,27 @@ struct SceneShadowRegression {
         b.sync_instances(view,projection);
         const double sync=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         b.update_local_light();
+        if(workers) {
+          // The frame order of LibBgfxBackend::flush between update_local_light
+          // and the world (#270).
+          b.resolved_textures_.clear();
+          // Lamp shadow slots fade in real time; full weight at once keeps
+          // the runs comparable on a slow (pinned) machine.
+          b.lamp_shadow_dt_override_=10.f;
+          b.defer_submits_=b.parallel_submission_ready();
+          VideoOptions video;video.shadows=2;
+          const float car_script[3]={frame_matrix[12]+14.f,frame_matrix[13],frame_matrix[14]+1.5f};
+          b.set_lamp_shadow_focus(car_script);
+          b.update_lamp_shadows(video);
+          host_enhanced_graphics().ao_method=2;host_enhanced_graphics().ao_quality=2;
+          host_enhanced_graphics().ao_radius=300;host_enhanced_graphics().ao_strength=100;
+          b.update_ambient_occlusion(view,projection,width,height,view_id);
+          b.reflection_scene_=true;
+          const float probe[3]={frame_matrix[12]+14.f,frame_matrix[13]+.5f,frame_matrix[14]+1.5f};
+          b.update_reflections(probe);
+          b.upload_light_data();
+          b.defer_submits_=false;
+        }
         if(day) {
           VideoOptions video;video.shadows=2;
           const float script_eye[3]={frame_matrix[12],frame_matrix[13]+2.f,frame_matrix[14]};
@@ -1805,7 +1832,8 @@ struct SceneShadowRegression {
         bgfx::setViewTransform(view_id,view,render);
         b.view_draws_.fill(0);
         start=std::chrono::steady_clock::now();
-        b.draw_dynamic_world(view_id);
+        if(workers) b.run_worker_submits([&]{b.draw_dynamic_world(view_id);});
+        else b.draw_dynamic_world(view_id);
         if(crowd) {bgfx::setViewFrameBuffer(LibBgfxBackend::kPreview0,fb);b.draw_previews();}
         const double submit=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         out.world_draws=b.view_draws_[view_id];
@@ -1828,12 +1856,43 @@ struct SceneShadowRegression {
       }
       out.sync/=samples;out.submit/=samples;out.render/=samples;
       out.zones=perf::snapshot();
-      out.uniform_sets=(b.uniform_sets_-u0)/frames;out.uniform_skips=(b.uniform_skips_-s0)/frames;
-      out.texture_sets=(b.texture_sets_-t0)/frames;out.texture_skips=(b.texture_skips_-k0)/frames;
+      out.uniform_sets=(b.main_bind_.uniform_sets-u0)/frames;out.uniform_skips=(b.main_bind_.uniform_skips-s0)/frames;
+      out.texture_sets=(b.main_bind_.texture_sets-t0)/frames;out.texture_skips=(b.main_bind_.texture_skips-k0)/frames;
       out.residency_skips=b.residency_skips_-r0;
       b.uniform_cache_=b.texture_cache_=b.residency_cache_=true;
       return out;
     };
+    if(workers) {
+      // Threaded against single-threaded, same frames; then the timings.
+      const bool saved_workers=render_debug().worker_encoders;
+      render_debug().worker_encoders=true;
+      const auto runs0=b.worker_submit_runs_;
+      const auto threaded=run(true,40,15);
+      const auto threaded_runs=b.worker_submit_runs_-runs0;
+      b.parallel_submission_=false;
+      const auto single=run(true,40,15);
+      const auto single_runs=b.worker_submit_runs_-runs0-threaded_runs;
+      b.parallel_submission_=true;
+      render_debug().worker_encoders=saved_workers;
+      size_t differ=0;int worst=0;
+      for(size_t i=0;i<threaded.image.size()&&i<single.image.size();++i) {
+        const int d=std::abs(int(threaded.image[i])-int(single.image[i]));differ+=d>0;worst=std::max(worst,d);
+      }
+      uint64_t lit=0;for(size_t i=0;i<threaded.image.size();i+=4) lit+=threaded.image[i]+threaded.image[i+1]+threaded.image[i+2];
+      std::printf("WORKERS %ux%u (%zu pool threads): car tiles %zu, AO %d, reflection ready %d; threaded frames %llu, single %llu\n",
+                  width,height,jobs_concurrency(),b.car_shadow_tiles_.size(),int(b.ao_active_),int(b.reflection_ready_),
+                  (unsigned long long)threaded_runs,(unsigned long long)single_runs);
+      for(const auto* r:{&single,&threaded})
+        std::printf("WORKERS %s: host submission %.3f ms (world + wait), worker submission %.3f ms, host wait %.3f ms, "
+                    "render thread %.3f ms, %u draws\n",r==&single?"one thread":"workers  ",r->submit,
+                    r->zones.zones[size_t(perf::Zone::WorkerSubmit)],r->zones.zones[size_t(perf::Zone::SubmitWait)],
+                    r->render,r->draws);
+      std::printf("WORKERS threaded vs one thread: %zu bytes differ, max %d (sum %llu)\n",differ,worst,(unsigned long long)lit);
+      SLRR_REQUIRE(lit>0);
+      SLRR_REQUIRE(single_runs==0);
+      SLRR_REQUIRE(jobs_concurrency()<3||threaded_runs>0);
+      SLRR_REQUIRE(differ<=64&&worst<=1);  // the known 1-LSB flake at most
+    }
     const auto off=run(false,30,10);
     const auto on=run(true,40,15);
     const auto cold=run(true,40,15,true);
@@ -1971,6 +2030,7 @@ struct SceneShadowRegression {
     bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
     host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
     if(day) {b.static_shadow_active_=false;b.shadow_cascades_active_=false;b.shadow_cache_valid_=false;}
+    if(workers) {b.reflection_scene_=false;b.destroy_reflections();b.destroy_ao_targets();b.lamp_shadow_dt_override_=-1.f;}
     for(const auto& walker:walkers) {character_release_animation(walker.render);gameref_remove(walker.render);}
     for(auto* node:extra_nodes) gameref_remove(node);
     if(paint_id) paint_texture_release(paint_id);
@@ -3613,6 +3673,7 @@ int main() {
     SceneShadowRegression::desert_capture(backend);
     SceneShadowRegression::city_submission(backend,2560,1440,true);
     SceneShadowRegression::city_submission(backend,1280,720,true,true);
+    SceneShadowRegression::city_submission(backend,1280,720,true,false,true);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

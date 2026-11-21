@@ -40,6 +40,9 @@ enum class Zone : uint8_t {
   CollectSkins,     // walker palettes in view, inside CollectInstances (every collection)
   CollectPreviews,  // script viewport previews
   Residency,        // GPU residency check, uploads and releases
+  // Worker encoders (#270), inside Flush.
+  WorkerSubmit,     // AO prepass, car tiles and reflection faces, summed over workers
+  SubmitWait,       // host thread waiting for those workers after the world
   Count
 };
 
@@ -71,10 +74,15 @@ void set_render_sample(const RenderSample &sample);
 void end_frame();
 int64_t now_ticks();
 
+// True on a thread that submits a view on a worker encoder (#270). Zones
+// are host-thread data: scopes on such a thread record nothing, and the
+// caller reports the worker time as WorkerSubmit.
+bool &worker_thread();
+
 class Scope {
 public:
   explicit Scope(Zone zone)
-      : zone_(zone), start_(enabled() ? now_ticks() : 0) {}
+      : zone_(zone), start_(enabled() && !worker_thread() ? now_ticks() : 0) {}
   ~Scope() {
     if (start_)
       add(zone_, now_ticks() - start_);
