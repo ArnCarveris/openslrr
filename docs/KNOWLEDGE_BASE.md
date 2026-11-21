@@ -138,13 +138,19 @@ current gaps to SLRR_rev code are in
   by frame and each CSV row is one simulated second. `--bench-shots DIR`
   writes window captures every 10 simulated seconds
   (`src/boot/boot.cpp:boot_game`).
-- Environment variables: `SLRR_GAME_ROOT` and `SLRR_VLC_DIR`
-  (`src/platform/video_fmv_vlc.cpp`). There are no others.
-- There is no test target on `main`. `main` had a CTest suite (added in
-  `8637eae` with PR #3's `System.arraycopy`, PTX and dyno regressions) until
-  `b907b6b` deleted it. A Windows CI workflow only ever existed on the PR #3
-  branch. The probes are the only automated checks: `--probe` and
-  `--probe-gc` need a game root, `--probe-dyno` and `--probe-pacejka` do not.
+- Runtime environment variables: `SLRR_GAME_ROOT` (`src/main.cpp`),
+  `SLRR_VLC_DIR` (`src/platform/video_fmv_vlc.cpp`) and `SLRR_AMBIENCE_LOG`
+  (`src/resources/scene_ambience.cpp`, debug logging of random ambience
+  requests). `SLRR_FMOD_SDK_DIR` and `SLRR_TOOLS_CACHE_DIR` are build-time
+  only (see README.md).
+- Automated checks on `main`: the only CTest target is `audio_recovery`
+  (`-DBUILD_TESTING=ON`, `CMakeLists.txt`). Every other regression is a
+  standalone `tests/test_<name>.cpp` built and run by
+  `scripts/run_save_io_tests.ps1 -Suite <name>` (suite list in its
+  `ValidateSet`); `tests/*.py` run with Python. The older CTest suite from
+  PR #3 (`8637eae`) was deleted by `b907b6b`, and no CI workflow exists in
+  the repository. The probes `--probe` and `--probe-gc` need a game root;
+  `--probe-dyno` and `--probe-pacejka` do not.
 - Ctrl+F12 opens the ImGui debug panel (`src/render/debug_overlay.cpp:handle_message`).
   Its FPS readout is `1000 / cpuTimeFrame`, and VSync defaults to on
   (`src/render/debug_overlay.hpp:RenderOptions`).
@@ -175,7 +181,7 @@ current gaps to SLRR_rev code are in
 | Renderer | `src/render/bgfx_lib_backend.cpp:flush`, `src/render/bgfx_lighting.cpp:draw_instance`, `src/render/bgfx_shadows.cpp`, `src/render/bgfx_osd.cpp:draw_osd` | Frame, materials, shadows, OSD and HUD |
 | UI | `src/ui/osd_registry.cpp:osd_add_widget`, `src/ui/osd_registry.cpp:osd_on_field_write` | OSD widgets, hit-testing, modal state |
 | Map ambience | `src/resources/scene_ambience.cpp:scene_ambience_attach`, `src/resources/scene_ambience.cpp:scene_ambience_tick` | `sfx_loop`/`sfx_random` lines of map placements |
-| Platform | `src/platform/host_input.cpp`, `src/platform/host_sfx.cpp`, `src/platform/host_music.cpp`, `src/platform/video_fmv.cpp`, `src/platform/video_cinepak.cpp`, `src/platform/host_game_options.cpp` | Input, audio, FMV (built-in Cinepak AVI decoder), options |
+| Platform | `src/platform/host_input.cpp`, `src/platform/host_audio.cpp`, `src/platform/host_sfx.cpp`, `src/platform/host_music.cpp`, `src/platform/video_fmv.cpp`, `src/platform/video_cinepak.cpp`, `src/platform/host_game_options.cpp` | Input, audio, FMV (built-in Cinepak AVI decoder), options |
 | Worker pool | `src/platform/job_system.cpp:jobs_parallel_for` | One worker per logical processor for loading work off the host thread (§6) |
 
 Code that exists but is not used:
@@ -433,12 +439,25 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   `A` is the car outline, `E`/`L`/`T` the drivetrain, `O h l r p q t u v` the
   body and `a b c d` the wheels, in one coordinate system with the front up.
   `src/resources/part_runtime.cpp:hud_damage_parts` lists the installed
-  engine, body and wheel parts with their top-down centre, normalised to the
-  chassis renders, and their condition `wear × tear`
-  (`GAME:parts/scripts/src/Part.java:getConditionNoAttach`). The renderer
-  gives each part to the smallest blip quad of its kind holding that centre
-  (wheels by corner) and draws a blip in its worst part's colour, or not at
-  all when it holds no part (`src/render/bgfx_osd.cpp:draw_vehicle_hud`).
+  engine, body and wheel parts with their rest-installed top-down centre,
+  normalised to chassis renders, and their condition `wear × tear`
+  (`GAME:parts/scripts/src/Part.java:getConditionNoAttach`). Closed CFG mount
+  frames retain deliberate `setSlotPos`, not flap/damage offsets; removing a
+  panel does not change valid chassis-only normalisation bounds.
+  `src/render/bgfx_osd.cpp:draw_vehicle_hud` delegates region ownership to
+  `include/slrr/vehicle_hud_damage.hpp:hud_assign_damage`: for the stock font,
+  only script `Quarterpanel` instances (including subclasses) own `q/p/u/v`, selected by
+  left/right and front/rear. Accessories cannot colour or resurrect a missing
+  fender. Other regions retain smallest-containing-quad aggregation (wheels
+  by corner). This is host mapping, not recovered original native behaviour.
+  The stock `q` UVs reverse the longitudinal axis of the asymmetric front
+  fender tile, placing its bright edge beside the engine. For the stock
+  cars damage font and exact stock UV layout only,
+  `include/slrr/vehicle_hud_damage.hpp:hud_stock_left_fender_uv` uses a
+  horizontal mirror of `p`; shared SCX/PNG assets and custom UVs stay untouched.
+  Custom fonts keep the previous spatial region mapping.
+  Regression target: `vehicle_hud_damage` (`BUILD_TESTING=ON`); optionally pass
+  the original `cars/meshes/osdfont.scx` path for a real-asset integration check.
 
 ### 5.9 Options and saves
 
@@ -470,7 +489,7 @@ this section is the working guide.
 | Worker pool, one per logical CPU minus one | `src/platform/job_system.cpp:jobs_parallel_for` | Data-parallel batches started by the host thread |
 | Exterior map parser | `src/natives/natives_resref.cpp:spawn_ground_shell` (`std::async`) | `scene_instances_ground_map` for the next chained map file |
 | Pedestrian stepper | `src/resources/part_runtime.cpp:PedSim` | Walker steering on copies of the walker records |
-| Audio and video | XAudio2, Media Foundation, VLC | Their own decode and output threads |
+| Audio and video | FMOD Core (effects/music/Cinepak PCM), optional VLC/Windows codecs | Their own decode and output threads |
 
 **API** (`include/slrr/job_system.hpp`).
 
@@ -818,7 +837,6 @@ reads, and `Part.setSfxLoopParams` stores values without applying them.
 
 | Statement | Code reality |
 | --- | --- |
-| HOST_NATIVE_UTILITIES: engine-loop audio not yet implemented | `update_engine_audio` runs every physics frame |
 | Stale comments: "no green-thread budget yet" in `src/boot/mainloop.cpp`, "240 Hz tick" in `src/resources/scene_instances.cpp` | Fibers have budgets, physics is 120/60 Hz |
 
 ## 10. Open risk register
@@ -843,11 +861,11 @@ lifetime and sampling, and the `Vehicle.getHorn` / `hasCrime` registrations.
 
 These are entry points, not fixes. Each needs its own reproduction.
 
-- **#15 HUD too small** (PR #20 open). Every stock HUD element comes from the
+- **#15 HUD too small** (closed; PR #20 merged). Every stock HUD element comes from the
   table in `src/render/bgfx_osd.cpp:draw_vehicle_hud`. Speed, gear and
   mileage are drawn left-aligned at their anchor, so centring needs the
   string width. CFG `osd_*` overrides take separate branches.
-- **#16 car drives through trees (PR #22).** `ground_prop_config` now keeps
+- **#16 car drives through trees** (closed; PR #22 merged). `ground_prop_config` now keeps
   native CFG bodies. Placements use cached triangle and exact box/sphere
   collision paths, including a full chassis volume test for thin trunks.
   `PhysicsRef` has its seven missing signatures, and `setActiveCollision`
@@ -1578,21 +1596,27 @@ coalescing is retained. Rejected loop requests increment diagnostics without
 reading their WAV. This is a common loop budget, not new engine-vs-ambient
 priority; a 25th loop can still be denied until another loop stops.
 
-Decoded immutable WAV format/PCM is shared between voices and held in a
-16 MiB / 64-entry LRU cache. Playing voices retain their buffer even after
-cache eviction; root reset stops voices and clears cached data/counters.
-Oversized valid WAVs can play but are not added to that cache. Loop pitch
+FMOD decoded sample sounds are shared between voices and held in a
+16 MiB decoded-PCM / 64-entry LRU cache. Samples are prepared for looping at
+load time; each channel selects loop or one-shot playback independently.
+Playing voices retain their sound even after cache eviction; root reset
+stops voices and clears cached data/counters. `host_audio` owns the shared
+FMOD mixer with independent effects/music groups; music streams are updated
+through the existing frame pump even when only effects are playing.
+Sounds above the cache limit can play up to the 64 MiB per-effect bound,
+checked with an open-only metadata probe before full decode. `wave_reads`
+counts uncached load attempts (probe plus decode), not OS file reads. Loop pitch
 and gain updates now reject non-finite inputs via the same finite defaults
 as play_file. HostSfxStats exposes rejection/read/hit/cache diagnostics.
 
 `src/platform/host_music.cpp` tries at most one playlist pass when opening
-a track fails, preserving next/previous direction. A fill() failure advances
+a track fails, preserving next/previous direction. A stream failure advances
 through the same bounded recovery path. A wholly unreadable set remains
 stopped; update does not continuously retry it. Explicit change/next can
 retry later. HostMusicStats exposes attempts/failures/current track for
 diagnostics. No Java native or music-set/mode contract is added.
 
-Validation: Release host compiles. audio_recovery creates only digital-silence
+Pre-FMOD validation: Release host compiles. audio_recovery creates only digital-silence
 PCM WAVs in an isolated fixture and mutes playback. Actual XAudio2/Media
 Foundation checks pass: 24 loops share one disk read; the next loop is
 rejected before I/O; nine distinct one-shots are admitted with 32 total
@@ -1712,7 +1736,12 @@ Video without VLC (#216): 64-bit Windows ships no Cinepak codec (only the
 DirectShow paths failed and every intro and `prime.avi` was skipped.
 `video_fmv_open` now tries `src/platform/video_cinepak.cpp` first: it indexes
 the AVI, decodes Cinepak frames in order into BGRA and plays PCM audio through
-its own XAudio2 voice, whose position drives the frame clock. Files it rejects
+a dedicated FMOD channel/group, whose position drives the frame clock.
+The FMV pump updates the shared mixer during boot intros, and EOF/channel
+failure falls back to wall time from the last valid position without jumping
+the picture. PCM is staged in a WAV memory sample (unsigned 8-bit or signed
+16-bit, mono/stereo) and released before its shared mixer owner. Looping
+replays the same sound with a fresh channel. Files it rejects
 (another codec, or a first frame it cannot decode) still go to LibVLC, then
 AVIFile/DirectShow. The video_safety suite checks the decoder and a generated
 Cinepak AVI with PCM audio.

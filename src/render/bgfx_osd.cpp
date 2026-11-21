@@ -3,6 +3,7 @@
 #include "slrr/frame_profiler.hpp"
 
 #include "slrr/part_runtime.hpp"
+#include "slrr/vehicle_hud_damage.hpp"
 #include "slrr/dds_image.hpp"
 #include "slrr/paint_texture.hpp"
 #include "slrr/host_cursor.hpp"
@@ -477,7 +478,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
                         const uint16_t *indices, size_t index_count,
                         float x, float y, float sx, float sy, float angle,
                         float min_x, float min_y, uint32_t color, bool opaque = false,
-                        bool color_mix = false) {
+                        bool color_mix = false, const float* glyph_uv = nullptr) {
     if (!count || count > 65535 || !index_count || mesh.textures.empty() ||
         mesh.uvs.size() < (begin + count) * 2 ||
         bgfx::getAvailTransientVertexBuffer(static_cast<uint32_t>(count), layout_) < count ||
@@ -498,7 +499,8 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       const float py = mesh.positions[v * 3 + 1] - min_y;
       vertices[i] = {x + sx * (c * px - s * py),
                      y + sy * (s * px + c * py), 0.f, 0.f, 0.f, 1.f,
-                     mesh.uvs[v * 2], mesh.uvs[v * 2 + 1]};
+                     glyph_uv ? glyph_uv[i * 2] : mesh.uvs[v * 2],
+                      glyph_uv ? glyph_uv[i * 2 + 1] : mesh.uvs[v * 2 + 1]};
     }
     std::memcpy(ib.data, indices, index_count * sizeof(uint16_t));
     float identity[16];
@@ -609,19 +611,12 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       if (damage) {
         // The stock font stores the car outline ('A') and one blip per car
         // region as separate glyphs in one shared coordinate system, front
-        // up and the car's left on the left. Each blip takes the worst
-        // condition of the installed parts that fall in its quad; a blip
-        // with no part is not drawn. Drivetrain blips (E, L, T) take engine
-        // parts, body blips take body panels, and the four wheel blips take
-        // the wheel of their corner.
+        // up and the car's left on the left. Quarterpanel script instances
+        // exclusively own p/q/u/v at their rest-installed corner. Other
+        // regions keep spatial aggregation, and absent parts have no blip.
+        // Drivetrain blips take engine parts; wheels keep their slot corner.
         using Kind = VehicleHudPart::Kind;
-        struct Blip {
-          unsigned char glyph;
-          Kind kind;
-          float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-          bool present = false;
-          float condition = 1;
-        };
+        using Blip = HudDamageBlip;
         const auto bounds = [&](unsigned char glyph, Blip &out) {
           const size_t first = size_t(glyph) * 4;
           if ((first + 4) * 3 > mesh->positions.size()) return false;
@@ -649,36 +644,12 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         add("ELT", Kind::Engine);
         add("Ohlpqrtuv", Kind::Body);
         add("abcd", Kind::Wheel);
-        const float centre_x = .5f * (outline.x0 + outline.x1);
-        const float centre_y = .5f * (outline.y0 + outline.y1);
-        for (size_t k = 0; k < hud.part_count; ++k) {
-          const auto &part = hud.parts[k];
-          const float gx = outline.x0 + (part.x + 1.f) * .5f * (outline.x1 - outline.x0);
-          const float gy = outline.y0 + (part.z + 1.f) * .5f * (outline.y1 - outline.y0);
-          Blip *best = nullptr;
-          float best_area = std::numeric_limits<float>::max();
-          for (size_t b = 0; b < blip_count; ++b) {
-            Blip &blip = blips[b];
-            if (blip.kind != part.kind) continue;
-            if (part.kind == Kind::Wheel) {
-              const bool left = .5f * (blip.x0 + blip.x1) < centre_x;
-              const bool front = .5f * (blip.y0 + blip.y1) < centre_y;
-              if ((front ? 0 : 2) + (left ? 0 : 1) == part.corner) best = &blip;
-              continue;
-            }
-            // Overlapping quads (the hood spans the fenders): the smallest
-            // quad that holds the part's centre is the most specific region.
-            const float area = (blip.x1 - blip.x0) * (blip.y1 - blip.y0);
-            if (gx >= blip.x0 && gx <= blip.x1 && gy >= blip.y0 && gy <= blip.y1 &&
-                area < best_area) {
-              best = &blip;
-              best_area = area;
-            }
-          }
-          if (!best) continue;
-          best->present = true;
-          best->condition = std::min(best->condition, part.condition);
-        }
+        std::array<float, 8> left_fender_uv{};
+        const bool stock_fenders = item.resource == cars_resource(0x57) &&
+            hud_stock_left_fender_uv(*mesh, left_fender_uv);
+        hud_assign_damage(std::span(blips.data(), blip_count),
+                          std::span(hud.parts.data(), std::min(hud.part_count, hud.parts.size())),
+                          outline, stock_fenders);
         const float scale_x = sy * pixel_aspect;
         // The outline stands for the whole car; keep it neutral.
         draw(*mesh, size_t('A') * 4, 4, quad, 6, x, y, scale_x, sy, 0, p[0], p[1],
@@ -690,7 +661,8 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
           const auto red = static_cast<uint32_t>(255.f * std::min(1.f, 2.f * (1.f - condition)));
           const auto green = static_cast<uint32_t>(255.f * std::min(1.f, 2.f * condition));
           draw(*mesh, size_t(blip.glyph) * 4, 4, quad, 6, x, y, scale_x, sy, 0, p[0], p[1],
-               0xff000000u | (red << 16) | (green << 8));
+               0xff000000u | (red << 16) | (green << 8), false, false,
+               stock_fenders && blip.glyph == 'q' ? left_fender_uv.data() : nullptr);
         }
       } else {
         draw(*mesh, start, 4, quad, 6, x, y,
