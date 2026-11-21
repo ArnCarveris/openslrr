@@ -579,6 +579,51 @@ each character on the host thread (`character_skin_prepare`), the jobs run
 reads its immutable skeleton and clip), and the host thread publishes the
 palettes into the frame cache in order.
 
+**Worker bgfx encoders (#270).** On by default (renderer debug option
+"Worker encoders", `render_debug().worker_encoders`). When on,
+`src/render/bgfx_lib_backend.cpp:parallel_submission_ready` is true with 3 or
+more pool threads; `queue_or_run` then queues the AO prepass
+(`src/render/bgfx_ao.cpp`), each car lamp tile (`src/render/bgfx_shadows.cpp`)
+and each reflection face draw instead of submitting it, and
+`src/render/bgfx_lib_backend.cpp:run_worker_submits` runs the queue on the
+pool while the host thread draws the sky and the world on encoder 0. Rules:
+
+- One job per Sequential view, so the order inside a view is the serial one.
+  Each job calls `bgfx::begin(true)` and sets the thread-local `t_encoder_`
+  and `t_bind_`; every draw helper goes through `enc()` and `bind()`. The host
+  caches encoder 0 in `host_encoder_` (reset at `bgfx::shutdown`): one
+  `bgfx::begin()` or TLS lookup per draw call doubled world submission.
+- Binding caches (#246 light arrays, #262 uniforms and textures) live in a
+  `BindState`; each worker owns one (`worker_binds_`), the host uses
+  `main_bind_`. The harness reads `main_bind_` counters.
+- No shared writes from jobs: `draw_prop_batches` takes the shadow-local
+  choice as a parameter instead of toggling `static_shadow_local_`;
+  `snapshot_textures` resolves every texture of the queued objects into
+  `resolved_textures_` first (lookups that would insert run on the host);
+  `upload_light_data` runs in frame setup and is skipped inside the window;
+  profiler zones are off on worker threads (`perf::worker_thread`), whose time
+  is summed in `worker_submit`, with the host's wait in `submit_wait`.
+- `draw_prop_batches` allocates one instance buffer per list: bgfx takes its
+  resource lock per transient allocation, and a granted count can be smaller
+  than asked when another encoder allocates in between.
+- Fewer than 3 threads, or the option off: the queued draws run on the host
+  thread in submission order.
+
+Harness (`tests/test_scene_shadow_gpu.cpp`, crowd city 1280x720 with lamp
+tiles, GTAO and a reflection probe; lamp fades use a fixed step so the runs
+compare): threaded and one-thread images are identical at 24, 2 and 1 cores.
+At 24 threads host submission was 1.54 ms threaded against 1.61 ms on one
+thread, worker submission 0.50 ms, host wait 0.002 ms; bgfx's shared submit
+state (sort keys, atomics, transient buffers) took back most of what the host
+saved, so the option first shipped off. In game (user, 21 November 2026,
+Valo City at night, 2560x1440, MSAA 4x, HBAO high, 40 lamps, 6 shadowed,
+12 car tiles; `build/Release/perf/renderer_debug_20261121_031919.txt` off,
+`_031932.txt` on) the host gained: renderer zones 5.80 → 5.13 ms, frame
+8.15 → 7.35 ms, world submission 1.96 → 1.88 ms, worker submission 0.85 ms
+summed, host wait 0.002 ms, render thread unchanged (4.15 / 4.19 ms). The
+user then made it the default; the two views were close but not identical
+(1032 / 1014 instances).
+
 **Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
 lists the planned steps for the frame loop: measure where the CPU limits,
 cull scene collection in parallel, record draws with bgfx encoders, run
@@ -1170,9 +1215,9 @@ Parse and retain emission texture slot plus UV mapping; include both in material
 merge equality. In a night overlay, skip sections without a mask and sample the
 mask RGB to modulate the additive emissive contribution. Missing masks do not
 fall back to white/full-bright. Preserve normal lighting on base facades. The
-night detail vertex path uses a 0.002 m normal offset to reduce coplanar depth
-fighting, without depth writes or distance-dependent clip bias. Onset remains
-18:30. Signs only emit through their authored masks as well.
+night detail vertex path used a 0.002 m normal offset to reduce coplanar depth
+fighting, without depth writes; since #281 it is a relative depth bias instead
+(see "Emissive overlays sit flush" below). Onset remains 18:30. Signs only emit through their authored masks as well.
 
 Release x64 and DXBC/GLSL shaders compile. Stock integration test verifies one
 masked and four unmasked sections, valid mask slot and hour transitions. This
@@ -1191,7 +1236,7 @@ either an authored mask (windows) or a nonzero emission colour (signs).
 Colour-only signs use the white mask binding and multiply the base texture
 by the emission colour; non-emissive facade groups remain excluded. Missing
 authored mask textures still do not fall back to a full-bright facade.
-The 2 mm overlay offset and 18:30 onset remain unchanged.
+The overlay depth handling (now #281's depth bias) and 18:30 onset remain unchanged.
 
 Validation: Release host build succeeded; `night_props` passed against game
 assets, checking night/day sign emission and window mask presence. Actual
@@ -3398,6 +3443,37 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   in-game cost lies in something the harness does not reproduce (scene,
   LOD/size filter, frame cache state).
 
+### Emissive overlays sit flush (#281)
+
+- Symptom (user, 21 November 2026): lamp glass floated about 2 mm off its
+  body: car head- and taillights, traffic lights.
+- Cause in code: `shaders/vs_mesh.sc` and `shaders/vs_mesh_inst.sc` pushed
+  every emissive overlay 2 mm along its normal (`1f886b5` for night facade
+  masks, `8f2775d` for the instanced copy). The flag is
+  `SceneInstance::emissive_overlay` (`u_alphaTest.y` = 2, or the instance
+  colour's w = 2): night-only props, night facade meshes and the traffic
+  signal glass (`src/resources/scene_instances.cpp:signal_geometry`). The
+  push moved the glass visibly and showed glass authored just behind its
+  bezel.
+- Fix: no geometry offset; clip z is scaled by 1 + 1e-4, which with
+  reverse Z brings the overlay 1e-4 × its distance nearer in depth only
+  (0.5 mm at 5 m, 5 mm at 50 m); x and y are unchanged, so nothing moves on
+  screen. 1e-5 lost depth ties on 250 of 4,200 pixels of a slanted wall in the
+  harness. Overlays keep `BGFX_STATE_DEPTH_TEST_GEQUAL` and additive blend
+  without depth writes.
+- Car lamp glass is not an emissive overlay: the `_CITY`/`_BRAKE` meshes
+  (`light_flags`) are drawn by the vehicle program, which has no offset. In
+  the stock data they are authored in front of the lamp body: Baiern
+  `L_taillights_CITY` exactly 1.000 cm along the lens normal for all 12
+  vertices, `L_taillights_BRAKE` 0.94–1.0 cm, `L_headlights_CITY` 0.4–1.0 cm
+  (measured with `load_scx_geometry`, distance to the body triangles). That
+  gap is the asset's, not the renderer's; #284 snaps that glass onto the lens
+  at load (see "Lamp glass snapped onto the lens (#284)").
+- Test: `scene_shadow_gpu` case `emissive_overlay_flush`: a 4 × 4 m wall seen
+  at a slant, glass as an 8 × 8 grid with the other diagonal; level glass
+  shows on all 4,200 interior pixels, 1.5 mm in front too, 1.5 mm behind on
+  none. With the old 2 mm push the glass 1.5 mm behind showed on every pixel.
+
 ### Instanced night overlays and blended props, world list zones (#264)
 
 - Profiler: `perf::Zone::WorldList` wraps the frame's world list build in
@@ -3433,8 +3509,8 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   order and sent in the instance colour, with `u_color.rgb` = 1 and the alpha
   (which never depends on the placement) in `u_color.a`. fs_mesh multiplies
   `tint * placement`, so the product is the same float.
-- `shaders/vs_mesh_inst.sc` applies vs_mesh's 2 mm overlay offset when the
-  instance colour's w is 2 (1 otherwise, including the shadow programs).
+- `shaders/vs_mesh_inst.sc` applies vs_mesh's overlay depth bias (a 2 mm
+  normal offset before #281) when the instance colour's w is 2 (1 otherwise, including the shadow programs).
   Pitfall: the first version read `u_alphaTest.y` in this vertex shader, like
   vs_mesh does; the bgfx render thread then took ~45 ms per frame in the
   harness, and the main thread got slower too (bisected: same code without

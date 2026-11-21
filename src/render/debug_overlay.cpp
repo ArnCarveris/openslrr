@@ -179,6 +179,10 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     {perf::Zone::CollectSkins, "    walker palettes (all collections)"},
     {perf::Zone::CollectPreviews, "  viewport previews"},
     {perf::Zone::Residency, "  GPU residency"},
+    // #270: AO prepass, car lamp tiles and reflection faces on worker
+    // encoders, beside the world submission.
+    {perf::Zone::WorkerSubmit, "Worker submission (sum over workers)"},
+    {perf::Zone::SubmitWait, "  host wait for workers"},
     {perf::Zone::LampSelect, "Street lamp selection"},
     {perf::Zone::Shadows, "Shadow updates (all)"},
     {perf::Zone::SunShadows, "  sun cascades / point"},
@@ -231,6 +235,24 @@ std::string render_timing_dump() {
                   "resolution %u x %u | VSync %s | frame cap none (VSync only)\noverrides:\n",
                   unsigned(context.width), unsigned(context.height), options->vsync ? "on" : "off");
     out += line;
+    {
+      // The saved Enhanced options (#270), so two snapshots compare settings too.
+      const auto& g = host_enhanced_graphics();
+      static const char* const ao_names[] = {"off", "HBAO", "GTAO"};
+      static const char* const tiers[] = {"low", "medium", "high"};
+      const auto tier = [](int v) { return tiers[std::clamp(v, 0, 2)]; };
+      std::snprintf(line, sizeof(line),
+                    "enhanced: MSAA %dx | AO %s %s, radius %.1f m, strength %d %% | "
+                    "shadows %s, smoothing %d | dynamic lighting %s, local lights %s, "
+                    "reflections %s, clouds %s, anisotropic %s\n",
+                    g.msaa <= 0 ? 1 : 1 << std::clamp(g.msaa, 0, 3),
+                    ao_names[std::clamp(g.ao_method, 0, 2)], tier(g.ao_quality), g.ao_radius * .01f,
+                    g.ao_strength, tier(g.shadow_quality), g.shadow_smoothing,
+                    g.dynamic_lighting ? "on" : "off", g.local_lights ? "on" : "off",
+                    g.dynamic_reflections ? "on" : "off", g.volumetric_clouds ? "on" : "off",
+                    g.anisotropic_filtering ? "on" : "off");
+      out = line + out;
+    }
     std::string changed = render_debug_overrides_text(render_debug());
     const auto flag = [&](const char* name, bool value, bool fallback) {
       if (value != fallback) changed += std::string("  ") + name + " = " + (value ? "on" : "off") + "\n";
@@ -380,6 +402,7 @@ void draw_render_passes(DebugOverlay::RenderOptions& options) {
     ImGui::Checkbox(label, &o.sun_cascades[size_t(i)]);
   }
   ImGui::Checkbox("Shadow caching (off: redraw every frame)", &o.shadow_caching);
+  ImGui::Checkbox("Worker encoders (AO prepass, car tiles, reflections)", &o.worker_encoders);
   ImGui::Checkbox("Map shadows", &options.map_shadows);
   ImGui::Checkbox("Vehicle shadow casters", &options.shadows);
   ImGui::Checkbox("Character shadow casters", &o.skinned_casters);

@@ -113,10 +113,12 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
   bgfx::setViewRect(140, 0, 0, width, height);
   bgfx::setViewClear(140, BGFX_CLEAR_DEPTH, 0, 0.f);
   bgfx::setViewTransform(140, view, depth_projection);
-  bgfx::touch(140);
+  // The prepass draws are one job (#270): it may run on a worker encoder.
+  queue_or_run([this] {
+  enc()->touch(140);
   const float no_apertures[4]{};
-  bgfx::setUniform(u_alpha_test_, no_apertures);
-  bgfx::setUniform(u_aperture_params_, no_apertures);
+  enc()->setUniform(u_alpha_test_, no_apertures);
+  enc()->setUniform(u_aperture_params_, no_apertures);
   auto draw = [&](const ScenePart &part, const float *matrix,
                   const SceneInstance *object) {
     if (!bgfx::isValid(part.vbh) || !bgfx::isValid(part.ibh))
@@ -133,17 +135,17 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
                                   : .5f;
       const float params[4] = {0, threshold, float(group.base_map.channel), 0};
       set_uniform(u_static_shadow_params_, params);
-      bgfx::setTransform(matrix);
+      enc()->setTransform(matrix);
       if (skin)
-        bgfx::setUniform(u_skin_bones_, object->skin.data(), 48);
-      bgfx::setVertexBuffer(0, skin ? part.skin_vbh : part.vbh);
-      bgfx::setIndexBuffer(part.ibh, group.index_start, group.index_count);
+        enc()->setUniform(u_skin_bones_, object->skin.data(), 48);
+      enc()->setVertexBuffer(0, skin ? part.skin_vbh : part.vbh);
+      enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
       const auto slot = group.texture_index;
-      bgfx::setTexture(0, s_tex_,
+      enc()->setTexture(0, s_tex_,
                        slot < part.tex.size() && bgfx::isValid(part.tex[slot])
                            ? part.tex[slot]
                            : white_tex_);
-      bgfx::setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER);
+      enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER);
       submit_counted(140, skin ? ao_skin_depth_program_ : static_shadow_program_);
     }
   };
@@ -160,10 +162,10 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
   if (garage_)
     for (const auto &part : parts_)
       draw(part, identity, nullptr);
-  const bool saved_local = static_shadow_local_;
-  static_shadow_local_ = true;
-  draw_prop_batches(140, prop_batches_, true, false, true);
-  static_shadow_local_ = saved_local;
+  // Local (camera-relative) instance matrices, without toggling
+  // static_shadow_local_, which the world's receivers read meanwhile.
+  draw_prop_batches(140, prop_batches_, true, false, true, 1);
+  });
   const float screen[4] = {1.f / width, 1.f / height, projection[0],
                            projection[5]};
   const float config[4] = {float(std::clamp(options.ao_method, 1, 2)),
@@ -181,7 +183,7 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     bgfx::setViewFrameBuffer(id, fb);
     bgfx::setViewRect(id, 0, 0, aw, ah);
     bgfx::setViewClear(id, BGFX_CLEAR_COLOR, geometry ? 0x00000000 : 0xffffffff);
-    bgfx::touch(id);
+    enc()->touch(id);
     if (bgfx::getAvailTransientVertexBuffer(3, layout_) < 3) {
       ao_active_ = false;
       return;
@@ -195,21 +197,21 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     vertices[1] = {3, -1, 0, 0, 0, 1, 2, v0};
     vertices[2] = {-1, 3, 0, 0, 0, 1, 0, v1};
     const float params[4] = {float(pass), 1.f / aw, 1.f / ah, 0};
-    bgfx::setUniform(u_ao_screen_, screen);
+    enc()->setUniform(u_ao_screen_, screen);
     set_uniform(u_ao_projection_, ao_projection_.data());
-    bgfx::setUniform(u_ao_config_, config);
-    bgfx::setUniform(u_ao_params_, params);
-    bgfx::setTexture(0, s_ao_depth_, ao_depth_tex_, sampler);
-    bgfx::setTexture(1, s_ao_input_,
+    enc()->setUniform(u_ao_config_, config);
+    enc()->setUniform(u_ao_params_, params);
+    enc()->setTexture(0, s_ao_depth_, ao_depth_tex_, sampler);
+    enc()->setTexture(1, s_ao_input_,
                      pass == 1   ? ao_raw_tex_
                      : pass == 2 ? ao_filter_tex_
                                  : white_tex_,
                      sampler);
     // The geometry pass writes these; it must not read them.
-    bgfx::setTexture(2, s_ao_linear_, geometry ? white_tex_ : ao_linear_tex_, sampler);
-    bgfx::setTexture(3, s_ao_normal_, geometry ? white_tex_ : ao_normal_tex_, sampler);
-    bgfx::setVertexBuffer(0, &vb);
-    bgfx::setState(geometry ? BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A : BGFX_STATE_WRITE_RGB);
+    enc()->setTexture(2, s_ao_linear_, geometry ? white_tex_ : ao_linear_tex_, sampler);
+    enc()->setTexture(3, s_ao_normal_, geometry ? white_tex_ : ao_normal_tex_, sampler);
+    enc()->setVertexBuffer(0, &vb);
+    enc()->setState(geometry ? BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A : BGFX_STATE_WRITE_RGB);
     submit_counted(id, ao_program_);
   }
 }

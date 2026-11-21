@@ -258,6 +258,17 @@ writes, through `std::atomic_ref` (see KNOWLEDGE_BASE.md §5.10). Walker
 skin palettes (#268) are the second: the host thread prepares each
 character, jobs rebuild different characters, and the host publishes them.
 
+Worker bgfx encoders (#270) are the third, behind the renderer debug option
+"Worker encoders", on by default. The AO prepass, the car lamp shadow tiles
+and the reflection cube faces are queued during the frame and submitted by pool
+jobs, each on its own `bgfx::begin(true)` encoder and its own binding state,
+one job per Sequential view, while the host thread submits the main view on
+encoder 0. View setup, blits, transient vertex data of the sky, light data
+uploads (moved to frame setup) and texture creation stay on the host thread:
+the host resolves every texture a job will look up before the jobs start.
+With fewer than 3 pool threads the queued draws run on the host thread in the
+same order, and the image matches the serial path byte for byte.
+
 Map loading used to spend most of its time on the host thread: about 13 s
 of a warm Valo City start, mostly a merge of the placement collision that
 grew its buffer by one mesh at a time. `merge_static_meshes` now sizes its
