@@ -1623,17 +1623,18 @@ struct SceneShadowRegression {
       // street lamp lighting on and off; the difference is what the lamps add
       // (their light and their shadow tiles). At noon nothing, at dusk a faint
       // contribution, at night the full lamps.
-      std::printf("CITY FRAME night factor by hour (old gate -> new factor):");
-      for(float hour:{5.5f,5.75f,6.f,6.25f,6.5f,12.f,17.f,17.5f,17.75f,18.f,18.25f,18.5f,22.f}) {
+      std::printf("CITY FRAME sun by hour (old clock gate; elevation deg, direct sun / noon, night factor):\n");
+      for(float hour:{5.5f,5.75f,5.9f,6.f,6.25f,6.5f,12.f,17.f,17.5f,17.75f,17.9f,18.f,18.1f,18.25f,18.5f,22.f}) {
         scene_sun_set_time(hour*3600.f);
-        std::printf(" %.2fh %d->%.3f",hour,int(scene_sun_is_night()),scene_sun_night_factor());
+        const auto sun=scene_instances_sun_state();
+        std::printf("CITY FRAME   %5.2fh gate %d elevation %6.2f direct %.3f sun shadows %d night %.3f\n",hour,
+                    int(scene_sun_is_night()),sun.elevation*57.2958f,sun.direct,int(sun.shadowing),sun.night);
       }
-      std::printf("\n");
       const float saved_dt=b.lamp_shadow_dt_override_;
       b.lamp_shadow_dt_override_=10.f;  // shadow slots at full weight at once
       struct Hour { float hour; const char* name; };
       uint64_t previous=0;
-      for(const Hour hour:{Hour{12.f,"noon"},Hour{17.75f,"dusk"},Hour{22.f,"night"}}) {
+      for(const Hour hour:{Hour{12.f,"noon"},Hour{18.f,"dusk"},Hour{22.f,"night"}}) {
         scene_sun_set_time(hour.hour*3600.f);
         render_debug().lamp_lighting=true;
         const auto lit=run(true,6,2);
@@ -1649,11 +1650,13 @@ struct SceneShadowRegression {
           added+=uint64_t(d);pixels+=d>0;
         }
         std::printf("CITY FRAME lamps at %s (%.2fh, factor %.3f): %zu lit, %zu shadowed, strongest %.2f; "
-                    "lamp contribution %llu over %zu pixels\n",hour.name,hour.hour,scene_sun_night_factor(),
+                    "lamp contribution %llu over %zu pixels\n",hour.name,hour.hour,scene_instances_sun_state().night,
                     lamps,shadowed,strongest,(unsigned long long)added,pixels);
         if(hour.hour==12.f) SLRR_REQUIRE(lamps==0&&shadowed==0&&added==0);
         else SLRR_REQUIRE(lamps>0&&added>previous);
-        if(hour.hour==17.75f) SLRR_REQUIRE(strongest>0.f&&strongest<.2f*kSceneryLightIntensity);
+        // Dusk: the sun still casts its shadow; lamps are faint and cast none.
+        if(hour.hour==18.f) SLRR_REQUIRE(strongest>0.f&&strongest<.2f*kSceneryLightIntensity&&shadowed==0&&
+                                         b.static_shadow_active_);
         if(hour.hour==22.f) SLRR_REQUIRE(strongest>=.99f*kSceneryLightIntensity);
         previous=added;
       }

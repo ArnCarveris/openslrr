@@ -1414,11 +1414,11 @@ void LibBgfxBackend::publish_debug_stats() {
 
 void LibBgfxBackend::update_scenery_lights() {
     perf::Scope lamp_scope(perf::Zone::LampSelect);
-    // Street lamps follow the darkness, not a fixed clock window (#271): at
-    // 18:30 the old gate lit them at full power while a sun set from a map
-    // light could still be bright, and their shadow tiles drew a second
+    // Street lamps follow the sun the scene is lit by, not a clock window
+    // (#271): lit at full power from 18:30 on the clock, or ramped up while
+    // the low sun still cast strong shadows, their shadow tiles drew a second
     // shadow beside the sun's.
-    const float night = scene_sun_night_factor();
+    const float night = scene_instances_sun_state().night;
     const uint32_t groups = night > kLampNightMin ? kLightGroupCity : 0u;
     if (!groups || !scenery_lights_count() || !render_debug().lamp_lighting)
       return;
