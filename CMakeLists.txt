@@ -331,6 +331,12 @@ message(STATUS "slrr_host: libbgfx + mesh shaders enabled")
 option(BUILD_TESTING "Build regression tests" OFF)
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(vehicle_hud_damage tests/test_vehicle_hud_damage.cpp
+    src/resources/scx_mesh.cpp src/platform/job_system.cpp)
+  target_include_directories(vehicle_hud_damage PRIVATE include)
+  target_compile_features(vehicle_hud_damage PRIVATE cxx_std_20)
+  target_compile_options(vehicle_hud_damage PRIVATE /W3 /utf-8)
+  add_test(NAME vehicle_hud_damage COMMAND vehicle_hud_damage)
   add_executable(audio_recovery tests/test_audio_recovery.cpp
     src/platform/host_audio.cpp src/platform/host_sfx.cpp src/platform/host_music.cpp)
   target_include_directories(audio_recovery PRIVATE include)

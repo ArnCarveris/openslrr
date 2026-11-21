@@ -438,12 +438,25 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   `A` is the car outline, `E`/`L`/`T` the drivetrain, `O h l r p q t u v` the
   body and `a b c d` the wheels, in one coordinate system with the front up.
   `src/resources/part_runtime.cpp:hud_damage_parts` lists the installed
-  engine, body and wheel parts with their top-down centre, normalised to the
-  chassis renders, and their condition `wear × tear`
-  (`GAME:parts/scripts/src/Part.java:getConditionNoAttach`). The renderer
-  gives each part to the smallest blip quad of its kind holding that centre
-  (wheels by corner) and draws a blip in its worst part's colour, or not at
-  all when it holds no part (`src/render/bgfx_osd.cpp:draw_vehicle_hud`).
+  engine, body and wheel parts with their rest-installed top-down centre,
+  normalised to chassis renders, and their condition `wear × tear`
+  (`GAME:parts/scripts/src/Part.java:getConditionNoAttach`). Closed CFG mount
+  frames retain deliberate `setSlotPos`, not flap/damage offsets; removing a
+  panel does not change valid chassis-only normalisation bounds.
+  `src/render/bgfx_osd.cpp:draw_vehicle_hud` delegates region ownership to
+  `include/slrr/vehicle_hud_damage.hpp:hud_assign_damage`: for the stock font,
+  only script `Quarterpanel` instances (including subclasses) own `q/p/u/v`, selected by
+  left/right and front/rear. Accessories cannot colour or resurrect a missing
+  fender. Other regions retain smallest-containing-quad aggregation (wheels
+  by corner). This is host mapping, not recovered original native behaviour.
+  The stock `q` UVs reverse the longitudinal axis of the asymmetric front
+  fender tile, placing its bright edge beside the engine. For the stock
+  cars damage font and exact stock UV layout only,
+  `include/slrr/vehicle_hud_damage.hpp:hud_stock_left_fender_uv` uses a
+  horizontal mirror of `p`; shared SCX/PNG assets and custom UVs stay untouched.
+  Custom fonts keep the previous spatial region mapping.
+  Regression target: `vehicle_hud_damage` (`BUILD_TESTING=ON`); optionally pass
+  the original `cars/meshes/osdfont.scx` path for a real-asset integration check.
 
 ### 5.9 Options and saves
 
