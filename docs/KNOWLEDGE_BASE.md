@@ -2972,6 +2972,9 @@ city at night.
   `u_fixtureParams`, shadow params) and textures are still set per draw, so
   unlit draws (previews, lamp glass) read no lamp. Draws from other paths (sky,
   terrain parts, OSD) and views not marked Sequential upload every time.
+- #262 extends the rule to the single-value light uniforms and to texture
+  stages; see "Per-view uniform values, kept texture stages and residency
+  skip (#262)" below.
 - Measured (`scene_shadow_gpu` case `per_view_light_uniforms`, 2,000 lit draws
   in one view): main-thread submission 1.45 → 1.08 ms, bgfx render thread
   unchanged (≈3.7 ms). The D3D11 renderer re-uploads the program's whole
@@ -3196,3 +3199,73 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   frame cache on, batch vector kept across frames as in the renderer):
   main-view collection 0.60–0.70 ms → 0.17–0.24 ms; identical output
   (same records and transform checksums with and without LOD).
+
+### Per-view uniform values, kept texture stages and residency skip (#262)
+
+- Same bgfx rule as #246, extended to every single-value light uniform:
+  `LibBgfxBackend::set_uniform` (`src/render/bgfx_lighting.cpp`) skips a
+  value equal to the one already set in the same Sequential view and frame
+  (sun, fog, sky and cloud wind, shadow filter/params/origin/ranges/eye and
+  matrix, interior sun, point and local light, car depth, AO, fixture/lamp
+  counts, lightmap and mesh UV transforms). The view comes from
+  `LibBgfxBackend::BindingScope`, opened by `draw_instance` and
+  `draw_prop_batches`; a new view or frame (`frames_`) starts a new
+  generation. Every set of these handles in the renderer goes through
+  `set_uniform`: outside a Sequential scope it forgets that handle, so sky,
+  terrain parts, sun flare, AO passes and shadow passes that set the same
+  uniforms stay correct. Matrices pass 16 floats; a new handle routed through
+  `set_uniform` must pass its real size.
+- Two bgfx cases where a set value never reaches the draw the cache expects
+  (`build/_deps/bgfx-src/src/bgfx.cpp` `EncoderImpl::submit`, `bgfx_p.h`
+  `discard`): a dropped submit (no indices, or more than
+  `BGFX_CONFIG_MAX_DRAW_CALLS`) discards its pending uniforms, and values set
+  after the last submit of a scope attach to whatever submit comes next.
+  `submit_bound` forgets everything after a submit without indices, and the
+  scope destructor forgets everything when values are still pending (this
+  also covers the #246 arrays). The draw-call limit is not detected: past it
+  the frame is already missing draws.
+- Texture stages (`set_texture`, `submit_bound`): in this bgfx (fe9bbdec6)
+  `setTexture` compares the binding (`setBind`) and writes a sampler uniform,
+  and the encoder hashes the binding set at a submit when it changed;
+  `BGFX_DISCARD_BINDINGS` resets the bindings after every submit. Inside a
+  Sequential scope, submits now use `BGFX_DISCARD_ALL & ~BGFX_DISCARD_BINDINGS`
+  and only stages whose sampler, texture or flags changed are set again. A
+  draw that leaves a kept stage unset (vehicle stage 4 without a live
+  reflection cube, mesh and vehicle samplers on the same stage) is submitted
+  with the full discard, so no draw samples a texture it did not ask for. The
+  scope ends with `bgfx::discard(BGFX_DISCARD_BINDINGS)`, so sky, terrain,
+  blended, OSD and shadow draws outside it start with no bindings, as before.
+  Every `setTexture` and `submit` inside the two scoped functions must use
+  the wrappers, or the kept state no longer matches the encoder.
+- Instanced map props: `kPropInstanceChunk` (`src/render/bgfx_lib_backend.hpp`)
+  raised from 128 to 1024 placements per submit. Instance data comes from the
+  per-frame transient vertex buffer (6 MB default, 80 bytes per placement)
+  whatever the chunk; `getAvailInstanceDataBuffer` still clamps a chunk when
+  the buffer runs low. Draw order inside a batch changes (each group now
+  covers all placements at once); the city capture is byte-identical.
+- `sync_instances` (`src/render/bgfx_lib_backend.cpp`) lists the meshes it
+  keeps (shadow meshes, lamp casters, resident props, instances, previews)
+  with revision, owner and deformed flag. When that list and
+  `instance_meshes_.size()` match the previous frame, `cache_scene_mesh` and
+  the sweep would change nothing, so the used map, prefetch, cache loop and
+  sweep are skipped (`residency_skips_`); skin uploads still run.
+  `clear_scene` resets the stored list.
+- Harness (`tests/test_scene_shadow_gpu.cpp` `city_submission`, Valo City at
+  22 h, street view, 640×360, world view 5 Sequential, two runs): caches off
+  then on in the same process, captures byte-identical to each other and to
+  the pre-#262 build. sync_instances 0.38–0.39 → 0.32 ms, world submission
+  0.84–0.87 → 0.68–0.69 ms, bgfx render thread 1.28–1.34 → 0.92–0.94 ms.
+  Per frame: uniform sets 39,590 → 186, texture sets 15,063 → 1,995, draws
+  1,368 → 1,367. The pre-#262 build measured 0.39–0.46 / 0.79–0.99 /
+  1.34–1.62 ms in the same harness.
+- In game after #260 and #262 (Elias, 2560×1440, night city, about the same
+  spot and time as the #246–#257 snapshot, 6,090 draws, 625 batches / 8,946
+  placements): frame 11.2 → 10.2 ms, GPU 7.63 → 7.36 ms, bgfx render thread
+  5.62 → 4.70 ms, world view GPU 5.40 → 5.25 ms, scene collection +
+  residency 3.87 → 3.24 ms, world submission 2.91 → 2.68 ms. The main thread
+  is still the limit (render flush 7.9 ms of a 10.1 ms frame; scripts 0.37,
+  physics 0.98, other 0.88). Open question: the "instanced prop batches"
+  zone (main-view `scene_instances_collect_batches` only) stayed at 1.55 ms
+  although the #260 harness measured 0.6–0.7 → 0.17–0.24 ms for it, so the
+  in-game cost lies in something the harness does not reproduce (scene,
+  LOD/size filter, frame cache state).

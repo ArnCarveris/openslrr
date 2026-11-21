@@ -979,6 +979,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
 {
     for(auto& entry:instance_meshes_)destroy_part(entry.second);
     instance_meshes_.clear();deformed_meshes_.clear();instances_.clear();previews_.clear();
+    residency_uses_.clear();residency_count_ = SIZE_MAX;
     for (ScenePart& p : parts_) destroy_part(p);
     parts_.clear();
     mesh_ok_ = false;
@@ -1148,6 +1149,40 @@ void LibBgfxBackend::cache_scene_mesh(
       if(!objects.empty())previews_.push_back({*camera,*vp,std::move(objects)});
     }
     std::sort(previews_.begin(),previews_.end(),[](const Preview&a,const Preview&b){return a.viewport.vp_pri!=b.viewport.vp_pri?a.viewport.vp_pri<b.viewport.vp_pri:a.viewport.vp_x<b.viewport.vp_x;});
+    // Residency (#262): the meshes this frame keeps, with their revisions.
+    auto& uses = residency_scratch_;
+    uses.clear();
+    auto note = [&](const ScxGeometry* key, void* owner) {
+      const auto* node = owner ? gameref_get(owner) : nullptr;
+      uses.push_back({key, owner, key ? key->revision : 0u,
+                      node && node->deformed_geometry.get() == key});
+    };
+    for (const auto* mesh : shadow_meshes_) note(mesh, nullptr);
+    for (const auto& slot : lamp_shadow_slots_) {
+      for (const auto& caster : slot.statics) note(caster.geometry.get(), nullptr);
+      for (const auto& batch : slot.static_batches) note(batch.geometry.get(), nullptr);
+    }
+    for (const auto& mesh : resident_props) note(mesh.get(), nullptr);
+    for (const auto& instance : instances_)
+      if (!instance.sky) note(instance.geometry.get(), instance.key);
+    for (const auto& preview : previews_)
+      for (const auto& instance : preview.instances) note(instance.geometry.get(), instance.key);
+    auto ensure_skin = [&](const SceneInstance& instance) {
+      if (!instance.gpu_skin || !instance.geometry) return;
+      auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end() || bgfx::isValid(found->second.skin_vbh)) return;
+      upload_skin(found->second);
+    };
+    if (residency_cache_ && residency_count_ == instance_meshes_.size() &&
+        uses == residency_uses_) {
+      // Every mesh is resident at the same revision and nothing else is:
+      // cache_scene_mesh and the sweep below would change nothing.
+      ++residency_skips_;
+      for (const auto& instance : instances_) ensure_skin(instance);
+      for (const auto& preview : previews_)
+        for (const auto& instance : preview.instances) ensure_skin(instance);
+      return;
+    }
     std::unordered_map<const ScxGeometry*,bool> used;
     for (const auto* mesh : shadow_meshes_) used[mesh] = true;
     // Cached street-lamp shadow casters (#237) stay resident with their slot.
@@ -1192,12 +1227,6 @@ void LibBgfxBackend::cache_scene_mesh(
     for (const auto& preview : previews_)
       for (const auto& instance : preview.instances) cache(instance.geometry, instance.key);
     prefetched_textures_.clear();
-    auto ensure_skin = [&](const SceneInstance& instance) {
-      if (!instance.gpu_skin || !instance.geometry) return;
-      auto found = instance_meshes_.find(instance.geometry.get());
-      if (found == instance_meshes_.end() || bgfx::isValid(found->second.skin_vbh)) return;
-      upload_skin(found->second);
-    };
     for (const auto& instance : instances_) ensure_skin(instance);
     for (const auto& preview : previews_)
       for (const auto& instance : preview.instances) ensure_skin(instance);
@@ -1205,6 +1234,8 @@ void LibBgfxBackend::cache_scene_mesh(
       if(used.count(it->first)){++it;continue;}destroy_part(it->second);it=instance_meshes_.erase(it);
     }
     deformed_meshes_ = std::move(current_deformed);
+    residency_uses_.swap(uses);
+    residency_count_ = instance_meshes_.size();
   }
 void LibBgfxBackend::update_local_light() {
     ++light_uniform_revision_;

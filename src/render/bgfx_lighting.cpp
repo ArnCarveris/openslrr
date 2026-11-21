@@ -26,6 +26,89 @@
 
 namespace slrr {
 
+LibBgfxBackend::BindingScope::BindingScope(LibBgfxBackend& b, uint16_t view) : backend(b) {
+  b.binding_view_ = view;
+  const bool sequential = view < b.sequential_views_.size() && b.sequential_views_.test(view);
+  b.uniform_scope_ = b.uniform_cache_ && sequential;
+  if (b.uniform_scope_ && (b.uniform_view_ != view || b.uniform_frame_ != b.frames_)) {
+    ++b.uniform_generation_;
+    b.uniform_view_ = view;
+    b.uniform_frame_ = b.frames_;
+  }
+  b.uniform_pending_ = false;
+  b.texture_run_ = b.texture_cache_ && sequential;
+  b.forget_textures();
+  b.texture_set_mask_ = 0;
+}
+
+LibBgfxBackend::BindingScope::~BindingScope() {
+  auto& b = backend;
+  // Values set after the last submit attach to the next submit anywhere.
+  if (b.uniform_pending_) b.forget_uniforms();
+  b.uniform_pending_ = false;
+  b.uniform_scope_ = false;
+  if (b.texture_run_) bgfx::discard(BGFX_DISCARD_BINDINGS);
+  b.texture_run_ = false;
+  b.texture_set_mask_ = 0;
+  b.binding_view_ = UINT16_MAX;
+}
+
+void LibBgfxBackend::set_uniform(bgfx::UniformHandle handle, const float* value, uint16_t floats) {
+  if (!bgfx::isValid(handle)) return;
+  if (handle.idx >= uniform_values_.size()) uniform_values_.resize(size_t(handle.idx) + 1);
+  auto& slot = uniform_values_[handle.idx];
+  ++uniform_sets_;
+  if (!uniform_scope_) {
+    slot.generation = 0;
+    bgfx::setUniform(handle, value);
+    return;
+  }
+  const size_t bytes = size_t(std::min<uint16_t>(floats, 16)) * sizeof(float);
+  if (slot.generation == uniform_generation_ && std::memcmp(slot.value.data(), value, bytes) == 0) {
+    --uniform_sets_;
+    ++uniform_skips_;
+    return;
+  }
+  std::memcpy(slot.value.data(), value, bytes);
+  slot.generation = uniform_generation_;
+  uniform_pending_ = true;
+  bgfx::setUniform(handle, value);
+}
+
+void LibBgfxBackend::set_texture(uint8_t stage, bgfx::UniformHandle sampler,
+                                 bgfx::TextureHandle texture, uint32_t flags) {
+  if (!texture_run_ || stage >= kTextureStages) {
+    bgfx::setTexture(stage, sampler, texture, flags);
+    return;
+  }
+  texture_set_mask_ |= 1u << stage;
+  auto& slot = texture_bindings_[stage];
+  if (slot.valid && slot.sampler == sampler.idx && slot.texture == texture.idx && slot.flags == flags) {
+    ++texture_skips_;
+    return;
+  }
+  slot = {true, sampler.idx, texture.idx, flags};
+  ++texture_sets_;
+  bgfx::setTexture(stage, sampler, texture, flags);
+}
+
+void LibBgfxBackend::submit_bound(uint16_t view, bgfx::ProgramHandle program, uint32_t index_count) {
+  uint8_t flags = BGFX_DISCARD_ALL;
+  if (texture_run_) {
+    uint32_t kept = 0;
+    for (size_t i = 0; i < kTextureStages; ++i)
+      if (texture_bindings_[i].valid) kept |= 1u << i;
+    // A stage this draw did not set must stay unbound, as with a full discard.
+    if (kept & ~texture_set_mask_) forget_textures();
+    else flags = BGFX_DISCARD_ALL & ~BGFX_DISCARD_BINDINGS;
+  }
+  bgfx::submit(view, program, 0, flags);
+  texture_set_mask_ = 0;
+  uniform_pending_ = false;
+  // bgfx drops a draw without indices together with its uniforms.
+  if (!index_count) forget_uniforms();
+}
+
 void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, uint16_t view_id) {
   if (!interior_sun_active_ && std::none_of(instances_.begin(), instances_.end(),
                    [](const SceneInstance& instance) { return instance.sky; }))
@@ -117,7 +200,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   bgfx::setTransform(identity);
   bgfx::setVertexBuffer(0, &vb);
   bgfx::setIndexBuffer(&ib);
-  bgfx::setTexture(0, s_tex_, texture);
+  set_texture(0, s_tex_, texture);
   bgfx::setState(BGFX_STATE_WRITE_RGB |
                  (interior_sun_active_ ? uint64_t(0) : BGFX_STATE_DEPTH_TEST_GREATER) |
                  BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
@@ -191,20 +274,20 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled, bool upload_arrays) {
   // Street lamp shadows (#237) use the same atlas outside garages.
   const size_t lamp_shadows=enabled?all_lamp_shadows:size_t(0);
   const float params[4]={float(count),1.f/(fixture_shadow_tile_*4),1.f/(fixture_shadow_tile_*3),shadows?1.f:0.f};
-  bgfx::setUniform(u_fixture_params_,params);
-  bgfx::setTexture(7,s_fixture_shadow_,shadows||lamp_shadows?fixture_shadow_tex_:depth_white_,
+  set_uniform(u_fixture_params_,params);
+  set_texture(7,s_fixture_shadow_,shadows||lamp_shadows?fixture_shadow_tex_:depth_white_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
-  bgfx::setTexture(11,s_light_data_,light_data_tex_,
+  set_texture(11,s_light_data_,light_data_tex_,
       BGFX_SAMPLER_POINT|BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
   const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
                                      1.f/(fixture_shadow_tile_*3),
                                      render_debug().lamp_shadow_reference?1.f:0.f};
-  bgfx::setUniform(u_lamp_shadow_params_,lamp_shadow_params);
+  set_uniform(u_lamp_shadow_params_,lamp_shadow_params);
   // Scenery lamps (#237) follow the same enable as the fixtures: previews and
   // emissive lamp glass receive none.
   const auto lamps=enabled?all_lamps:size_t(0);
   const float lamp_params[4]={float(lamps),0.f,0.f,0.f};
-  bgfx::setUniform(u_lamp_params_,lamp_params);
+  set_uniform(u_lamp_params_,lamp_params);
 }
 
 void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
@@ -213,19 +296,19 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
                                interior_sun_.direction[2], 1.f/interior_sun_size_};
   const float color[4] = {interior_sun_.diffuse[0], interior_sun_.diffuse[1],
                            interior_sun_.diffuse[2], active ? 1.f : 0.f};
-  bgfx::setUniform(u_interior_sun_dir_, direction);
-  bgfx::setUniform(u_interior_sun_color_, color);
-  bgfx::setUniform(u_interior_sun_mtx_, interior_sun_matrix_.data());
-  bgfx::setTexture(8,s_sun_aperture_,active?interior_aperture_tex_:white_tex_,
+  set_uniform(u_interior_sun_dir_, direction);
+  set_uniform(u_interior_sun_color_, color);
+  set_uniform(u_interior_sun_mtx_, interior_sun_matrix_.data(), 16);
+  set_texture(8,s_sun_aperture_,active?interior_aperture_tex_:white_tex_,
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
-  bgfx::setTexture(stage, s_interior_sun_, active ? interior_sun_tex_ : depth_white_,
+  set_texture(stage, s_interior_sun_, active ? interior_sun_tex_ : depth_white_,
       BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
 }
 
   void LibBgfxBackend::bind_scene_shadow(bool enabled, uint8_t stage)
 {
     const float filter[4]={float(std::clamp(host_enhanced_graphics().shadow_smoothing,0,2)),0,0,0};
-    bgfx::setUniform(u_shadow_filter_,filter);
+    set_uniform(u_shadow_filter_,filter);
     // View-invariant arrays once per Sequential view and frame (#246).
     const bool upload = !light_arrays_current();
     bind_fixture_lights(enabled, upload);
@@ -235,6 +318,7 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
       if (shadow_cascades_active_)
         bgfx::setUniform(u_shadow_cascades_, shadow_cascade_matrices_.data(), 4);
       ++light_array_uploads_;
+      if (uniform_scope_) uniform_pending_ = true;
       light_arrays_view_ = binding_view_;
       light_arrays_frame_ = frames_;
       light_arrays_revision_ = light_uniform_revision_;
@@ -244,28 +328,28 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
                          debug_overlay_.render_options().map_shadows;
     const float params[4] = {receive ? 1.f : 0.f,
                              receive ? 1.f / static_shadow_size_ : 0.f, 0.00012f, static_shadow_local_ ? 1.f : 0.f};
-    bgfx::setUniform(u_static_shadow_params_, params);
+    set_uniform(u_static_shadow_params_, params);
     const bool point = receive && point_shadow_active_;
     const float point_params[4] = {point ? 1.f : 0.f, 1.f / (local_shadow_resolution()*3),
                                    1.f / (local_shadow_resolution()*2), .015f};
-    bgfx::setUniform(u_point_shadow_params_, point_params);
+    set_uniform(u_point_shadow_params_, point_params);
     const bool cascaded = receive && shadow_cascades_active_;
     const float origin[4]={shadow_origin_[0],shadow_origin_[1],shadow_origin_[2],0.f};
-    bgfx::setUniform(u_shadow_origin_,origin);
+    set_uniform(u_shadow_origin_,origin);
     const float ranges[4] = {cascaded ? cascade_radii()[0] : 0.f, cascade_radii()[1],cascade_radii()[2],cascade_radii()[3]};
-    bgfx::setUniform(u_shadow_ranges_,ranges);
+    set_uniform(u_shadow_ranges_,ranges);
 
     if (receive) {
       const float eye[4] = {static_shadow_eye_[0], static_shadow_eye_[1],
                             static_shadow_eye_[2], static_shadow_distance_};
-      bgfx::setUniform(u_static_shadow_eye_, eye);
-      bgfx::setUniform(u_static_shadow_mtx_, static_shadow_matrix_.data());
+      set_uniform(u_static_shadow_eye_, eye);
+      set_uniform(u_static_shadow_mtx_, static_shadow_matrix_.data(), 16);
     }
     constexpr uint32_t shadow_sampler = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
                                         BGFX_SAMPLER_COMPARE_LEQUAL;
     const auto shadow_tex = receive ? static_shadow_tex_
                                     : (bgfx::isValid(depth_white_) ? depth_white_ : static_shadow_tex_);
-    bgfx::setTexture(stage, s_static_shadow_,
+    set_texture(stage, s_static_shadow_,
                      bgfx::isValid(shadow_tex) ? shadow_tex : white_tex_, shadow_sampler);
 }
 
@@ -279,12 +363,12 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
                                light.position[2], light.intensity>0.f?light.range:0.f};
     const float color[4] = {light.color[0], light.color[1], light.color[2],
                             light.intensity};
-    bgfx::setUniform(u_local_light_, position);
-    bgfx::setUniform(u_point_light_color_, color);
+    set_uniform(u_local_light_, position);
+    set_uniform(u_point_light_color_, color);
   } else {
-    bgfx::setUniform(u_local_light_,
+    set_uniform(u_local_light_,
                      enabled && !point_light_ ? local_light_.data() : none);
-    bgfx::setUniform(u_point_light_color_, legacy_color);
+    set_uniform(u_point_light_color_, legacy_color);
   }
   return point;
 }
@@ -296,18 +380,18 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
     // UI draws must not inherit atlas transforms from the last world mesh.
     if (!group) {
       const float identity_uv[4]={1.f,1.f,0.f,0.f};
-      bgfx::setUniform(u_mesh_base_uv_,identity_uv);
-      bgfx::setUniform(u_mesh_mix_uv_,identity_uv);
+      set_uniform(u_mesh_base_uv_,identity_uv);
+      set_uniform(u_mesh_mix_uv_,identity_uv);
     }
     const float no_sky[4]{};
-    bgfx::setUniform(u_local_light_, no_sky);
-    bgfx::setUniform(u_cloud_sky_, sky ? sky : no_sky);
+    set_uniform(u_local_light_, no_sky);
+    set_uniform(u_cloud_sky_, sky ? sky : no_sky);
     if (sky) {
       // Noon is the reference field from the early procedural sky.
       // Keep animation without starting every day kilometres downwind.
       const float cloud_time = scene_sun_time() - 12.f * 3600.f;
       const float wind[4] = {cloud_time * 1.5f, cloud_time * .55f, 0.f, 0.f};
-      bgfx::setUniform(u_cloud_wind_, wind);
+      set_uniform(u_cloud_wind_, wind);
     }
     float direction[4]{};
     if (sun && sun->set && sun->has_direction) {
@@ -317,10 +401,10 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       direction[3] = 1.f;
       const float ambient[4] = {sun->ambient[0], sun->ambient[1], sun->ambient[2], 0.f};
       const float diffuse[4] = {sun->diffuse[0], sun->diffuse[1], sun->diffuse[2], 0.f};
-      bgfx::setUniform(u_sun_amb_, ambient);
-      bgfx::setUniform(u_sun_diff_, diffuse);
+      set_uniform(u_sun_amb_, ambient);
+      set_uniform(u_sun_diff_, diffuse);
     }
-    bgfx::setUniform(u_sun_dir_, direction);
+    set_uniform(u_sun_dir_, direction);
     float u[4] = {0.f, 0.f, 1.f, 0.f};
     float xf[4] = {1.f, 1.f, 0.f, 0.f};
     bgfx::TextureHandle lm = white_tex_;
@@ -330,40 +414,37 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       u[3] = 1.f + static_cast<float>(group->mix_map.channel);
     // The stock lightmap already contains the sun and its shadows. Leaving
     // it on skips the shadow map in the mesh shader.
-    bgfx::setUniform(u_lightmap_, u);
-    bgfx::setUniform(u_lightmap_uv_, xf);
-    bgfx::setTexture(1, s_lightmap_, lm);
-    bgfx::setTexture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_, receive_static_shadow ? world_sampler() : BGFX_SAMPLER_NONE);
+    set_uniform(u_lightmap_, u);
+    set_uniform(u_lightmap_uv_, xf);
+    set_texture(1, s_lightmap_, lm);
+    set_texture(2, s_mesh_mix_, bgfx::isValid(mix) ? mix : white_tex_, receive_static_shadow ? world_sampler() : BGFX_SAMPLER_NONE);
     bind_scene_shadow(receive_static_shadow, 3);
     const bool receive_car = receive_static_shadow && car_depth_active_;
     const float car_params[4] = {receive_car ? 1.f : 0.f, 1.f / car_depth_size_, .0006f, 0.f};
-    bgfx::setUniform(u_car_depth_params_, car_params);
-    if (receive_car) bgfx::setUniform(u_car_depth_mtx_, car_depth_matrix_.data());
-    bgfx::setTexture(4, s_car_depth_, receive_car ? car_depth_tex_ : depth_white_,
+    set_uniform(u_car_depth_params_, car_params);
+    if (receive_car) set_uniform(u_car_depth_mtx_, car_depth_matrix_.data(), 16);
+    set_texture(4, s_car_depth_, receive_car ? car_depth_tex_ : depth_white_,
         BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_COMPARE_LEQUAL);
     if (bind_point_light(receive_static_shadow && !sky)) {
       const float mode[4] = {0, 0, 0, -1};
       const auto &ambient = point_light_->ambient;
       const float amb[4] = {ambient[0], ambient[1], ambient[2], 0};
-      bgfx::setUniform(u_sun_dir_, mode);
-      bgfx::setUniform(u_sun_amb_, amb);
+      set_uniform(u_sun_dir_, mode);
+      set_uniform(u_sun_amb_, amb);
     }
     const float fog_color[4] = {fog_color_[0], fog_color_[1], fog_color_[2],
                                 fog_enabled_ && render_debug().fog ? 1.f : 0.f};
     const float fog_range[4] = {fog_near_, fog_far_, 0.f, 0.f};
     const float fog_eye[4] = {fog_eye_[0], fog_eye_[1], fog_eye_[2], 0.f};
-    if (bgfx::isValid(u_fog_color_)) bgfx::setUniform(u_fog_color_, fog_color);
-    if (bgfx::isValid(u_fog_range_)) bgfx::setUniform(u_fog_range_, fog_range);
-    if (bgfx::isValid(u_fog_eye_)) bgfx::setUniform(u_fog_eye_, fog_eye);
+    if (bgfx::isValid(u_fog_color_)) set_uniform(u_fog_color_, fog_color);
+    if (bgfx::isValid(u_fog_range_)) set_uniform(u_fog_range_, fog_range);
+    if (bgfx::isValid(u_fog_eye_)) set_uniform(u_fog_eye_, fog_eye);
   }
   void LibBgfxBackend::draw_instance(uint16_t view_id,const SceneInstance& instance,const float* matrix,bool preview,int pass)
 {
-    // The view of this draw, for the per-view light arrays (#246).
-    struct BindingView {
-      uint16_t& slot;
-      BindingView(uint16_t& s, uint16_t view) : slot(s) { slot = view; }
-      ~BindingView() { slot = UINT16_MAX; }
-    } binding(binding_view_, view_id);
+    // The view of this draw: per-view light arrays (#246), uniform values
+    // and kept texture stages (#262).
+    BindingScope binding(*this, view_id);
     const auto& part=instance_meshes_.at(instance.geometry.get());
     if(!bgfx::isValid(part.vbh)||!bgfx::isValid(part.ibh))return;
     const auto texture = [&](uint16_t slot) {
@@ -466,10 +547,10 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
                                 point               ? -1.f
                                 : sun.has_direction ? 1.f
                                                     : 0.f};
-        bgfx::setUniform(u_sun_diff_, sun_d);
-        bgfx::setUniform(u_sun_amb_, sun_a);
-        bgfx::setUniform(u_sun_spec_, sun_s);
-        bgfx::setUniform(u_sun_dir_, sun_r);
+        set_uniform(u_sun_diff_, sun_d);
+        set_uniform(u_sun_amb_, sun_a);
+        set_uniform(u_sun_spec_, sun_s);
+        set_uniform(u_sun_dir_, sun_r);
         bind_point_light(!preview && !instance.light_flags);
         bind_ambient_occlusion(!preview && !transparent && !instance.light_flags && view_id==ao_world_view_);
         bgfx::setUniform(u_diffuse_,diffuse);
@@ -483,13 +564,13 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         if (transparent && color_mix) bake_u[3] = 1.f;
         // A switched-on lamp is the glow texture, not a surface in shade.
         if (instance.light_flags) bake_u[0] = 1.f;
-        bgfx::setUniform(u_lightmap_, bake_u);
-        bgfx::setUniform(u_lightmap_uv_, bake_xf);
-        bgfx::setTexture(0,s_tex_,base,world_sampler());bgfx::setTexture(1,s_mix_,mix,world_sampler());
+        set_uniform(u_lightmap_, bake_u);
+        set_uniform(u_lightmap_uv_, bake_xf);
+        set_texture(0,s_tex_,base,world_sampler());set_texture(1,s_mix_,mix,world_sampler());
         // Global environment textures share the image cache with OSD, but
         // material UV transforms need the scene's wrapping sampler here.
-        bgfx::setTexture(2, s_env_, env, BGFX_SAMPLER_NONE);
-        bgfx::setTexture(3,s_bake_,bake);
+        set_texture(2, s_env_, env, BGFX_SAMPLER_NONE);
+        set_texture(3,s_bake_,bake);
         // Map shadows affect direct vehicle light, not a car depth map that
         // contains this same car. Emissive lamps and previews stay unshadowed.
         bind_scene_shadow(!preview && !instance.light_flags, 5);
@@ -499,7 +580,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
                                      two_sided ? 1.f : 0.f, 0.f, 0.f};
         bgfx::setUniform(u_dynamic_reflection_, reflection);
         if (live_env) {
-          bgfx::setTexture(4, s_reflection_cube_, reflection_cubes_[reflection_write_ ^ 1]);
+          set_texture(4, s_reflection_cube_, reflection_cubes_[reflection_write_ ^ 1]);
           const float probe[4] = {reflection_sample_origin_[0], reflection_sample_origin_[1],
               reflection_sample_origin_[2], reflection_box_valid_ ? 1.f : 0.f};
           const float low[4] = {reflection_box_min_[0], reflection_box_min_[1], reflection_box_min_[2], 0.f};
@@ -519,7 +600,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
           state |= BGFX_STATE_BLEND_ALPHA;
         else
           state |= BGFX_STATE_WRITE_Z;
-        bgfx::setState(state);bgfx::submit(view_id,vehicle_program_);
+        bgfx::setState(state);submit_bound(view_id,vehicle_program_,group.index_count);
       }
       return;
     }
@@ -582,15 +663,15 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       const ScxTextureMap& mix_uv = group ? group->mix_map : identity;
       const float base_xf[4] = {base_uv.scale_u, base_uv.scale_v, base_uv.offset_u, base_uv.offset_v};
       const float mix_xf[4] = {mix_uv.scale_u, mix_uv.scale_v, mix_uv.offset_u, mix_uv.offset_v};
-      bgfx::setUniform(u_mesh_base_uv_, base_xf);
-      bgfx::setUniform(u_mesh_mix_uv_, mix_xf);
+      set_uniform(u_mesh_base_uv_, base_xf);
+      set_uniform(u_mesh_mix_uv_, mix_xf);
       bgfx::setUniform(u_alpha_test_,settings);bgfx::setUniform(u_color_,tint);bgfx::setTransform(matrix);
       const bool skinned = instance.gpu_skin && bgfx::isValid(part.skin_vbh) &&
           bgfx::isValid(skin_program_) && instance.skin.size() >= 48u * 16u;
       if (skinned) bgfx::setUniform(u_skin_bones_, instance.skin.data(), 48);
       bgfx::setVertexBuffer(0, skinned ? part.skin_vbh : part.vbh);
       bgfx::setIndexBuffer(part.ibh,first,count);
-      bgfx::setTexture(0, s_tex_, tex, preview ? BGFX_SAMPLER_NONE : world_sampler());
+      set_texture(0, s_tex_, tex, preview ? BGFX_SAMPLER_NONE : world_sampler());
       bgfx::TextureHandle mix = BGFX_INVALID_HANDLE;
       if (group && part.geo.position_scale == 1.f && group->mix_index != 0xffff) {
         const auto candidate = texture(group->mix_index);
@@ -615,12 +696,12 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
                                    static_cast<float>(uv.channel), 0.f};
         const float transform[4] = {uv.scale_u, uv.scale_v, uv.offset_u, uv.offset_v};
-        bgfx::setUniform(u_lightmap_, channels);
-        bgfx::setUniform(u_lightmap_uv_, transform);
+        set_uniform(u_lightmap_, channels);
+        set_uniform(u_lightmap_uv_, transform);
         // Missing masks are black, never a full-bright wall fallback.
         const auto mask = texture(group->emission_index);
         if (mask.idx == white_tex_.idx) return;
-        bgfx::setTexture(1, s_lightmap_, mask);
+        set_texture(1, s_lightmap_, mask);
       }
 
       uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA;
@@ -640,7 +721,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         state |= BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
       }
       bgfx::setState(state);
-      bgfx::submit(view_id, skinned ? skin_program_ : program_);
+      submit_bound(view_id, skinned ? skin_program_ : program_, count);
     };
     if(part.geo.groups.empty())draw(0,static_cast<uint32_t>(part.geo.index_count),0,0,nullptr);
     else for(const auto&g:part.geo.groups)draw(g.index_start,g.index_count,g.texture_index,g.material_flags,&g);
@@ -651,11 +732,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                        bool shadow, bool conservative, bool reversed_depth) {
   const auto program = shadow ? inst_shadow_program_ : inst_program_;
   if (!bgfx::isValid(program) || batches.empty()) return;
-  struct BindingView {
-    uint16_t& slot;
-    BindingView(uint16_t& s, uint16_t view) : slot(s) { slot = view; }
-    ~BindingView() { slot = UINT16_MAX; }
-  } binding(binding_view_, view_id);
+  BindingScope binding(*this, view_id);
   float identity[16];
   bx::mtxIdentity(identity);
   const auto& graphics = host_enhanced_graphics();
@@ -674,7 +751,11 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
     if(shadow && groups.empty()) continue;
     const uint32_t group_count = groups.empty() ? 1u : static_cast<uint32_t>(groups.size());
     for (size_t base = 0; base < batch.instances.size();) {
-      const auto want = static_cast<uint32_t>(std::min<size_t>(128, batch.instances.size() - base));
+      // One submit per group for up to kPropInstanceChunk placements (#262).
+      // Instance data comes from the per-frame transient vertex buffer (6 MB
+      // by default, 80 bytes per placement), whatever the chunk size: a
+      // larger chunk only means fewer submits and fewer stride paddings.
+      const auto want = static_cast<uint32_t>(std::min<size_t>(kPropInstanceChunk, batch.instances.size() - base));
       const auto stride = static_cast<uint16_t>(sizeof(PropInstance));
       const uint32_t count = bgfx::getAvailInstanceDataBuffer(want, stride);
       if (!count) break;
@@ -711,8 +792,8 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
               : v4 ? group->alpha_reference / 255.f : .5f;
           const float params[4] = {0.f, threshold,
                                    group ? static_cast<float>(group->base_map.channel) : 0.f, 0.f};
-          bgfx::setUniform(u_static_shadow_params_, params);
-          bgfx::setTexture(0, s_tex_, tex);
+          set_uniform(u_static_shadow_params_, params);
+          set_texture(0, s_tex_, tex);
           bgfx::setTransform(identity);
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, first, index_count);
@@ -741,8 +822,8 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           const auto& mix_uv = group ? group->mix_map : identity_uv;
           const float base_xf[4] = {base_uv.scale_u, base_uv.scale_v, base_uv.offset_u, base_uv.offset_v};
           const float mix_xf[4] = {mix_uv.scale_u, mix_uv.scale_v, mix_uv.offset_u, mix_uv.offset_v};
-          bgfx::setUniform(u_mesh_base_uv_, base_xf);
-          bgfx::setUniform(u_mesh_mix_uv_, mix_xf);
+          set_uniform(u_mesh_base_uv_, base_xf);
+          set_uniform(u_mesh_mix_uv_, mix_xf);
           bgfx::setUniform(u_alpha_test_, settings);
           // The placement colour comes per instance; ColorMixTex multiplies
           // it by the section diffuse in fs_mesh, like draw_instance's tint.
@@ -753,7 +834,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bgfx::setTransform(identity);
           bgfx::setVertexBuffer(0, part.vbh);
           bgfx::setIndexBuffer(part.ibh, first, index_count);
-          bgfx::setTexture(0, s_tex_, tex, world_sampler());
+          set_texture(0, s_tex_, tex, world_sampler());
           bind_baked_light(group, &part.tex, mix, true,
                            outdoor_lighting_ && graphics.dynamic_lighting ? &batch.lighting : nullptr,
                            nullptr);
@@ -769,7 +850,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           bgfx::setState(state);
         }
         bgfx::setInstanceDataBuffer(&idb);
-        bgfx::submit(view_id, program);
+        submit_bound(view_id, program, index_count);
       }
       base += count;
     }
