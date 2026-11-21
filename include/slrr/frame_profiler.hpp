@@ -33,6 +33,8 @@ enum class Zone : uint8_t {
   LampSelect,     // street lamp selection (update_local_light)
   LampShadows,    // lamp and car lamp shadow tiles, inside Shadows
   AmbientOcclusion, // AO prepass and passes submission
+  WorldList,      // the frame's world list build (#264), inside the first collection
+  WorldCopy,      // world list copies in scene_instances_collect, every collection (#264)
   Count
 };
 

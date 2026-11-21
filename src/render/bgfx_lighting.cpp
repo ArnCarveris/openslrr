@@ -102,7 +102,7 @@ void LibBgfxBackend::submit_bound(uint16_t view, bgfx::ProgramHandle program, ui
     if (kept & ~texture_set_mask_) forget_textures();
     else flags = BGFX_DISCARD_ALL & ~BGFX_DISCARD_BINDINGS;
   }
-  bgfx::submit(view, program, 0, flags);
+  submit_counted(view, program, flags);
   texture_set_mask_ = 0;
   uniform_pending_ = false;
   // bgfx drops a draw without indices together with its uniforms.
@@ -204,7 +204,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
   bgfx::setState(BGFX_STATE_WRITE_RGB |
                  (interior_sun_active_ ? uint64_t(0) : BGFX_STATE_DEPTH_TEST_GREATER) |
                  BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
-  bgfx::submit(view_id, program_);
+  submit_counted(view_id, program_);
 }
 
 // Fills the per-frame light data texture (#254, layout in scene_shadow.sh).
@@ -726,6 +726,173 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
     if(part.geo.groups.empty())draw(0,static_cast<uint32_t>(part.geo.index_count),0,0,nullptr);
     else for(const auto&g:part.geo.groups)draw(g.index_start,g.index_count,g.texture_index,g.material_flags,&g);
   }
+
+bool LibBgfxBackend::blended_prop_instance(const SceneInstance& instance) {
+  if (!instance.ground_prop || instance.emissive_overlay || instance.sky || instance.gpu_skin ||
+      instance.vehicle_material || instance.light_flags || instance.opacity < 1.f ||
+      !instance.cull_backfaces || !instance.texture_replacements.empty() || !instance.geometry)
+    return false;
+  const auto& mesh = *instance.geometry;
+  const int version = static_cast<int>(mesh.info.version);
+  if (mesh.ground_polygons || (version != 3 && version != 4)) return false;
+  for (const auto& group : mesh.groups)
+    if (scx_surface(version, group).blend) return true;
+  return false;
+}
+
+void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& part,
+                                          const SceneSun& lighting, bool emissive, int pass,
+                                          const PropPlacement* placements, size_t count) {
+  if (!count || !bgfx::isValid(inst_program_) || !bgfx::isValid(part.vbh) ||
+      !bgfx::isValid(part.ibh))
+    return;
+  BindingScope binding(*this, view_id);
+  float identity[16];
+  bx::mtxIdentity(identity);
+  const auto texture = [&](uint16_t slot) {
+    return slot < part.tex.size() && bgfx::isValid(part.tex[slot]) ? part.tex[slot] : white_tex_;
+  };
+  struct PropInstance {
+    float matrix[16];
+    float color[4];
+  };
+  static_assert(sizeof(PropInstance) == 80);
+  const auto stride = static_cast<uint16_t>(sizeof(PropInstance));
+  const int version = static_cast<int>(part.geo.info.version);
+  // draw_instance's draw lambda for a map placement: cull_backfaces, no
+  // preview, no sky, opacity 1, no skin and no texture replacement.
+  const auto draw = [&](uint32_t first, uint32_t index_count, uint16_t texture_index,
+                        uint32_t flags, const ScxGroup* group) {
+    if (emissive &&
+        (!group || (group->emission_index == 0xffff && group->emission_color[0] == 0.f &&
+                    group->emission_color[1] == 0.f && group->emission_color[2] == 0.f)))
+      return;
+    const auto surface = group ? scx_surface(version, *group) : ScxSurface{};
+    const bool blend = emissive || surface.blend;
+    if (pass != int(blend)) return;
+    const auto tex = texture(texture_index);
+    std::string extension = blend && texture_index < part.geo.textures.size()
+        ? std::filesystem::path(part.geo.textures[texture_index]).extension().string() : "";
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return std::tolower(ch); });
+    const bool premultiplied = texture_index != 0xffff && extension != ".dds";
+    const bool material_mix = group && version == 4 && surface.color_mix;
+    const bool authored_alpha = version == 4;
+    const bool cut = !material_mix && !blend &&
+        (authored_alpha ? surface.cutout : version != 3 || (flags & 1));
+    const float alpha_test = !cut ? 0.f : authored_alpha && group
+        ? -(1.f + group->alpha_reference) / 255.f : 1.f;
+    const bool foliage_coverage = cut && authored_alpha && view_id < 72 &&
+        (reset_flags_ & BGFX_RESET_MSAA_MASK) && (flags & 0x02000000u) != 0;
+    const bool vertex_mix = group && group->mix_vertex_color;
+    const bool fixture_emitter = group && group->self_illuminated;
+    const float settings[4] = {alpha_test,
+                               emissive ? 2.f : blend || vertex_mix || fixture_emitter ? 1.f : 0.f,
+                               foliage_coverage ? 2.f : blend ? 1.f : 0.f,
+                               material_mix ? -2.f : vertex_mix ? -1.f :
+                               outdoor_lighting_ && part.geo.ground_polygons ? -3.f : 0.f};
+    // The tint draw_instance builds from the placement colour, computed in
+    // the same order. Its RGB rides per instance (v_tint, with u_color.rgb
+    // 1), its alpha never depends on the placement and stays in u_color.
+    const auto tint_of = [&](uint32_t color, float (&tint)[4]) {
+      tint[0] = ((color >> 16) & 255) / 255.f;
+      tint[1] = ((color >> 8) & 255) / 255.f;
+      tint[2] = (color & 255) / 255.f;
+      tint[3] = 1.f;
+      tint[3] *= 1.f;  // opacity
+      if (group && version == 3 && texture_index == 0xffff)
+        for (int i = 0; i < 4; ++i) tint[i] *= group->diffuse[i];
+      if (material_mix)
+        for (int i = 0; i < 3; ++i) tint[i] *= group->diffuse[i];
+      if (blend && !emissive && group) scx_modulate_blend(version, *group, tint, premultiplied);
+      if (emissive && group && group->emission_index == 0xffff)
+        for (int ch = 0; ch < 3; ++ch) tint[ch] *= group->emission_color[ch];
+    };
+    float first_tint[4];
+    tint_of(placements[0].color, first_tint);
+    const float color_uniform[4] = {1.f, 1.f, 1.f, first_tint[3]};
+    const ScxTextureMap identity_map;
+    const ScxTextureMap& base_uv = group ? group->base_map : identity_map;
+    const ScxTextureMap& mix_uv = group ? group->mix_map : identity_map;
+    const float base_xf[4] = {base_uv.scale_u, base_uv.scale_v, base_uv.offset_u, base_uv.offset_v};
+    const float mix_xf[4] = {mix_uv.scale_u, mix_uv.scale_v, mix_uv.offset_u, mix_uv.offset_v};
+    bgfx::TextureHandle mix = BGFX_INVALID_HANDLE;
+    if (group && part.geo.position_scale == 1.f && group->mix_index != 0xffff) {
+      const auto candidate = texture(group->mix_index);
+      if (candidate.idx != white_tex_.idx) mix = candidate;
+    }
+    const bool world_mesh = !blend && !fixture_emitter;
+    const auto& graphics = host_enhanced_graphics();
+    const bool scene_light = world_mesh && graphics.dynamic_lighting &&
+        (outdoor_lighting_ || (garage_ && lighting.set && lighting.has_direction));
+    bgfx::TextureHandle mask = BGFX_INVALID_HANDLE;
+    if (emissive && group && group->emission_index != 0xffff) {
+      // Missing masks are black, never a full-bright wall fallback.
+      mask = texture(group->emission_index);
+      if (mask.idx == white_tex_.idx) return;
+    }
+    uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA;
+    if (foliage_coverage) state |= BGFX_STATE_BLEND_ALPHA_TO_COVERAGE;
+    if (!(flags & 0x02000000u)) state |= BGFX_STATE_CULL_CW;
+    if (emissive) {
+      state |= BGFX_STATE_DEPTH_TEST_GEQUAL |
+               BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE);
+    } else if (blend) {
+      state |= BGFX_STATE_DEPTH_TEST_GREATER | (premultiplied
+          ? BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_INV_SRC_ALPHA)
+          : BGFX_STATE_BLEND_ALPHA);
+    } else {
+      state |= BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
+    }
+    for (size_t base = 0; base < count;) {
+      const auto want = static_cast<uint32_t>(std::min<size_t>(kPropInstanceChunk, count - base));
+      const uint32_t chunk = bgfx::getAvailInstanceDataBuffer(want, stride);
+      if (!chunk) break;
+      bgfx::InstanceDataBuffer idb;
+      bgfx::allocInstanceDataBuffer(&idb, chunk, stride);
+      auto* dst = reinterpret_cast<PropInstance*>(idb.data);
+      for (uint32_t i = 0; i < chunk; ++i) {
+        const auto& placement = placements[base + i];
+        std::memcpy(dst[i].matrix, placement.matrix, sizeof(dst[i].matrix));
+        float tint[4];
+        tint_of(placement.color, tint);
+        dst[i].color[0] = tint[0];
+        dst[i].color[1] = tint[1];
+        dst[i].color[2] = tint[2];
+        dst[i].color[3] = emissive ? 2.f : 1.f;  // vs_mesh_inst: 2 = overlay offset
+      }
+      set_uniform(u_mesh_base_uv_, base_xf);
+      set_uniform(u_mesh_mix_uv_, mix_xf);
+      bgfx::setUniform(u_alpha_test_, settings);
+      bgfx::setUniform(u_color_, color_uniform);
+      bgfx::setTransform(identity);
+      bgfx::setVertexBuffer(0, part.vbh);
+      bgfx::setIndexBuffer(part.ibh, first, index_count);
+      set_texture(0, s_tex_, tex, world_sampler());
+      bind_baked_light(group, &part.tex, mix, world_mesh, scene_light ? &lighting : nullptr,
+                       nullptr);
+      bind_ambient_occlusion(world_mesh && view_id == ao_world_view_);
+      if (bgfx::isValid(mask)) {
+        const auto& uv = group->emission_map;
+        const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
+                                   static_cast<float>(uv.channel), 0.f};
+        const float transform[4] = {uv.scale_u, uv.scale_v, uv.offset_u, uv.offset_v};
+        set_uniform(u_lightmap_, channels);
+        set_uniform(u_lightmap_uv_, transform);
+        set_texture(1, s_lightmap_, mask);
+      }
+      bgfx::setState(state);
+      bgfx::setInstanceDataBuffer(&idb);
+      submit_bound(view_id, inst_program_, index_count);
+      base += chunk;
+    }
+  };
+  if (part.geo.groups.empty())
+    draw(0, static_cast<uint32_t>(part.geo.index_count), 0, 0, nullptr);
+  else
+    for (const auto& g : part.geo.groups)
+      draw(g.index_start, g.index_count, g.texture_index, g.material_flags, &g);
+}
 
 void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
                                        const std::vector<SceneBatch>& batches,

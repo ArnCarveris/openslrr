@@ -96,10 +96,15 @@ int scene_prop_lod_level(int current, float size, const std::vector<float>& thre
                          float hysteresis = 1.1f);
 // Placements with a LOD chain in the loaded maps, for tests and statistics.
 size_t scene_instances_lod_placements();
+// With `night_batches`, visible night-only props (authored night facades) go
+// there, one entry per night mesh and shell in a layout kept across frames
+// (entries may be empty), instead of one SceneInstance each (#264). Without
+// it they stay SceneInstances with `emissive_overlay` set.
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum = nullptr,
     std::vector<std::shared_ptr<const ScxGeometry>>* resident_props = nullptr,
-    bool complete_character_palettes = true);
+    bool complete_character_palettes = true,
+    std::vector<SceneBatch>* night_batches = nullptr);
 // Repeated opaque props already grouped per cell. reflection_origin, in
 // render metres, drops placements that cover fewer than about four pixels
 // of a 256² reflection face.

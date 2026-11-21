@@ -16,6 +16,15 @@ void main()
 	v_texcoord2 = a_texcoord2;
 	v_color0 = a_color0;
 	v_tint = i_data4;
+	// Night overlays (#264): the same 2 mm normal offset as vs_mesh. The flag
+	// rides in the instance colour's w (2 for overlays, 1 otherwise): a
+	// u_alphaTest uniform in this shader made the harness render thread ~45 ms per frame.
+	float surfaceNormalLength = dot(v_normal, v_normal);
+	if (i_data4.w > 1.5 && surfaceNormalLength > 1e-8) {
+		vec4 overlay = position;
+		overlay.xyz += v_normal * (0.002 / sqrt(surfaceNormalLength));
+		gl_Position = mul(u_viewProj, overlay);
+	}
 	v_worldPos = position.xyz; // Unbiased physical position for lighting.
 	float nl = dot(v_normal, v_normal);
 	if (nl > 1e-8)

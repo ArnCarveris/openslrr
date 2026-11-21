@@ -59,6 +59,7 @@ struct RenderDebugStats {
   bgfx::TextureHandle sun_atlas_texture = BGFX_INVALID_HANDLE;
   bgfx::TextureHandle ao_texture = BGFX_INVALID_HANDLE;
   uint16_t fixture_tile = 0, sun_atlas_size = 0, ao_width = 0, ao_height = 0;
+  std::array<uint32_t, 256> view_draws{};  // draws submitted per view (#264)
 };
 
 inline RenderDebugOverrides &render_debug() {

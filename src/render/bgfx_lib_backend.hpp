@@ -146,6 +146,7 @@ class LibBgfxBackend final : public IRenderBackend {
   struct Preview { GameRefState camera; GameRefState viewport; std::vector<SceneInstance> instances; };
   std::vector<SceneInstance> instances_;
   std::vector<SceneBatch> prop_batches_;
+  std::vector<SceneBatch> night_batches_;  // night overlays per mesh (#264)
   std::vector<Preview> previews_;
   std::unordered_map<const ScxGeometry*,ScenePart> instance_meshes_;
   std::unordered_map<void*, const ScxGeometry*> deformed_meshes_;
@@ -248,6 +249,14 @@ class LibBgfxBackend final : public IRenderBackend {
   void forget_textures() {
     for (auto& slot : texture_bindings_) slot.valid = false;
   }
+  // Draws submitted per view this frame (#264), for the debug snapshot.
+  // Every bgfx::submit of the renderer goes through submit_counted.
+  std::array<uint32_t, 256> view_draws_{};
+  void submit_counted(uint16_t view, bgfx::ProgramHandle program,
+                      uint8_t flags = BGFX_DISCARD_ALL) {
+    if (view < view_draws_.size()) ++view_draws_[view];
+    bgfx::submit(view, program, 0, flags);
+  }
   // Every submit inside a BindingScope goes through here.
   void submit_bound(uint16_t view, bgfx::ProgramHandle program, uint32_t index_count);
   // The view of the draw being bound (#246, #262): draw_instance and
@@ -277,6 +286,26 @@ class LibBgfxBackend final : public IRenderBackend {
   void draw_instance(uint16_t view_id,const SceneInstance& instance,const float* matrix,bool preview,int pass);
   void draw_prop_batches(uint16_t view_id, const std::vector<SceneBatch>& batches,
                          bool shadow, bool conservative = false, bool reversed_depth = false);
+  // Map props that draw_prop_batches cannot take, instanced per mesh in the
+  // world view (#264): night overlays (`emissive`, from night_batches_) and
+  // props with a blended section (grouped from instances_). Same material
+  // rules as draw_instance for a map placement; `pass` as in draw_instance.
+  struct PropPlacement {
+    const float* matrix;
+    uint32_t color;
+  };
+  void draw_props_instanced(uint16_t view_id, const ScenePart& part, const SceneSun& lighting,
+                            bool emissive, int pass, const PropPlacement* placements,
+                            size_t count);
+  // A placement draw_dynamic_world draws through draw_props_instanced.
+  static bool blended_prop_instance(const SceneInstance& instance);
+  struct BlendedPropGroup {
+    const ScxGeometry* geometry = nullptr;
+    const SceneSun* lighting = nullptr;
+    std::vector<PropPlacement> placements;
+  };
+  std::vector<BlendedPropGroup> blended_groups_;  // rebuilt per world draw, capacity kept
+  std::vector<PropPlacement> placement_scratch_;
   void refresh_distance_fog(const float render_eye[3]);
 
   void draw_sky(uint16_t view_id, const float* view, const float* projection);

@@ -3269,3 +3269,60 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   although the #260 harness measured 0.6–0.7 → 0.17–0.24 ms for it, so the
   in-game cost lies in something the harness does not reproduce (scene,
   LOD/size filter, frame cache state).
+
+### Instanced night overlays and blended props, world list zones (#264)
+
+- Profiler: `perf::Zone::WorldList` wraps the frame's world list build in
+  `src/resources/scene_instances.cpp:world_instances` (the first collection of
+  the frame builds it, which is the main view's
+  `scene_instances_collect_batches`, so it is nested in "instanced prop
+  batches"), and `perf::Zone::WorldCopy` wraps the copy of that list in
+  `scene_instances_collect`, summed over every collection of the frame. The
+  snapshot and the menu's view table now show draws per view:
+  `LibBgfxBackend::submit_counted` (`src/render/bgfx_lib_backend.hpp`) counts
+  every renderer submit into `view_draws_`, reset at the start of the frame
+  and published with the debug stats.
+- Night overlays: night-only props (`GroundProp::night_only`, the authored
+  night facades) get a persistent slot per mesh (`GroundPropMap::night_ids`,
+  `night_geometry`, `GroundProp::night_slot`). When `scene_instances_collect`
+  receives a `night_batches` vector (only `sync_instances` passes
+  `night_batches_`), visible night props go there instead of one
+  `SceneInstance` each; other callers still get SceneInstances with
+  `emissive_overlay`, which every shadow, AO and reflection pass already
+  skips. `draw_dynamic_world` draws them in pass 1 through
+  `LibBgfxBackend::draw_props_instanced` (`src/render/bgfx_lighting.cpp`).
+- Props with a blended section (`LibBgfxBackend::blended_prop_instance`: a map
+  placement whose SCX3/4 mesh has a blended group, no ground polygons) keep
+  their SceneInstance, because shadows, AO and reflections use it. Only the
+  world view draws them instanced: `draw_dynamic_world` groups them per mesh
+  and lighting in first-appearance order and draws each group in both passes
+  through `draw_props_instanced` instead of `draw_instance`.
+- `draw_props_instanced` is draw_instance's group lambda for a map placement
+  (cull_backfaces, no preview, sky, skin or texture replacement, opacity 1)
+  with `inst_program_`. Each group gets its own instance data, because the
+  tint draw_instance computes from the placement colour (diffuse, ColorMixTex,
+  blend modulation, emission colour) is computed per placement in the same
+  order and sent in the instance colour, with `u_color.rgb` = 1 and the alpha
+  (which never depends on the placement) in `u_color.a`. fs_mesh multiplies
+  `tint * placement`, so the product is the same float.
+- `shaders/vs_mesh_inst.sc` applies vs_mesh's 2 mm overlay offset when the
+  instance colour's w is 2 (1 otherwise, including the shadow programs).
+  Pitfall: the first version read `u_alphaTest.y` in this vertex shader, like
+  vs_mesh does; the bgfx render thread then took ~45 ms per frame in the
+  harness, and the main thread got slower too (bisected: same code without
+  that shader change ran at normal speed). Keep that uniform out of
+  vs_mesh_inst.
+- Order: pass 1 is now the instance loop (world list, signal glow), then the
+  night overlays, then the blended props; groups are drawn group-major over
+  their placements. Overlays add light (SRC_ALPHA, ONE), which an 8-bit
+  target accumulates in any order; the captures below show no change.
+- Harness (`tests/test_scene_shadow_gpu.cpp` `city_submission`, now run at
+  640×360 and at 2560×1440; the size also drives the far-size filter, so
+  2560 keeps the props the game keeps; Valo City 22 h, world view only,
+  caches on). Both captures are byte-identical to the pre-#264 build
+  (`build/city_frame_reference_<w>x<h>.bin`, written by the earlier build).
+  At 2560×1440: world-view draws 2,555 → 1,843, scene instances 789 → 116
+  (673 overlay placements in 65 meshes, 114 blended placements),
+  sync_instances 0.50–0.67 → 0.36–0.41 ms, world submission
+  1.55–1.64 → 0.97–1.06 ms, bgfx render thread 1.87–2.12 → 1.29 ms (two
+  runs each).

@@ -1,4 +1,5 @@
 #include "slrr/gc_roots.hpp"
+#include "slrr/frame_profiler.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/legacy_neon.hpp"
 #include "slrr/light_resource.hpp"
@@ -80,6 +81,7 @@ struct GroundProp {
   bool hidden = false;   // replaced by a live loose body
   int32_t dormant = -1;  // index into GroundPropMap::dormant, or -1
   bool night_only = false;
+  int32_t night_slot = -1;  // GroundPropMap::night_ids index of a night-only prop (#264)
   bool signal = false;
   RoadPoint signal_position{};
   int8_t lod_min = -1, lod_max = -1;  // stock `lod first last`; -1 always drawn
@@ -140,6 +142,9 @@ struct GroundPropMap {
   // Persistent batch layout (#260): one slot per batchable mesh of the map.
   std::vector<uint32_t> batch_ids;
   std::vector<std::shared_ptr<const ScxGeometry>> batch_geometry;
+  // The same for the night-only meshes, instanced as night overlays (#264).
+  std::vector<uint32_t> night_ids;
+  std::vector<std::shared_ptr<const ScxGeometry>> night_geometry;
 };
 ScenePropLodView g_lod_view;
 // Bumped by every updating LOD view (one per main-view collection), so each
@@ -2098,6 +2103,7 @@ const std::vector<SceneInstance>& world_instances(std::vector<SceneInstance>& lo
     return local;
   }
   if (!g_frame_world_valid || g_frame_world_root != g_world) {
+    perf::Scope scope(perf::Zone::WorldList);
     g_frame_world = collect_root(g_world, true);
     g_frame_world_root = g_world;
     g_frame_world_valid = true;
@@ -2364,18 +2370,28 @@ bool scene_instances_has_ground_props() {
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum,
     std::vector<std::shared_ptr<const ScxGeometry>>* resident_props,
-    bool complete_character_palettes) {
+    bool complete_character_palettes, std::vector<SceneBatch>* night_batches) {
   std::vector<SceneInstance> out;
+  // Night layout (#264): entries keep their instance vectors' capacity.
+  size_t night_total = 0;
+  if (night_batches)
+    for (auto& batch : *night_batches) batch.instances.clear();
   // Copying the frame's world list measured at ~0 in the harness (#260):
   // taking it instead would make later collections (reflections, shadows)
   // rebuild it, so it is copied.
-  if (const auto& world = world_instances(out); &world != &out) out = world;
+  if (const auto& world = world_instances(out); &world != &out) {
+    perf::Scope scope(perf::Zone::WorldCopy);
+    out = world;
+  }
   // Walkers outside this view keep an empty palette; the renderer skips them.
   for (auto& instance : out)
     if (complete_character_palettes && instance.gpu_skin && instance.skin.empty() &&
         (!frustum || character_in_view(instance, *frustum)))
       complete_skin(instance);
-  if (g_ground_props.empty()) return out;
+  if (g_ground_props.empty()) {
+    if (night_batches) night_batches->clear();
+    return out;
+  }
   const size_t base_count = out.size();
   for (size_t i = 0; i < base_count; ++i) {
     const auto found = g_ground_props.find(static_cast<uint32_t>(out[i].type_id));
@@ -2387,6 +2403,17 @@ std::vector<SceneInstance> scene_instances_collect(
         if (auto mesh = geometry(id)) resident_props->push_back(std::move(mesh));
     refresh_world_cache(found->second, shell);
     const SceneSun lighting = out[i].lighting;
+    const size_t night_offset = night_total;
+    if (night_batches) {
+      const auto& meshes = found->second.night_geometry;
+      night_total += meshes.size();
+      if (night_batches->size() < night_total) night_batches->resize(night_total);
+      for (size_t slot = 0; slot < meshes.size(); ++slot) {
+        auto& batch = (*night_batches)[night_offset + slot];
+        if (batch.geometry != meshes[slot]) batch.geometry = meshes[slot];
+        batch.lighting = lighting;
+      }
+    }
     auto glow = signal_geometry(found->second);
     if (glow && !glow->indices.empty()) {
       SceneInstance instance;
@@ -2410,6 +2437,11 @@ std::vector<SceneInstance> scene_instances_collect(
           if (!sphere_visible(frustum, prop.world_center, prop.radius)) continue;
           if (g_size_filter &&
               !g_size_filter(prop.world_center.data(), prop.radius, g_size_filter_user)) continue;
+          if (night_batches && prop.night_only && prop.night_slot >= 0) {
+            auto& batch = (*night_batches)[night_offset + static_cast<size_t>(prop.night_slot)];
+            if (batch.geometry) batch.instances.push_back({prop.render_matrix, prop.color});
+            continue;
+          }
           auto mesh = geometry(prop.render_id);
           if (!mesh) continue;
           SceneInstance instance;
@@ -2425,6 +2457,7 @@ std::vector<SceneInstance> scene_instances_collect(
         }
       }
   }
+  if (night_batches) night_batches->resize(night_total);
   return out;
 }
 
@@ -3101,6 +3134,18 @@ void scene_instances_add_ground_props(const GroundMapData& map) {
           props_map.batch_geometry.push_back(geometry(batch.render_id));
         }
         batch.slot = found->second;
+      }
+    std::unordered_map<uint32_t, uint32_t> night_slot_of;
+    for (auto& [key, cell] : cells)
+      for (auto& prop : cell.props) {
+        if (!prop.night_only || prop.signal) continue;
+        const auto [found, added] = night_slot_of.try_emplace(
+            prop.render_id, static_cast<uint32_t>(props_map.night_ids.size()));
+        if (added) {
+          props_map.night_ids.push_back(prop.render_id);
+          props_map.night_geometry.push_back(geometry(prop.render_id));
+        }
+        prop.night_slot = static_cast<int32_t>(found->second);
       }
     props_map.world_cache_valid = false;
   }

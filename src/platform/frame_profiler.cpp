@@ -14,7 +14,7 @@ constexpr const char *kZoneNames[] = {
     "refl",     "world",       "osd",       "present", "traffic",
     "vehicles", "pedestrians", "collision", "gc",
     "collect_batches", "sun_shadows", "car_depth", "fixture_shadows",
-    "lamp_select", "lamp_shadows", "ao"};
+    "lamp_select", "lamp_shadows", "ao", "world_list", "world_copy"};
 static_assert(std::size(kZoneNames) == static_cast<size_t>(Zone::Count));
 
 struct State {
