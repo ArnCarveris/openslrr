@@ -1864,6 +1864,7 @@ struct SceneShadowRegression {
     };
     if(workers) {
       // Threaded against single-threaded, same frames; then the timings.
+      const bool saved_workers=render_debug().worker_encoders;
       render_debug().worker_encoders=true;
       const auto runs0=b.worker_submit_runs_;
       const auto threaded=run(true,40,15);
@@ -1872,7 +1873,7 @@ struct SceneShadowRegression {
       const auto single=run(true,40,15);
       const auto single_runs=b.worker_submit_runs_-runs0-threaded_runs;
       b.parallel_submission_=true;
-      render_debug().worker_encoders=false;
+      render_debug().worker_encoders=saved_workers;
       size_t differ=0;int worst=0;
       for(size_t i=0;i<threaded.image.size()&&i<single.image.size();++i) {
         const int d=std::abs(int(threaded.image[i])-int(single.image[i]));differ+=d>0;worst=std::max(worst,d);

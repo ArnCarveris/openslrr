@@ -579,7 +579,7 @@ each character on the host thread (`character_skin_prepare`), the jobs run
 reads its immutable skeleton and clip), and the host thread publishes the
 palettes into the frame cache in order.
 
-**Worker bgfx encoders (#270).** Off by default (renderer debug option
+**Worker bgfx encoders (#270).** On by default (renderer debug option
 "Worker encoders", `render_debug().worker_encoders`). When on,
 `src/render/bgfx_lib_backend.cpp:parallel_submission_ready` is true with 3 or
 more pool threads; `queue_or_run` then queues the AO prepass
@@ -615,7 +615,14 @@ compare): threaded and one-thread images are identical at 24, 2 and 1 cores.
 At 24 threads host submission was 1.54 ms threaded against 1.61 ms on one
 thread, worker submission 0.50 ms, host wait 0.002 ms; bgfx's shared submit
 state (sort keys, atomics, transient buffers) took back most of what the host
-saved, so the option stays off until measured in game.
+saved, so the option first shipped off. In game (user, 21 November 2026,
+Valo City at night, 2560x1440, MSAA 4x, HBAO high, 40 lamps, 6 shadowed,
+12 car tiles; `build/Release/perf/renderer_debug_20261121_031919.txt` off,
+`_031932.txt` on) the host gained: renderer zones 5.80 → 5.13 ms, frame
+8.15 → 7.35 ms, world submission 1.96 → 1.88 ms, worker submission 0.85 ms
+summed, host wait 0.002 ms, render thread unchanged (4.15 / 4.19 ms). The
+user then made it the default; the two views were close but not identical
+(1032 / 1014 instances).
 
 **Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
 lists the planned steps for the frame loop: measure where the CPU limits,

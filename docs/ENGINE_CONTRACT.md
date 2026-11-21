@@ -259,7 +259,7 @@ skin palettes (#268) are the second: the host thread prepares each
 character, jobs rebuild different characters, and the host publishes them.
 
 Worker bgfx encoders (#270) are the third, behind the renderer debug option
-"Worker encoders", off by default. The AO prepass, the car lamp shadow tiles
+"Worker encoders", on by default. The AO prepass, the car lamp shadow tiles
 and the reflection cube faces are queued during the frame and submitted by pool
 jobs, each on its own `bgfx::begin(true)` encoder and its own binding state,
 one job per Sequential view, while the host thread submits the main view on
