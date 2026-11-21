@@ -119,6 +119,15 @@ std::vector<SceneInstance> scene_instances_collect_root(void *root);
 // built only for walkers inside the frustum passed to scene_instances_collect.
 void scene_instances_frame_cache(bool enabled);
 SceneSun scene_instances_light(void* root=nullptr);
+// The world's sun as the renderer lights with it (#271): elevation of the
+// light (radians, negative below the horizon), diffuse luminance, the same
+// light's luminance at noon, `direct` (diffuse / noon), whether it still casts
+// sun shadows, and the street lamp night factor derived from `direct`.
+struct SceneSunState {
+  float elevation = 0.f, diffuse = 0.f, noon = 0.f, direct = 0.f, night = 0.f;
+  bool shadowing = false;
+};
+SceneSunState scene_instances_sun_state();
 // Rejects missing parents, hidden subtrees and cycles. Draws simulated
 // bodies at their pose interpolated between physics ticks.
 bool scene_instance_transform(void *key, void *root, float *matrix);

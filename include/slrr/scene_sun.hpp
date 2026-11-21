@@ -36,6 +36,12 @@ float scene_sun_time();
 // Night window shared by night facades and city lights (group 4):
 // before 06:00 or from 18:30.
 bool scene_sun_is_night();
+// Street lamp strength from the direct sun strength (#271): `direct` is the
+// rendered sun's diffuse as a fraction of the same light at noon. 0 until
+// direct sun drops to 20 % of noon, smooth to 1 when it is gone.
+float scene_sun_night_factor(float direct);
 void scene_sun_apply_day_cycle(SceneSun& light);
+// The same at another time of day (seconds), without changing the clock.
+void scene_sun_apply_day_cycle_at(SceneSun& light, float seconds);
 
 }  // namespace slrr

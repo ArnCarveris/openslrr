@@ -254,6 +254,15 @@ std::string render_timing_dump() {
                 s.batches, s.batch_instances, s.lamps_registered, s.lamps_lit, s.lamps_shadowed,
                 s.car_tiles);
   out += line;
+  {
+    // The sun the renderer lights with and the street lamp factor (#271).
+    const auto sun = scene_instances_sun_state();
+    std::snprintf(line, sizeof(line),
+                  "sun elevation %.1f deg | diffuse %.3f (noon %.3f, direct %.2f, shadows %s) | lamp night factor %.2f\n",
+                  sun.elevation * 57.2958f, sun.diffuse, sun.noon, sun.direct,
+                  sun.shadowing ? "on" : "off", sun.night);
+  }
+  out += line;
   out += "view | name | GPU avg/min/max ms | CPU avg ms | draws\n";
   for (const auto& [id, view] : t.views) {
     std::snprintf(line, sizeof(line), "%3u | %s | %.3f / %.3f / %.3f | %.3f | %u\n", unsigned(id),

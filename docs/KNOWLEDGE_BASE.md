@@ -2752,8 +2752,10 @@ city at night.
   glow-only (0x16 `fake point`). Drag Track has 318.
 - Rendering: `src/render/bgfx_lib_backend.cpp:update_scenery_lights`, called
   by `update_local_light` outside garages when Local lights (option 4) is on.
-  The city group is enabled by `src/resources/scene_sun.cpp:scene_sun_is_night`
-  (before 06:00 or from 18:30, the night-facade window); other groups (car
+  The city group follows the night factor of
+  `src/resources/scene_instances.cpp:scene_instances_sun_state` since #271
+  (lamp power scaled by it, off below 0.01); night facades keep
+  the `scene_sun_is_night` window (before 06:00 or from 18:30). Other groups (car
   brake/indicator bits) stay off; `fake*` lights never light the scene.
   `src/resources/script_lights.cpp:scenery_lights_select` keeps lamps whose
   45 m light sphere meets the view frustum (a lamp outside it lights no visible
@@ -3428,3 +3430,48 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
 - The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
   `city_submission` now accepts up to 64 differing bytes at most 1 apart and
   fails on anything larger.
+
+### Street lamps lit while the sun is up (#271)
+
+- Symptom (Elias, Valo City, evening): a walker had its sun shadow plus a
+  softer second shadow pointing away from a street lamp, and the lamp post
+  had two diagonal shadows. Turning "street lamp lighting" off removed the
+  second shadow. Cause: street lamps switched on at full power on a clock
+  window (`scene_sun_is_night`, 18:30-06:00) independent of the light that
+  lit the scene, so a lamp's shadow tile (#237) added a second shadow beside
+  the sun's. Not a regression of the #244-#269 stack: the clock gate and
+  the lamp tiles come from #237/#238, and on the 2a4abf1 merge the harness
+  at 13:30 shows 0 lamps lit and single shadows (no bisect was needed).
+- Fix, second version (the first used the day-cycle clock and ramped from
+  17:37, 68 % at 18:00 while the low sun still cast long shadows; Elias saw
+  the doubled shadows again at dusk):
+  `src/resources/scene_instances.cpp:scene_instances_sun_state` measures the
+  sun the renderer lights with: the world's light after the day cycle
+  (`scene_instances_light`), its diffuse luminance against the same light at
+  noon (`scene_sun_apply_day_cycle_at`), its elevation, and whether it still
+  casts sun shadows (direction y < 0.02, as in `update_static_shadow`).
+  `src/resources/scene_sun.cpp:scene_sun_night_factor` maps the direct
+  fraction: 0 down to 20 % of noon, smoothstep to 1 at 0.
+  `src/render/bgfx_lib_backend.cpp:update_scenery_lights` scales lamp power
+  by it (none below 0.01); `src/render/bgfx_shadows.cpp:update_lamp_shadows`
+  draws no tile below 0.3 or while the sun casts shadows, and scales the
+  lamps it adds itself. A lamp's shadow is the absence of its light, so its
+  darkening fades with it. The renderer snapshot header prints the sun
+  elevation, diffuse, noon diffuse, direct fraction, sun shadows and factor.
+- By hour on the stock day cycle (elevation, direct, sun shadows, factor):
+  05:54 -1.3 deg 0.09 off 0.60; 06:00 0.0 deg 0.15 on 0.14; 06:15 3.2 deg
+  0.35 on 0; 12:00 0; 17:45 3.2 deg 0.35 on 0; 17:54 1.3 deg 0.22 on 0;
+  18:00 0.0 deg 0.15 on 0.14 (lamps faint, no tiles); 18:06 -1.3 deg 0.09
+  off 0.60; 18:15 -3.2 deg 0 off 1; night 1. The old clock gate was off
+  until 18:30 and on before 06:00.
+- Lamp geometry: the light sits at the type-13 light child (the lamp head);
+  `update_lamp_shadows` keeps out of a lamp's own tile any caster whose
+  bounds contain the light position (the pole and housing, `holds_lamp`).
+- Test: `tests/test_scene_shadow_gpu.cpp` `city_submission(..., day=true)`
+  (1280x720, crowd, sun passes and GTAO High 3 m, plus `update_lamp_shadows`)
+  renders noon, 18:00 and 22:00 with street lamp lighting on and off. Noon:
+  no lamp lit, no shadow slot, identical frames. 18:00 (sun shadows on):
+  40 lamps at most 0.11 (factor 0.14), no shadow tile, lamp contribution
+  11.7 M (sum of channel differences) over 496 k pixels. 22:00: unchanged,
+  lamps 0.80, 6 shadowed, 80.7 M over 500 k pixels. The
+  night captures at 640x360, 2560x1440 and crowd match the pre-#271 build.

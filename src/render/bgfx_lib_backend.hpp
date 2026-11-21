@@ -238,6 +238,10 @@ class LibBgfxBackend final : public IRenderBackend {
     uint32_t flags = 0;
   };
   static constexpr size_t kTextureStages = 16;
+  // Below this night factor street lamps do not light (#271), and below the
+  // second they cast no shadow tile.
+  static constexpr float kLampNightMin = .01f;
+  static constexpr float kLampShadowNightMin = .3f;
   static constexpr size_t kPropInstanceChunk = 1024;  // was 128 before #262
   std::array<TextureSlot, kTextureStages> texture_bindings_{};
   uint32_t texture_set_mask_ = 0;  // stages the current draw set
