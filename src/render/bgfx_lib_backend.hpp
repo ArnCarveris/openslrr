@@ -708,6 +708,25 @@ class LibBgfxBackend final : public IRenderBackend {
   static constexpr size_t kCarShadowTiles=16, kLampSpecial=kLampShadowSlots+kCarShadowTiles;
   static constexpr float kCarShadowCover=6.f, kCarShadowFade=10.f;
   static constexpr uint16_t kCarShadowView=136;
+  // Headlight shadows (#283): their own atlas of kHeadlightShadows tiles (3 x 2),
+  // one view per tile from kHeadlightShadowView, drawn before the world. Tile
+  // size is half the local shadow resolution. Matrices and tile rects live in
+  // row 2 of the light data texture (96+4t, 120+t); a lamp entry names its
+  // tile + 1 in its colour's w.
+  static constexpr size_t kHeadlightShadows=6;
+  static constexpr uint16_t kHeadlightShadowView=145;
+  static constexpr float kHeadlightShadowNear=.15f, kHeadlightShadowMargin=2.f;  // degrees
+  void update_headlight_shadows(const VideoOptions& video);
+  void set_headlight_focus(const void* car) { headlight_focus_car_=car; }
+  const void* headlight_focus_car_=nullptr;
+  bgfx::FrameBufferHandle headlight_shadow_fb_=BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle headlight_shadow_tex_=BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_headlight_shadow_=BGFX_INVALID_HANDLE,u_headlight_shadow_=BGFX_INVALID_HANDLE;
+  uint16_t headlight_shadow_tile_=0;
+  size_t headlight_shadow_count_=0;
+  std::array<std::array<float,16>,kHeadlightShadows> headlight_shadow_matrices_{};
+  std::array<std::array<float,4>,kHeadlightShadows> headlight_shadow_rects_{};
+  uint64_t headlight_shadow_redraws_=0;  // tiles drawn, for tests
   struct CarShadowTile {
     const void* source=nullptr;
     std::array<float,16> view{}, proj{}, sample{};

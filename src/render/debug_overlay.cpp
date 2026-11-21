@@ -403,6 +403,7 @@ void draw_render_passes(DebugOverlay::RenderOptions& options) {
   }
   ImGui::Checkbox("Shadow caching (off: redraw every frame)", &o.shadow_caching);
   ImGui::Checkbox("Worker encoders (AO prepass, car tiles, reflections)", &o.worker_encoders);
+  ImGui::Checkbox("Headlight shadows", &o.headlight_shadows);
   ImGui::Checkbox("Map shadows", &options.map_shadows);
   ImGui::Checkbox("Vehicle shadow casters", &options.shadows);
   ImGui::Checkbox("Character shadow casters", &o.skinned_casters);
@@ -443,6 +444,7 @@ void draw_render_budgets(DebugOverlay::RenderOptions& options) {
     o.lamp_distance = distance;
   budget_slider("Shadowed lamps", o.shadowed_lamps, 6, 6);
   budget_slider("Car lamp tiles", o.car_tiles, 16, 16);
+  budget_slider("Headlight shadow tiles", o.headlight_tiles, 6, 6);
   // The combos show sizes; the overrides store the size (0 = from quality).
   const auto size_combo = [](const char* label, int& size, int base, const char* items) {
     int index = 0;

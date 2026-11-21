@@ -240,7 +240,9 @@ void LibBgfxBackend::upload_light_data() {
     const int x = int(i);
     put(x, 0, lamp.position[0], lamp.position[1], lamp.position[2], lamp.range);
     put(64 + x, 0, lamp.color[0] * lamp.intensity, lamp.color[1] * lamp.intensity,
-        lamp.color[2] * lamp.intensity, 0.f);
+        lamp.color[2] * lamp.intensity,
+        lamp.shadow_tile >= 0 && size_t(lamp.shadow_tile) < headlight_shadow_count_
+            ? float(lamp.shadow_tile + 1) : 0.f);
     put(128 + x, 0, lamp.attenuation[0], lamp.attenuation[1], lamp.attenuation[2], lamp.cos_inner);
     put(192 + x, 0, lamp.direction[0], lamp.direction[1], lamp.direction[2], lamp.cos_outer);
   }
@@ -254,6 +256,12 @@ void LibBgfxBackend::upload_light_data() {
     put_matrix(120 + 4 * x, 1, lamp_car_matrices_[s].data());
     const auto& car = lamp_car_tiles_[s];
     put(216 + x, 1, car[0], car[1], car[2], car[3]);
+  }
+  // Headlight shadow tiles (#283), row 2 after the fixtures.
+  for (size_t t = 0; t < std::min(headlight_shadow_count_, kHeadlightShadows); ++t) {
+    put_matrix(96 + 4 * int(t), 2, headlight_shadow_matrices_[t].data());
+    const auto& rect = headlight_shadow_rects_[t];
+    put(120 + int(t), 2, rect[0], rect[1], rect[2], rect[3]);
   }
   const auto fixtures = std::min(fixture_lights_.size(), kFixtureLights);
   for (size_t i = 0; i < fixtures; ++i) {
@@ -291,6 +299,13 @@ void LibBgfxBackend::bind_fixture_lights(bool enabled, bool upload_arrays) {
       BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
   set_texture(11,s_light_data_,light_data_tex_,
       BGFX_SAMPLER_POINT|BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP);
+  // Headlight shadow atlas (#283); entries without a tile never sample it.
+  const bool headlights=enabled && headlight_shadow_count_ && bgfx::isValid(headlight_shadow_tex_);
+  set_texture(12,s_headlight_shadow_,headlights?headlight_shadow_tex_:depth_white_,
+      BGFX_SAMPLER_U_CLAMP|BGFX_SAMPLER_V_CLAMP|BGFX_SAMPLER_COMPARE_LEQUAL);
+  const float headlight_texel[4]={headlight_shadow_tile_?1.f/(headlight_shadow_tile_*3.f):0.f,
+                                  headlight_shadow_tile_?1.f/(headlight_shadow_tile_*2.f):0.f,0.f,0.f};
+  set_uniform(u_headlight_shadow_,headlight_texel);
   const float lamp_shadow_params[4]={float(lamp_shadows),1.f/(fixture_shadow_tile_*4),
                                      1.f/(fixture_shadow_tile_*3),
                                      render_debug().lamp_shadow_reference?1.f:0.f};

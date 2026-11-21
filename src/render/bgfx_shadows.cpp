@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "slrr/part_runtime.hpp"
+
 namespace slrr {
 namespace {
 // Characters cast into the sun cascades up to this distance from the camera.
@@ -665,6 +667,166 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
 
 // A separate directional field: punctual shadow visibility must never occlude
 // sunlight, nor may the sky's ambient term replace the direct source.
+// Headlight shadows (#283). Every lit headlight beam in the lamp array is a
+// candidate (update_car_lights already applied the #279 rules: installed
+// part, running engine, wear); the followed car's come first, then the
+// others in the array's nearest-first order, up to kHeadlightShadows tiles.
+// One perspective frustum per headlight part, along its beam, 2 x the outer
+// cone half-angle plus a margin wide, from kHeadlightShadowNear to its range.
+// Casters are the main view's: world meshes, vehicles other than the
+// light's own car, characters, and the instanced props in the frustum (a
+// caster outside the camera view but inside a beam casts nothing; the beams
+// point ahead of the followed car, mostly inside the view). Tiles are redrawn
+// every frame: the beams move with their cars.
+void LibBgfxBackend::update_headlight_shadows(const VideoOptions &video) {
+  for (auto &lamp : scenery_lamps_) lamp.shadow_tile = -1;
+  const size_t was = headlight_shadow_count_;
+  headlight_shadow_count_ = 0;
+  if (was) ++light_uniform_revision_;
+  const size_t budget = size_t(render_debug_budget(render_debug().headlight_tiles,
+      int(kHeadlightShadows), int(kHeadlightShadows)));
+  if (garage_ || video.shadows == 0 || !render_debug().headlight_shadows || !budget ||
+      !render_debug().car_lights || !host_enhanced_graphics().local_lights ||
+      !bgfx::isValid(static_shadow_program_))
+    return;
+  std::vector<size_t> picks;
+  for (int pass = 0; pass < 2 && picks.size() < budget; ++pass)
+    for (size_t i = 0; i < std::min(scenery_lamps_.size(), kSceneryLamps) && picks.size() < budget; ++i) {
+      const auto &lamp = scenery_lamps_[i];
+      if (!lamp.headlight || !(lamp.intensity > 0.f) || lamp.cos_outer < -1.f) continue;
+      const bool focus = headlight_focus_car_ && lamp.car == headlight_focus_car_;
+      if (focus != (pass == 0)) continue;
+      picks.push_back(i);
+    }
+  if (picks.empty()) return;
+  perf::Scope perf_scope(perf::Zone::Shadows);
+  const uint16_t tile = uint16_t(std::max<int>(64, local_shadow_resolution() / 2));
+  if (bgfx::isValid(headlight_shadow_fb_) && headlight_shadow_tile_ != tile) {
+    bgfx::destroy(headlight_shadow_fb_);
+    headlight_shadow_fb_ = BGFX_INVALID_HANDLE;
+    headlight_shadow_tex_ = BGFX_INVALID_HANDLE;
+  }
+  headlight_shadow_tile_ = tile;
+  if (!bgfx::isValid(headlight_shadow_fb_)) {
+    const auto depth = bgfx::createTexture2D(uint16_t(tile * 3), uint16_t(tile * 2), false, 1,
+        bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (!bgfx::isValid(depth)) return;
+    headlight_shadow_fb_ = bgfx::createFrameBuffer(1, &depth, true);
+    if (!bgfx::isValid(headlight_shadow_fb_)) { bgfx::destroy(depth); return; }
+    headlight_shadow_tex_ = depth;
+  }
+  const auto *caps = bgfx::getCaps();
+  const float crop[16] = {.5f, 0, 0, 0,
+                          0, caps->originBottomLeft ? .5f : -.5f, 0, 0,
+                          0, 0, caps->homogeneousDepth ? .5f : 1.f, 0,
+                          .5f, .5f, caps->homogeneousDepth ? .5f : 0.f, 1};
+  const bool conservative = (caps->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
+  // The chassis of each vehicle instance, to leave a light's own car out.
+  std::vector<const void *> owner(instances_.size(), nullptr);
+  for (size_t i = 0; i < instances_.size(); ++i)
+    if (instances_[i].vehicle_material && instances_[i].key)
+      if (auto *part = part_render_owner(instances_[i].key)) owner[i] = part_chassis(part);
+  for (size_t t = 0; t < picks.size(); ++t) {
+    auto &lamp = scenery_lamps_[picks[t]];
+    const bx::Vec3 eye{lamp.position[0], lamp.position[1], lamp.position[2]};
+    const bx::Vec3 dir{lamp.direction[0], lamp.direction[1], lamp.direction[2]};
+    const bx::Vec3 up = std::abs(dir.y) > .98f ? bx::Vec3{0, 0, 1} : bx::Vec3{0, 1, 0};
+    float view[16], proj[16], clip[16];
+    bx::mtxLookAt(view, eye, bx::add(eye, dir), up);
+    const float half = std::acos(std::clamp(lamp.cos_outer, -1.f, 1.f)) * 57.2957795f;
+    bx::mtxProj(proj, std::min(2.f * half + 2.f * kHeadlightShadowMargin, 170.f), 1.f,
+                kHeadlightShadowNear, std::max(lamp.range, kHeadlightShadowNear + 1.f),
+                caps->homogeneousDepth);
+    bx::mtxMul(clip, view, proj);
+    bx::mtxMul(headlight_shadow_matrices_[t].data(), clip, crop);
+    const float u = 1.f / 3.f, v = .5f;
+    headlight_shadow_rects_[t] = {float(t % 3) * u, float(t / 3) * v, u, v};
+    const auto frustum = view_frustum(view, proj);
+    auto casters = std::make_shared<std::vector<const SceneInstance *>>();
+    for (size_t i = 0; i < instances_.size(); ++i) {
+      const auto &instance = instances_[i];
+      if (!instance.geometry || instance.sky || instance.light_flags || instance.emissive_overlay ||
+          instance.opacity < .99f || instance.geometry->ground_polygons)
+        continue;
+      if (instance.vehicle_material && lamp.car && owner[i] == lamp.car) continue;
+      const auto found = instance_meshes_.find(instance.geometry.get());
+      if (found == instance_meshes_.end() || !bgfx::isValid(found->second.ibh)) continue;
+      if (instance.gpu_skin) {
+        if (instance.skin.size() < 48u * 16u || !bgfx::isValid(found->second.skin_vbh) ||
+            !bgfx::isValid(ao_skin_depth_program_) || !render_debug().skinned_casters)
+          continue;
+        const float dx = instance.transform[12] - lamp.position[0];
+        const float dy = instance.transform[13] - lamp.position[1];
+        const float dz = instance.transform[14] - lamp.position[2];
+        if (dx * dx + dy * dy + dz * dz > (lamp.range + 3.f) * (lamp.range + 3.f)) continue;
+      } else if (!bgfx::isValid(found->second.vbh) ||
+                 !shadow_bounds_visible(*instance.geometry, instance.transform, frustum)) {
+        continue;
+      }
+      casters->push_back(&instance);
+    }
+    auto batches = std::make_shared<std::vector<SceneBatch>>();
+    const float reach2 = (lamp.range + 10.f) * (lamp.range + 10.f);
+    for (const auto &batch : prop_batches_) {
+      if (batch.instances.empty() || !batch.geometry) continue;
+      SceneBatch kept;
+      kept.geometry = batch.geometry;
+      kept.lighting = batch.lighting;
+      for (const auto &instance : batch.instances) {
+        const float dx = instance.transform[12] - lamp.position[0];
+        const float dy = instance.transform[13] - lamp.position[1];
+        const float dz = instance.transform[14] - lamp.position[2];
+        if (dx * dx + dy * dy + dz * dz > reach2) continue;
+        if (shadow_bounds_visible(*batch.geometry, instance.transform, frustum))
+          kept.instances.push_back(instance);
+      }
+      if (!kept.instances.empty()) batches->push_back(std::move(kept));
+    }
+    const uint16_t view_id = uint16_t(kHeadlightShadowView + t);
+    bgfx::setViewFrameBuffer(view_id, headlight_shadow_fb_);
+    bgfx::setViewRect(view_id, uint16_t(t % 3 * tile), uint16_t(t / 3 * tile), tile, tile);
+    bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f);
+    bgfx::setViewTransform(view_id, view, proj);
+    // One job per tile view (#270): it may run on a worker encoder.
+    queue_or_run([this, view_id, casters, batches, conservative] {
+      enc()->touch(view_id);
+      const float no_apertures[4]{};
+      enc()->setUniform(u_aperture_params_, no_apertures);
+      for (const auto *instance : *casters) {
+        const auto &part = instance_meshes_.at(instance->geometry.get());
+        const bool skinned = instance->gpu_skin;
+        for (const auto &group : part.shadow_groups) {
+          const auto surface = scx_surface(part.geo.info.version, group);
+          if (surface.blend) continue;
+          const float threshold = !surface.cutout ? -1.f
+                                  : part.geo.info.version == 4 ? group.alpha_reference / 255.f : .5f;
+          const float params[4] = {0, threshold, float(group.base_map.channel), 0};
+          set_uniform(u_static_shadow_params_, params);
+          const auto slot = group.texture_index;
+          enc()->setTexture(0, s_tex_, slot < part.tex.size() && bgfx::isValid(part.tex[slot])
+                                          ? part.tex[slot] : white_tex_);
+          enc()->setTransform(instance->transform.data());
+          if (skinned) {
+            enc()->setUniform(u_skin_bones_, instance->skin.data(), 48);
+            enc()->setVertexBuffer(0, part.skin_vbh);
+          } else {
+            enc()->setVertexBuffer(0, part.vbh);
+          }
+          enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
+          enc()->setState(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                          (conservative ? BGFX_STATE_CONSERVATIVE_RASTER : 0));
+          submit_counted(view_id, skinned ? ao_skin_depth_program_ : static_shadow_program_);
+        }
+      }
+      draw_prop_batches(view_id, *batches, true, conservative);
+    });
+    lamp.shadow_tile = int(t);
+    ++headlight_shadow_redraws_;
+  }
+  headlight_shadow_count_ = picks.size();
+  ++light_uniform_revision_;
+}
+
 void LibBgfxBackend::update_interior_sun(const VideoOptions &video) {
   ++light_uniform_revision_;
   bool was_active = interior_sun_active_;

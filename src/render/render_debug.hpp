@@ -27,6 +27,7 @@ struct RenderDebugOverrides {
   bool fixture_shadows = true;     // garage fixture shadow atlas
   bool lamp_lighting = true;       // street lamps outside garages
   bool car_lights = true;          // headlight beams and brake lights (#279)
+  bool headlight_shadows = true;   // shadow tiles for headlight beams (#283)
   bool lamp_shadows = true;        // scenery lamp shadow tiles
   bool car_lamp_tiles = true;      // car-only lamp shadow tiles
   bool lamp_shadow_reference = false; // #237 lamp shadow loop (no early-out, full kernel)
@@ -44,6 +45,7 @@ struct RenderDebugOverrides {
   float lamp_distance = -1.f;      // metres, default 500
   int shadowed_lamps = -1;         // scenery lamp shadow slots, default 6
   int car_tiles = -1;              // car-only tiles, default 16
+  int headlight_tiles = -1;        // headlight shadow tiles, default 6
   int local_shadow_tile = 0;       // 0: from Shadow quality, else 256/512/1024
   int sun_shadow_size = 0;         // 0: from Shadow quality, else 1024/2048/4096
   float cascade_scale = 1.f;       // multiplies the four cascade radii
@@ -59,6 +61,7 @@ struct RenderDebugOverrides {
 struct RenderDebugStats {
   uint32_t instances = 0, batches = 0, batch_instances = 0;
   uint32_t lamps_registered = 0, lamps_lit = 0, lamps_shadowed = 0, car_tiles = 0;
+  uint32_t headlight_tiles = 0;  // headlight shadow tiles drawn this frame (#283)
   uint64_t lamp_tile_redraws = 0, car_tile_redraws = 0, sun_atlas_redraws = 0;
   bool sun_cascades = false, fixture_atlas = false, ao = false, reflections = false;
   bgfx::TextureHandle fixture_atlas_texture = BGFX_INVALID_HANDLE;
@@ -112,6 +115,7 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   flag("car lights", o.car_lights, d.car_lights);
   flag("street lamp shadows", o.lamp_shadows, d.lamp_shadows);
   flag("car lamp tiles", o.car_lamp_tiles, d.car_lamp_tiles);
+  flag("headlight shadows", o.headlight_shadows, d.headlight_shadows);
   flag("lamp shadow reference path", o.lamp_shadow_reference, d.lamp_shadow_reference);
   flag("reflections", o.reflections, d.reflections);
   flag("sky", o.sky, d.sky);
@@ -126,6 +130,7 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   number("lamp distance", o.lamp_distance, d.lamp_distance, " m");
   number("shadowed lamps", o.shadowed_lamps, d.shadowed_lamps, "");
   number("car lamp tiles budget", o.car_tiles, d.car_tiles, "");
+  number("headlight shadow tiles budget", o.headlight_tiles, d.headlight_tiles, "");
   number("local shadow tile", o.local_shadow_tile, d.local_shadow_tile, " px");
   number("sun cascade tile", o.sun_shadow_size, d.sun_shadow_size, " px");
   number("cascade radius scale", o.cascade_scale, d.cascade_scale, "x");
@@ -164,6 +169,7 @@ inline const char *render_debug_view_name(uint16_t view) {
   if (view >= 8 && view < 64) return "Script viewport preview";
   if (view >= 72 && view < 84) return "Reflection face";
   if (view >= 128 && view < 136) return "Fixture / lamp shadow tile";
+  if (view >= 145 && view < 151) return "Headlight shadow tile";
   return "Other";
 }
 } // namespace slrr

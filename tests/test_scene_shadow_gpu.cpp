@@ -543,6 +543,142 @@ struct SceneShadowRegression {
     std::puts("PASS emissive overlays sit flush: level glass shows, glass behind the surface stays hidden");
   }
 
+  // #283: headlight beams cast shadows. A box 8 m ahead of the car darkens
+  // the road behind it only with headlight shadows on; the road beside it is
+  // unchanged. The followed car's headlights take the first tiles, the
+  // budget caps the rest. Cost per frame with six tiles.
+  static void headlight_shadows(LibBgfxBackend& b) {
+    Fixture f;scene_instances_set_resources(&f.packs);
+    Object world;gameref_upsert(&world)->flags=kWorldTreeRoot;
+    scene_instances_select(&world,nullptr,false,SceneEnvironment::Exterior);
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_method=0;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};
+    float view[16],projection[16],render[16];
+    constexpr uint16_t width=160,height=120;
+    bx::mtxLookAt(view,{0,14,-26},{0,0,4});bx::mtxProj(projection,60.f,float(width)/height,.05f,200.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    b.cull_eye_[0]=0;b.cull_eye_[1]=14;b.cull_eye_[2]=26;
+    std::copy(view,view+16,b.cull_view_);std::copy(projection,projection+16,b.cull_proj_);
+    auto floor=std::make_shared<ScxGeometry>();floor->info.ok=true;floor->info.version=4;floor->position_scale=1;
+    floor->positions={-30,0,40,30,0,40,-30,0,-30,30,0,-30};floor->normals={0,1,0,0,1,0,0,1,0,0,1,0};
+    floor->uvs.resize(8);floor->indices={0,2,1,1,2,3};ScxGroup group;group.index_count=6;floor->groups={group};
+    floor->ground_polygons=true;  // a receiver, like the city ground
+    SceneInstance road;road.geometry=floor;bx::mtxIdentity(road.transform.data());
+    road.lighting.set=road.lighting.has_direction=true;road.lighting.direction[1]=-1;
+    for(int i=0;i<3;++i){road.lighting.diffuse[i]=0;road.lighting.ambient[i]=.08f;road.lighting.specular[i]=0;}
+    // A 1.2 x 1.5 x 0.4 m box standing on the road 8 m ahead.
+    auto box=std::make_shared<ScxGeometry>();box->info.ok=true;box->info.version=4;box->position_scale=1;
+    for(int c=0;c<8;++c) box->positions.insert(box->positions.end(),{c&1?.6f:-.6f,c&2?1.5f:0.f,c&4?.2f:-.2f});
+    for(int c=0;c<8;++c) box->normals.insert(box->normals.end(),{0.f,1.f,0.f});
+    box->uvs.resize(16);
+    box->indices={0,1,3,0,3,2, 4,6,7,4,7,5, 0,4,5,0,5,1, 2,3,7,2,7,6, 0,2,6,0,6,4, 1,5,7,1,7,3};
+    {ScxGroup g;g.index_count=uint32_t(box->indices.size());box->groups={g};}
+    SceneInstance block=road;block.geometry=box;block.transform[14]=8.f;
+    b.instances_={road,block};b.cache_scene_mesh(floor,nullptr,false);b.cache_scene_mesh(box,nullptr,false);
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    const auto readback=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_BLIT_DST|BGFX_TEXTURE_READ_BACK);
+    // Tiles are views 145+, after this test's view 5: draw them in the
+    // frame before the capture (the game orders them before the world).
+    auto capture=[&]() {
+      bgfx::frame();
+      bgfx::setViewFrameBuffer(5,fb);bgfx::setViewRect(5,0,0,width,height);
+      bgfx::setViewClear(5,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+      bgfx::setViewTransform(5,view,render);
+      b.draw_instance(5,road,road.transform.data(),false,0);
+      b.draw_instance(5,block,block.transform.data(),false,0);
+      bgfx::TextureRegion dst,src;dst.init(readback);src.init(color);bgfx::blit(100,dst,src);bgfx::frame();
+      std::vector<uint8_t> bytes(width*height*4);const auto ready=bgfx::read(dst,bytes.data());
+      for(int i=0;i<16;++i) if(bgfx::frame()>=ready) return bytes;
+      throw std::runtime_error("headlight shadow readback timeout");
+    };
+    const auto pixel=[&](float x,float z) {
+      float vp[16];bx::mtxMul(vp,view,projection);
+      const float in[4]={x,0,z,1};float clip[4];bx::vec4MulMtx(clip,in,vp);
+      const int px=int((clip[0]/clip[3]*.5f+.5f)*width);
+      int py=int((1.f-(clip[1]/clip[3]*.5f+.5f))*height);
+      if(bgfx::getCaps()->originBottomLeft) py=height-1-py;
+      SLRR_REQUIRE(px>=0&&px<width&&py>=0&&py<height);
+      return (size_t(py)*width+px)*4;
+    };
+    const auto patch=[&](const std::vector<uint8_t>& image,float x,float z) {
+      long sum=0;
+      for(float dz=-1;dz<=1.01f;dz+=.5f) for(float dx=-.5f;dx<=.51f;dx+=.5f) {
+        const auto at=pixel(x+dx,z+dz);sum+=long(image[at])+image[at+1]+image[at+2];
+      }
+      return sum;
+    };
+    Object own_car,other_car;
+    const auto headlight=[&](float x,float z,const Object* car) {
+      CarLight l;l.kind=CarLightKind::Headlight;l.car=const_cast<Object*>(car);
+      l.part=reinterpret_cast<Object*>(uintptr_t(0x1000+int(x*10)+int(z*100)));
+      l.position={x,.7f,z};l.direction={0,-.087f,.996f};
+      l.diffuse={.2f,.2f,.2f};l.attenuation={1,.03f,0};l.range=400;return l;
+    };
+    VideoOptions video;video.shadows=2;
+    scene_sun_set_time(22*3600.f);
+    b.set_headlight_focus(&own_car);
+    b.car_lights_override_=std::vector<CarLight>{headlight(-.7f,1.9f,&own_car),headlight(.7f,1.9f,&own_car)};
+    render_debug().headlight_shadows=false;
+    b.update_local_light();b.update_headlight_shadows(video);
+    SLRR_REQUIRE(b.headlight_shadow_count_==0);
+    const auto open=capture();
+    render_debug().headlight_shadows=true;
+    b.update_local_light();b.update_headlight_shadows(video);
+    std::printf("HEADLIGHT SHADOW tiles %zu (lamp tiles %d %d)\n",b.headlight_shadow_count_,
+                b.scenery_lamps_.size()>1?b.scenery_lamps_[0].shadow_tile:-9,b.scenery_lamps_.size()>1?b.scenery_lamps_[1].shadow_tile:-9);
+    SLRR_REQUIRE(b.headlight_shadow_count_==2 && b.scenery_lamps_.size()==2);
+    SLRR_REQUIRE(b.scenery_lamps_[0].shadow_tile>=0 && b.scenery_lamps_[1].shadow_tile>=0);
+    const auto shadowed=capture();
+    const long behind_open=patch(open,0,14),behind_shadow=patch(shadowed,0,14);
+    const long beside_open=patch(open,3.5f,14),beside_shadow=patch(shadowed,3.5f,14);
+    const long front_open=patch(open,0,5),front_shadow=patch(shadowed,0,5);
+    std::printf("HEADLIGHT SHADOW road behind the box %ld -> %ld, beside it %ld -> %ld, in front %ld -> %ld\n",
+                behind_open,behind_shadow,beside_open,beside_shadow,front_open,front_shadow);
+    SLRR_REQUIRE(behind_shadow<behind_open-(behind_open/3));
+    SLRR_REQUIRE(std::abs(beside_shadow-beside_open)<=beside_open/20+15);
+    SLRR_REQUIRE(std::abs(front_shadow-front_open)<=front_open/20+15);
+    // Budget: the followed car's two headlights first, even when farther;
+    // six tiles in all.
+    std::vector<CarLight> crowd;
+    for(int k=0;k<4;++k) {crowd.push_back(headlight(-.7f,1.9f+k*3.f,&other_car));crowd.push_back(headlight(.7f,1.9f+k*3.f,&other_car));}
+    crowd.push_back(headlight(-.7f,-20.f,&own_car));crowd.push_back(headlight(.7f,-20.f,&own_car));
+    b.car_lights_override_=crowd;b.update_local_light();b.update_headlight_shadows(video);
+    size_t own_tiles=0,tiles=0;
+    for(const auto& lamp:b.scenery_lamps_) {tiles+=lamp.shadow_tile>=0;own_tiles+=lamp.shadow_tile>=0&&lamp.car==&own_car;}
+    std::printf("HEADLIGHT SHADOW budget: %zu tiles, %zu on the followed car (of %zu headlights)\n",tiles,own_tiles,b.scenery_lamps_.size());
+    SLRR_REQUIRE(tiles==LibBgfxBackend::kHeadlightShadows && own_tiles==2 && b.headlight_shadow_count_==tiles);
+    // Selection cost with six tiles; the GPU and render-thread cost is
+    // measured in the city (city_submission, workers case).
+    double cpu=0;
+    for(int frame=0;frame<60;++frame) {
+      const auto t0=std::chrono::steady_clock::now();
+      b.update_local_light();b.update_headlight_shadows(video);
+      cpu+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+      bgfx::frame();
+    }
+    std::printf("HEADLIGHT SHADOW selection and submission, 6 tiles, 2 casters: CPU %.3f ms per frame\n",cpu/60.0);
+    // Shadows off (option) or local lights off: none.
+    video.shadows=0;b.update_local_light();b.update_headlight_shadows(video);
+    SLRR_REQUIRE(b.headlight_shadow_count_==0);
+    video.shadows=2;
+    b.car_lights_override_.reset();b.set_headlight_focus(nullptr);b.scenery_lamps_.clear();b.update_headlight_shadows(video);
+    bgfx::frame();bgfx::destroy(fb);bgfx::destroy(readback);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.instances_.clear();b.fixture_lights_.clear();b.outdoor_lighting_=false;b.car_lamp_count_=0;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    gameref_remove(&world);
+    std::puts("PASS headlight shadows: a caster darkens the road behind it, budget favours the followed car");
+  }
+
   static void scenery_lamps(LibBgfxBackend& b) {
     Fixture f;scene_instances_set_resources(&f.packs);
     Object world,shell;
@@ -1863,7 +1999,7 @@ struct SceneShadowRegression {
     b.set_view_sequential(view_id);
     // #262: the uniform value cache, the kept texture stages and the
     // residency skip are measured on and off; both captures must match.
-    struct Run { double sync=0,submit=0,render=0; uint32_t draws=0,world_draws=0; std::vector<uint8_t> image;
+    struct Run { double sync=0,submit=0,render=0,gpu=0,headlight_gpu=0; uint32_t draws=0,world_draws=0; std::vector<uint8_t> image;
                  perf::Snapshot zones;
                  uint64_t uniform_sets=0,uniform_skips=0,texture_sets=0,texture_skips=0,residency_skips=0; };
     // #266: `cold` overwrites 96 MB before every frame, as scripts, physics
@@ -1900,6 +2036,7 @@ struct SceneShadowRegression {
           const float car_script[3]={frame_matrix[12]+14.f,frame_matrix[13],frame_matrix[14]+1.5f};
           b.set_lamp_shadow_focus(car_script);
           b.update_lamp_shadows(video);
+          b.update_headlight_shadows(video);  // #283; no car lights unless the cost run sets them
           host_enhanced_graphics().ao_method=2;host_enhanced_graphics().ao_quality=2;
           host_enhanced_graphics().ao_radius=300;host_enhanced_graphics().ao_strength=100;
           b.update_ambient_occlusion(view,projection,width,height,view_id);
@@ -1946,6 +2083,14 @@ struct SceneShadowRegression {
         if(frame>=warmup) {
           out.sync+=sync;out.submit+=submit;++samples;out.draws=stats->numDraw;
           out.render+=double(stats->cpuTimeEnd-stats->cpuTimeBegin)*1000.0/double(stats->cpuTimerFreq);
+          if(stats->gpuTimerFreq>0) {
+            out.gpu+=double(stats->gpuTimeEnd-stats->gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
+            for(uint16_t i=0;i<stats->numViews;++i) {
+              const auto& v=stats->viewStats[i];
+              if(v.view>=LibBgfxBackend::kHeadlightShadowView && v.view<LibBgfxBackend::kHeadlightShadowView+LibBgfxBackend::kHeadlightShadows)
+                out.headlight_gpu+=double(v.gpuTimeEnd-v.gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
+            }
+          }
         }
         if(last) {
           out.image.resize(size_t(width)*height*4);
@@ -1953,7 +2098,7 @@ struct SceneShadowRegression {
           for(int i=0;i<16&&bgfx::frame()<ready;++i) {}
         }
       }
-      out.sync/=samples;out.submit/=samples;out.render/=samples;
+      out.sync/=samples;out.submit/=samples;out.render/=samples;out.gpu/=samples;out.headlight_gpu/=samples;
       out.zones=perf::snapshot();
       out.uniform_sets=(b.main_bind_.uniform_sets-u0)/frames;out.uniform_skips=(b.main_bind_.uniform_skips-s0)/frames;
       out.texture_sets=(b.main_bind_.texture_sets-t0)/frames;out.texture_skips=(b.main_bind_.texture_skips-k0)/frames;
@@ -1991,6 +2136,35 @@ struct SceneShadowRegression {
       SLRR_REQUIRE(single_runs==0);
       SLRR_REQUIRE(jobs_concurrency()<3||threaded_runs>0);
       SLRR_REQUIRE(differ<=64&&worst<=1);  // the known 1-LSB flake at most
+      // #283: headlight shadow cost in this frame: the followed car's two
+      // headlights and four of traffic ahead, beams along the street.
+      {
+        const float cx=frame_matrix[12]+14.f,cy=frame_matrix[13],cz=-(frame_matrix[14]+1.5f);
+        std::vector<CarLight> beams;
+        static Object followed,traffic;
+        for(int k=0;k<3;++k) for(float side:{-.7f,.7f}) {
+          CarLight l;l.kind=CarLightKind::Headlight;l.car=k==0?&followed:&traffic;
+          l.part=reinterpret_cast<Object*>(uintptr_t(0x2000+k*16+(side>0)));
+          l.position={cx+2.f+12.f*k,cy+.7f,cz+side};l.direction={.996f,-.087f,0.f};
+          l.diffuse={.2f,.2f,.2f};l.attenuation={1,.03f,0};l.range=400;beams.push_back(l);
+        }
+        b.car_lights_override_=beams;b.set_headlight_focus(&followed);
+        bgfx::setDebug(BGFX_DEBUG_PROFILER);
+        render_debug().headlight_shadows=false;
+        const auto without=run(true,40,15);
+        render_debug().headlight_shadows=true;
+        const auto with=run(true,40,15);
+        const size_t tiles=b.headlight_shadow_count_;
+        bgfx::setDebug(BGFX_DEBUG_NONE);
+        b.car_lights_override_.reset();b.set_headlight_focus(nullptr);
+        for(const auto* r:{&without,&with})
+          std::printf("HEADLIGHT SHADOW city %ux%u %s: host submission %.3f ms, render thread %.3f ms, GPU %.3f ms "
+                      "(headlight tiles %.3f ms), %u draws\n",width,height,r==&with?"6 tiles":"off    ",
+                      r->submit,r->render,r->gpu,r->headlight_gpu,r->draws);
+        std::printf("HEADLIGHT SHADOW city: %zu tiles of %u px, %u more draws\n",tiles,unsigned(b.headlight_shadow_tile_),
+                    with.draws>without.draws?with.draws-without.draws:0u);
+        SLRR_REQUIRE(tiles==6 && with.draws>without.draws);
+      }
     }
     const auto off=run(false,30,10);
     const auto on=run(true,40,15);
@@ -3762,6 +3936,7 @@ int main() {
     SceneShadowRegression::emissive_overlay_flush(backend);
     SceneShadowRegression::scenery_lamps(backend);
     SceneShadowRegression::car_lights(backend);
+    SceneShadowRegression::headlight_shadows(backend);
     SceneShadowRegression::lamp_cost(backend);
     SceneShadowRegression::lamp_shadows(backend);
     SceneShadowRegression::lamp_shadow_stability(backend);
