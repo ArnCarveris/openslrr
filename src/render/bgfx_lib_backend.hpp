@@ -189,6 +189,13 @@ class LibBgfxBackend final : public IRenderBackend {
   }
   void bind_scene_shadow(bool receive, uint8_t stage);
   void bind_fixture_lights(bool enabled, bool upload_arrays);
+  // Per-frame light data texture (#254), see shaders/scene_shadow.sh.
+  static constexpr uint16_t kLightDataWidth = 256, kLightDataRows = 3;
+  bgfx::TextureHandle light_data_tex_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_light_data_ = BGFX_INVALID_HANDLE;
+  std::vector<float> light_data_;      // last uploaded contents
+  uint64_t light_data_updates_ = 0;    // texture updates, for tests
+  void upload_light_data();
   void bind_baked_light(const ScxGroup* group,
                         const std::vector<bgfx::TextureHandle>* tex,
                         bgfx::TextureHandle mix = BGFX_INVALID_HANDLE,
@@ -405,18 +412,11 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::TextureHandle fixture_shadow_tex_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle s_fixture_shadow_=BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_fixture_params_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_fixture_positions_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_fixture_colors_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_fixture_directions_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_fixture_matrices_=BGFX_INVALID_HANDLE;
   // Scenery lamps (#237), outside garages. kSceneryLamps matches the arrays
   // in shaders/scene_shadow.sh (3 x 64 vec4 of the fragment constants).
   static constexpr size_t kSceneryLamps=64;
   std::vector<LampLight> scenery_lamps_;
   bgfx::UniformHandle u_lamp_params_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_positions_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_colors_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_attenuation_=BGFX_INVALID_HANDLE;
   std::array<std::array<float,16>,kFixtureLights> fixture_shadow_matrices_{},fixture_cached_matrices_{};
   bool fixture_shadow_active_=false;
   uint16_t fixture_shadow_tile_=512;
@@ -535,8 +535,6 @@ class LibBgfxBackend final : public IRenderBackend {
   uint64_t car_shadow_redraws_=0;
   std::array<std::array<float,16>,kLampSpecial> lamp_car_matrices_{};
   std::array<std::array<float,4>,kLampSpecial> lamp_car_tiles_{};
-  bgfx::UniformHandle u_lamp_car_matrices_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_car_tiles_=BGFX_INVALID_HANDLE;
   size_t lamp_shadow_count_=0;  // shadowed lamps at the front of scenery_lamps_
   bool lamp_shadow_atlas_bound_=false;
   uint64_t lamp_shadow_redraws_=0;  // tiles drawn, for tests
@@ -554,8 +552,6 @@ class LibBgfxBackend final : public IRenderBackend {
   std::array<std::array<float,16>,kLampSpecial> lamp_shadow_matrices_{};
   std::array<std::array<float,4>,kLampSpecial> lamp_shadow_tiles_{};
   bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_shadow_matrices_=BGFX_INVALID_HANDLE;
-  bgfx::UniformHandle u_lamp_shadow_tiles_=BGFX_INVALID_HANDLE;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
   bool shadow_cache_valid_ = false;
