@@ -1,6 +1,14 @@
 uniform vec4 u_shadowFilter; // 0 sharp, 1 soft, 2 very soft
 // Projected depth slope on the actual receiver surface. Keep derivatives
 // outside varying bounds branches (uniform light enable/count branches are OK).
+vec2 receiverGradientFrom(vec3 dx,vec3 dy)
+{
+    float determinant=dx.x*dy.y-dx.y*dy.x;
+    float scale=max(dot(dx.xy,dx.xy),dot(dy.xy,dy.xy));
+    if(abs(determinant)>max(scale*0.00001,1e-18))
+        return vec2(dy.y*dx.z-dx.y*dy.z,dx.x*dy.z-dy.x*dx.z)/determinant;
+    return vec2(0.0,0.0);
+}
 vec2 shadowReceiverGradient(vec3 p)
 {
     vec3 dx=dFdx(p),dy=dFdy(p);
@@ -163,6 +171,39 @@ float lampTileVisibility(mat4 sampleMatrix,vec4 tileInfo,vec2 size,vec3 world,ve
     }
     return mix(1.0,visibility,tileInfo.z);
 }
+// Street lamp tiles without screen-space derivatives (#250): the receiver
+// depth gradient comes from the world-position derivatives taken once per
+// pixel, through the tile projection (quotient rule on clip.xyz / clip.w).
+// That lets lampLighting skip lamps out of range or facing away before any
+// tile work. The kernel is capped: Very soft uses the 2x2 taps on a two-texel
+// grid (4 taps) instead of the 4x4 tent (16 taps); sun cascades unchanged.
+float lampTileVisibilityFast(mat4 sampleMatrix,vec4 tileInfo,vec2 size,vec3 world,vec3 toward,
+                             bool rim,vec3 dwx,vec3 dwy)
+{
+    vec4 clip=mul(sampleMatrix,vec4(world+toward*0.03,1.0));
+    if(clip.w<=0.0) return 1.0;
+    vec3 p=clip.xyz/clip.w;
+    if(any(lessThanEqual(p,vec3(0.0,0.0,0.0))) || any(greaterThanEqual(p,vec3(1.0,1.0,1.0))))
+        return 1.0;
+    vec4 cx=mul(sampleMatrix,vec4(dwx,0.0)),cy=mul(sampleMatrix,vec4(dwy,0.0));
+    vec2 gradient=receiverGradientFrom((cx.xyz-p*cx.w)/clip.w,(cy.xyz-p*cy.w)/clip.w);
+    vec2 tile=tileInfo.xy;
+    vec2 texel=u_lampShadowParams.yz;
+    vec2 spacing=u_shadowFilter.x>1.5?texel*2.0:texel;
+    vec2 toLocal=vec2(1.0,1.0)/size;
+    vec2 receiverUv=tile+p.xy*size;
+    vec2 uv=clamp(receiverUv,tile+spacing*1.5,tile+size-spacing*1.5);
+    vec2 grid=uv/spacing-vec2(0.5,0.5);
+    vec2 base=(floor(grid)+vec2(0.5,0.5))*spacing;
+    vec2 weight=fract(grid);
+    if(u_shadowFilter.x<0.5) weight=smoothstep(vec2(0.15,0.15),vec2(0.85,0.85),weight);
+    float shadow=mix(mix(lampShadowTap(base,p,receiverUv,gradient,toLocal),
+                         lampShadowTap(base+vec2(spacing.x,0.0),p,receiverUv,gradient,toLocal),weight.x),
+                     mix(lampShadowTap(base+vec2(0.0,spacing.y),p,receiverUv,gradient,toLocal),
+                         lampShadowTap(base+spacing,p,receiverUv,gradient,toLocal),weight.x),weight.y);
+    float fade=rim?1.0-smoothstep(0.75,0.98,length(p.xy*2.0-vec2(1.0,1.0))):1.0;
+    return mix(1.0,mix(1.0,shadow,fade),tileInfo.z);
+}
 vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
 {
     float r2=u_lampPositions[i].w*u_lampPositions[i].w;
@@ -177,8 +218,30 @@ vec3 lampRadiance(int i,vec3 n,vec3 delta,float d2)
 vec3 lampLighting(vec3 n,vec3 world)
 {
     vec3 sum=vec3(0.0,0.0,0.0);
-    // Shadowed lamps: no per-pixel early-out before the shadow lookup, whose
-    // receiver-plane derivatives need uniform control flow.
+    // Derivatives once, in uniform control flow, before any per-lamp branch.
+    vec3 dwx=dFdx(world),dwy=dFdy(world);
+    if(u_lampShadowParams.w<0.5) {
+    // Shadowed lamps (#250): out of range or facing away gives no light, so
+    // they are skipped before the projection and the shadow lookup.
+    for(int s=0;s<24;++s) {
+        if(float(s)>=u_lampShadowParams.x) break;
+        vec3 delta=u_lampPositions[s].xyz-world;
+        float d2=dot(delta,delta);
+        float r2=u_lampPositions[s].w*u_lampPositions[s].w;
+        if(d2>=r2 || dot(n,delta)<=0.0) continue;
+        vec3 toward=delta*inversesqrt(max(d2,0.001));
+        float visibility=1.0;
+        if(u_lampShadowTiles[s].z>0.0)
+            visibility*=lampTileVisibilityFast(u_lampShadowMatrices[s],u_lampShadowTiles[s],
+                                               vec2(0.25,1.0/3.0),world,toward,true,dwx,dwy);
+        if(u_lampCarTiles[s].z>0.0)
+            visibility*=lampTileVisibilityFast(u_lampCarMatrices[s],u_lampCarTiles[s],
+                                               vec2(0.125,1.0/6.0),world,toward,false,dwx,dwy);
+        sum+=lampRadiance(s,n,delta,d2)*visibility;
+    }
+    } else {
+    // Reference path (render_debug lamp_shadow_reference): the #237 loop,
+    // screen-space derivatives per lamp and the full kernel.
     for(int s=0;s<24;++s) {
         if(float(s)>=u_lampShadowParams.x) break;
         vec3 delta=u_lampPositions[s].xyz-world;
@@ -192,6 +255,7 @@ vec3 lampLighting(vec3 n,vec3 world)
             visibility*=lampTileVisibility(u_lampCarMatrices[s],u_lampCarTiles[s],
                                            vec2(0.125,1.0/6.0),world,toward,false);
         sum+=lampRadiance(s,n,delta,d2)*visibility;
+    }
     }
     for(int i=0;i<64;++i) {
         if(float(i)>=u_lampParams.x) break;

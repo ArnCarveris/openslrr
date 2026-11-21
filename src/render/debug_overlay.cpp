@@ -349,6 +349,7 @@ void draw_render_passes(DebugOverlay::RenderOptions& options) {
   ImGui::Checkbox("Street lamp lighting", &o.lamp_lighting);
   ImGui::Checkbox("Street lamp shadows", &o.lamp_shadows);
   ImGui::Checkbox("Car lamp shadow tiles", &o.car_lamp_tiles);
+  ImGui::Checkbox("Lamp shadow reference path (slow)", &o.lamp_shadow_reference);
   ImGui::Checkbox("Reflections", &o.reflections);
   ImGui::Checkbox("Sky", &o.sky);
   ImGui::SameLine();
