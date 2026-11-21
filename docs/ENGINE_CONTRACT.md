@@ -1386,20 +1386,29 @@ correctly separated according to the options.
 ## 15. Saves and transitions
 
 `java.io.File` writes versioned JSON at the existing script-selected paths
-(including career, car, controls and options files). Reads detect JSON first,
-then fall back to legacy SDAT type 1/type 2 and older raw host streams. JSON
-save opening keys are reserved for detection, rather than treating every raw
-integer beginning with `{` as JSON. Merely reading a legacy file does not
-rewrite it; its next normal save writes JSON.
-New saves cannot be read by the original game or earlier SDAT-only hosts.
+(including career, car, controls and options files). Reads detect version 2
+JSON, then version 1 JSON, then fall back to legacy SDAT type 1/type 2 and
+older raw host streams. JSON save opening keys are reserved for detection,
+rather than treating every raw integer beginning with `{` as JSON. A version
+1 or SDAT file under `save/` that a script reads to its last byte is
+rewritten as version 2 when it is closed; a partial read (`fileCheck`) keeps
+it. New saves cannot be read by the original game or earlier SDAT-only hosts.
 
-The version 1 object has `format: "OpenSLRR-save"`, `version: 1`, and three
-arrays. `values` is the ordered script stream of `[type, value]` pairs: `int`,
-`float`, `resource`, or `string` (including null). Finite floats use round-trip
-precision; `floatBits` stores a nonfinite float's unsigned 32-bit pattern.
-`packs` contains `[ordinal, game-relative path]`; `blobs` contains
-`[ordinal, kind, hex bytes]`. Resource values retain SDAT's file-local IDs, not
-session pack numbers. Dynamic resources retain the existing limitation: their
+Version 2 (`version: 2`, schema in [SAVE_JSON_SCHEMA.md](SAVE_JSON_SCHEMA.md))
+names the stock career (`GameLogic.save`), car (`Vehicle.save`, with the
+part tree) and skin layouts, and stores any other file as a typed `values`
+list. Resources are stored by game-relative pack path and pack-local id, not
+by session pack number. The named form is published only when it decodes to
+the same stream; otherwise the file is written as `values`. Part subclass
+data is attributed through script frames: `Jvm::invoke` reports each TREE
+method receiving the open File (`set_script_frame_hooks`). Do not add a
+script-specific layout without a matching decoder: reads rebuild the stream
+from names, and a missing or mistyped field fails the open.
+
+Version 1 has three arrays. `values` is the ordered script stream of `[type, value]` pairs: `int`,
+`float`, `resource`, or `string` (including null). `packs` contains
+`[ordinal, game-relative path]`; `blobs` contains `[ordinal, kind, hex bytes]`.
+It is read only. Dynamic resources retain the existing limitation: their
 metadata/bytes can be read, but they are not reinstantiated by the remounter,
 except Painter textures stored as PNG blobs (below).
 
@@ -1411,8 +1420,8 @@ cross-type reads used by stock Config and skin scripts. Damaged/unsupported
 JSON saves make `File.open` return 0 rather than falling through to binary reads. Paths and
 atomic single-file publication (including pending in-memory saves after a
 failed replacement) keep their existing contracts. This is not a multi-file
-career transaction. Regressions: `scripts/run_save_io_tests.ps1 -Suite save_io`
-and `-Suite save_persistence`, after a Release build.
+career transaction. Regressions: `scripts/run_save_io_tests.ps1 -Suite save_io`,
+`-Suite save_json` and `-Suite save_persistence`, after a Release build.
 
 The active section has an exit/enter cycle. `SectionMachine` can also adopt
 a state that Java has already transitioned: do not call exit/enter a second
@@ -1430,7 +1439,7 @@ reflections, shadows, and loading state. Do not keep the fallen pose of an
 old car as the initial pose of the next one.
 
 `File.write(ResourceRef)` stores a Painter texture as a PNG in its save blob
-(the SDAT trailer, or a JSON `blobs` entry). `readResID` turns the blob back
+(the SDAT trailer, or a JSON `blobs` entry, base64 in version 2). `readResID` turns the blob back
 into a new Painter texture; a blob the stock game left empty is read from its
 side file `<save>.<ordinal>` (JPEG). A texture id that is no longer live keeps
 an empty blob, like other dynamic resources, and reads back as null.

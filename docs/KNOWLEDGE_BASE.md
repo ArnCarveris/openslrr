@@ -467,12 +467,31 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
 - Enhanced options (MSAA, reflections, clouds, sunlight, local lights) are
   session-only and exposed through `OptionsDialog.get/setRendererOption`
   (`src/natives/natives_script.cpp:register_script_natives`).
-- File saves now write versioned typed JSON at the existing paths, with SDAT
-  type 1/type 2 and raw-stream read fallback. Resource paths remount independently
-  of session pack order; scripts keep binary cross-type read semantics. See
-  ENGINE_CONTRACT §15 (`src/natives/natives_io.cpp:json_frame`,
+- File saves write version 2 JSON at the existing paths (#291): named career,
+  car (part tree, per-class tuning data) and skin layouts, and a typed
+  `values` list for other files. Schema: [SAVE_JSON_SCHEMA.md](SAVE_JSON_SCHEMA.md).
+  Version 1 JSON, SDAT type 1/type 2 and raw streams are still read; a version
+  1 or SDAT file under `save/` read to its last byte is rewritten as version 2
+  on close. Resource paths remount independently of session pack order;
+  scripts keep binary cross-type read semantics. See ENGINE_CONTRACT §15
+  (`src/natives/save_json.cpp:encode`, `src/natives/save_json.cpp:decode`,
+  `src/natives/natives_io.cpp:json_frame`,
+  `src/natives/natives_io.cpp:json2_take_payload`,
   `src/natives/natives_io.cpp:json_take_payload`,
   `src/natives/natives_io.cpp:sdat_take_payload`).
+- Lessons from #291. Before it, cars looked stuck in SDAT: a `PlayerCarN` is
+  rewritten only when that car is saved (`CarLot.saveCar` on the current car),
+  so untouched cars never left the legacy format. Conversion therefore happens
+  on a complete read, which the car lot does through `save/temp/` when a car is
+  shown; the career folder gets the JSON copy on the next save
+  (`GAME:sl/Scripts/game/src/GameLogic.java:save` copies `PlayerCar*`).
+  The flat stream cannot name part data on its own: subclasses (`Tyre`,
+  `Block`, mod parts) append versioned fields after `super.save`, so the host
+  records which script frame wrote each value
+  (`src/jvm/jvm.cpp:set_script_frame_hooks`,
+  `src/natives/natives_io.cpp:save_frame_enter`). `GameLogic.save` writes the
+  racer list without a count; the encoder recognises a racer by its
+  int, int, float prefix followed by a `VehicleDescriptor` frame.
 
 ### 5.10 Threads and the worker pool
 
