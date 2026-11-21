@@ -85,6 +85,61 @@ struct SceneShadowRegression {
       std::printf("AO flat method=%d dark=%u/%u average=%g reference=%g\n",method,dark,visible,double(total)/visible,double(reference)/visible);
       SLRR_REQUIRE(visible>100 && dark==0);
     }
+    // #274: a large flat wall (a house facade) alone and standing on the
+    // floor, seen frontally and at a grazing angle, near and far. The AO
+    // geometry path (#259) must match the reference sampling: an open wall
+    // receives no AO, and the wall-floor crease looks the same.
+    {
+      auto wall=std::make_shared<ScxGeometry>();*wall=*floor;
+      // Render space z = 10 (geometry z is mirrored), 30 m wide, 8 m high.
+      wall->positions={-15,0,-10,15,0,-10,-15,8,-10,15,8,-10};
+      wall->normals={0,0,1,0,0,1,0,0,1,0,0,1};
+      b.cache_scene_mesh(wall,nullptr,false);
+      SceneInstance facade=receiver;facade.geometry=wall;
+      const auto saved_receiver_positions=floor->positions;
+      floor->positions={-20,0,30,20,0,30,-20,0,-40,20,0,-40};
+      ++floor->revision;b.cache_scene_mesh(floor,nullptr,false);
+      struct Camera { const char* name; bx::Vec3 eye, at; };
+      const Camera cameras[]={{"frontal near",{0,1.6f,6},{0,2.5f,10}},{"frontal far",{0,1.6f,-30},{0,2.5f,10}},
+                              {"grazing near",{-12,1.6f,8.5f},{12,2.f,10}},{"grazing far",{-40,1.6f,6},{12,2.f,10}}};
+      const auto saved_receiver=receiver;
+      for(const bool with_floor:{false,true}) for(const auto& camera:cameras) {
+        bx::mtxLookAt(view,camera.eye,camera.at);
+        bx::mtxProj(projection,60.f,float(width)/height,.05f,200.f,bgfx::getCaps()->homogeneousDepth);
+        std::copy(projection,projection+16,render);
+        for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+        receiver=facade;b.instances_={facade};draw_blocker=false;
+        if(with_floor) {b.instances_={facade,saved_receiver};blocker=saved_receiver;draw_blocker=true;}
+        const auto plain=capture(0,2);
+        for(int method=1;method<=2;++method) {
+          render_debug().ao_reference=true;
+          const auto reference=capture(method,2);
+          render_debug().ao_reference=false;
+          const auto fast=capture(method,2);
+          unsigned visible=0,dark_fast=0,dark_ref=0,differ=0;int worst=0;
+          for(size_t i=0;i<fast.size();i+=4) {
+            if(plain[i]<=10) continue;
+            ++visible;
+            dark_fast+=int(plain[i])-int(fast[i])>3;dark_ref+=int(plain[i])-int(reference[i])>3;
+            const int d=std::abs(int(fast[i])-int(reference[i]));worst=std::max(worst,d);differ+=d>8;
+          }
+          std::printf("AO wall %s%s method=%d: visible %u, AO pixels %u (reference %u), differ>8 %u, max %d\n",
+                      camera.name,with_floor?" on floor":"",method,visible,dark_fast,dark_ref,differ,worst);
+          SLRR_REQUIRE(visible>100);
+          // Before #274 the open wall seen at a grazing angle got GTAO on
+          // 2,817 of 8,257 pixels (reference 0) and HBAO on 7,439.
+          if(!with_floor) SLRR_REQUIRE(dark_fast<=dark_ref+visible/200);
+          SLRR_REQUIRE(differ<=visible/50);
+        }
+      }
+      receiver=saved_receiver;blocker.geometry=cube;bx::mtxIdentity(blocker.transform.data());
+      floor->positions=saved_receiver_positions;++floor->revision;b.cache_scene_mesh(floor,nullptr,false);
+      bx::mtxLookAt(view,{3,3,-4},{0,0,3});
+      bx::mtxProj(projection,60.f,float(width)/height,.05f,100.f,bgfx::getCaps()->homogeneousDepth);
+      std::copy(projection,projection+16,render);
+      for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+      b.instances_={receiver};draw_blocker=false;
+    }
     // Near-plane precision must not turn a distant, unobstructed road into AO bands.
     const auto near_positions=floor->positions;
     floor->positions={-300,0,0,300,0,0,-300,0,-1500,300,0,-1500};

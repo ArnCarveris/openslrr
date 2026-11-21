@@ -3428,3 +3428,30 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
 - The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
   `city_submission` now accepts up to 64 differing bytes at most 1 apart and
   fails on anything larger.
+
+### AO darkens large walls seen at a grazing angle (#274)
+
+- Symptom (Elias, Valo City suburb, daytime): a house facade very dark with
+  black blotches at wall bases and corners; normal with AO off or with "AO
+  reference sampling" on, so the #259 AO-resolution path.
+- Cause: every AO texel stands for one full-resolution depth texel, but at
+  half resolution the AO texel centre lies exactly on the boundary between
+  two full texels. The geometry pass picked the texel from its interpolated
+  uv, the AO pass and its filters from integer AO texels
+  (`fullTexelCentre(aoTexelCentre(t))`), and they did not always agree. The
+  stored linear depth then belonged to one texel while the position was
+  rebuilt at its neighbour. On a frontal wall the two depths are equal; at a
+  grazing angle they differ a lot, so samples left the wall plane, became
+  occluders and darkened open walls in bands.
+- Fix: `shaders/fs_ao.sc` `aoFullCentre` picks the full texel with a
+  quarter-texel bias (texel 2t at half resolution, t at full resolution) and
+  every pass uses it: the geometry pass (depth, position, normal), the
+  receiver and samples of the AO pass and the filter weights.
+  `shaders/ambient_occlusion.sh` fetches the depth of the same texel for the
+  depth-aware upsample weights.
+- Test: `tests/test_scene_shadow_gpu.cpp` `ambient_occlusion`, a 30 m x 8 m
+  wall alone and on a floor, frontal and grazing, near and far, AO High,
+  geometry path against reference sampling. Before: open wall grazing near
+  GTAO 2,817 of 8,257 pixels darkened (reference 0), HBAO 7,439. After: 0
+  for both; every case within 2 % of the reference. The house itself was not
+  located in the harness; the synthetic wall reproduces the fault.

@@ -80,6 +80,19 @@ ivec2 aoTexel(vec2 uv) {
     return ivec2(clamp(floor(uv*size),vec2(0.0,0.0),size-vec2(1.0,1.0)));
 }
 vec2 aoTexelCentre(ivec2 t) { return (vec2(t)+vec2(0.5,0.5))*u_aoParams.yz; }
+// The full-resolution depth texel an AO texel stands for (#274). The AO
+// texel centre lies exactly on a full-texel boundary at half resolution, so
+// fullTexelCentre(aoTexelCentre(t)) could pick either neighbour, and the
+// geometry pass (from the interpolated uv) and the AO pass (from integer
+// texels) did not always pick the same one. The stored depth then belonged
+// to one texel and the rebuilt position to its neighbour: on a wall seen at
+// a grazing angle that is a large depth error, and open walls darkened.
+// A quarter-texel bias makes the choice unambiguous and identical everywhere.
+vec2 aoFullCentre(ivec2 t) {
+    vec2 full=floor((vec2(t)+vec2(0.5,0.5))*u_aoParams.yz/u_aoScreen.xy-vec2(0.25,0.25));
+    vec2 size=vec2(1.0,1.0)/u_aoScreen.xy;
+    return (clamp(full,vec2(0.0,0.0),size-vec2(1.0,1.0))+vec2(0.5,0.5))*u_aoScreen.xy;
+}
 vec3 sampleDelta(vec2 uv,vec3 p) {
     if(any(lessThan(uv,vec2(0.0,0.0))) || any(greaterThan(uv,vec2(1.0,1.0))))
         return vec3(0.0,0.0,0.0);
@@ -92,7 +105,7 @@ vec3 sampleDelta(vec2 uv,vec3 p) {
     // AO-resolution linear depth: a quarter of the texels over the radius.
     ivec2 t=aoTexel(uv);
     float z=texelFetch(s_aoLinear,t,0).r;
-    return z<=0.0?vec3(0.0,0.0,0.0):positionFromDepth(fullTexelCentre(aoTexelCentre(t)),z)-p;
+    return z<=0.0?vec3(0.0,0.0,0.0):positionFromDepth(aoFullCentre(t),z)-p;
 }
 float hbao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
     // High runs at half resolution like Medium (#248) with more directions.
@@ -167,13 +180,14 @@ float gtao(vec2 uv,vec3 p,vec3 n,vec2 radiusUv,float rotation,float jitter) {
 }
 void main() {
     vec2 uv=v_texcoord0;
-    vec2 receiverUv=fullTexelCentre(uv);
+    ivec2 texel=aoTexel(uv);
+    vec2 receiverUv=aoFullCentre(texel);
     // One shader serves the geometry pass (two targets) and the single-target
     // passes: initialise the second output for the latter.
     gl_FragData[1]=vec4(0.0,0.0,0.0,0.0);
     if(u_aoParams.x>2.5) {
         // Geometry pass (#256): depth and the 9-tap normal, once per frame.
-        float depth=depthAt(uv);
+        float depth=depthAt(receiverUv);
         if(depth<=0.0) {gl_FragData[0]=vec4(0.0,0.0,0.0,0.0);gl_FragData[1]=vec4(0.0,0.0,0.0,0.0);return;}
         vec3 p=positionAt(receiverUv);
         vec3 n=surfaceNormal(receiverUv,p);
@@ -181,7 +195,6 @@ void main() {
         gl_FragData[1]=vec4(n,dot(n,n)<0.5?0.0:1.0);
         return;
     }
-    ivec2 texel=aoTexel(uv);
     float z=texelFetch(s_aoLinear,texel,0).r;
     if(z<=0.0) {gl_FragData[0]=vec4(1.0,1.0,1.0,1.0);return;}
     vec4 stored=texelFetch(s_aoNormal,texel,0);
@@ -196,7 +209,7 @@ void main() {
             ivec2 tq=aoTexel(q);
             float zq=texelFetch(s_aoLinear,tq,0).r;
             if(zq<=0.0) continue;
-            vec3 samplePosition=positionFromDepth(fullTexelCentre(aoTexelCentre(tq)),zq);
+            vec3 samplePosition=positionFromDepth(aoFullCentre(tq),zq);
             // [1,2,2,2,1]/8 spans exactly one 4-texel noise period, so a flat
             // receiver averages all sixteen rotation/jitter cells after both
             // passes. A Gaussian leaves the per-pixel pattern visible as

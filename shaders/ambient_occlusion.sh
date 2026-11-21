@@ -20,7 +20,10 @@ float ambientVisibility(vec2 pixel) {
     vec2 f=fract(grid);float sum=0.0,weights=0.0;
     for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
         vec2 q=clamp(base+vec2(float(x),float(y))*u_aoFieldSize.xy,vec2(0.0,0.0),vec2(1.0,1.0));
-        float d=texture2DLod(s_aoDepth,q,0.0).r;
+        // The depth texel this AO texel was computed for (fs_ao.sc aoFullCentre,
+        // #274), not whichever neighbour point sampling picks at the boundary.
+        vec2 dq=(floor(q/u_aoSampling.yz-vec2(0.25,0.25))+vec2(0.5,0.5))*u_aoSampling.yz;
+        float d=texture2DLod(s_aoDepth,dq,0.0).r;
         if(d<=0.0) continue;
         float w=(x==0?1.0-f.x:f.x)*(y==0?1.0-f.y:f.y);
         w*=exp2(-abs(aoViewDepth(d)-z)/max(u_aoFieldSize.z*0.08,0.02));
