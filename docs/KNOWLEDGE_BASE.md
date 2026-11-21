@@ -555,6 +555,24 @@ limits the speed-up.
   matching start-of-drive window captures (`--bench-shots`) when the same
   sky dome is chosen.
 
+**Per-frame work on the pool (#266).**
+`src/resources/scene_instances.cpp:scene_instances_collect_batches` lists the
+visible cells on the host thread, then runs the placement tests (flags, LOD,
+frustum, far-size filter, reflection size) over contiguous runs of cells, a
+few runs per thread. Each run fills its own list of (batch slot, placement),
+and the host thread appends the runs in order, so every batch lists its
+placements as the serial loop did. The far-size filter
+(`src/render/bgfx_lib_backend.cpp:screen_size_visible`) only reads backend
+state that the batch does not change. The LOD level and epoch of a placement
+are the only values written during the batch, from any job, through
+`std::atomic_ref` in `src/resources/scene_instances.cpp:prop_lod_visible`;
+`scene_prop_lod_level` is idempotent, so a job that reads a level another
+job has just stored gets the same answer. Fewer than 16 visible cells, or
+fewer than 4 pool threads, keep the loop on the host thread (on two cores the
+pool was slower than the serial loop). A new per-frame user must follow the
+same rules: lazy caches and bgfx stay on the host thread, results are
+appended in serial order.
+
 **Where to build next.** [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame)
 lists the planned steps for the frame loop: measure where the CPU limits,
 cull scene collection in parallel, record draws with bgfx encoders, run
@@ -579,7 +597,8 @@ VM and lifetime:
   (`src/render/bgfx_lib_backend.cpp:prefetch_part_textures`). A job writes
   only its own slot of a result the caller prepared and never touches the
   VM, GameRef state, other cache entries or bgfx; the host thread publishes
-  the results. Steady per-frame work stays on the host thread. §5.10 is the
+  the results. Steady per-frame work stays on the host thread, except the
+  placement loop of `scene_instances_collect_batches` (#266). §5.10 is the
   guide for adding parallel work.
 - An `Object*` held in C++ is not a root. Use `Jvm::RootScope`
   (`include/slrr/jvm.hpp:RootScope`) across yields, or register a root
@@ -3326,3 +3345,37 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   sync_instances 0.50–0.67 → 0.36–0.41 ms, world submission
   1.55–1.64 → 0.97–1.06 ms, bgfx render thread 1.87–2.12 → 1.29 ms (two
   runs each).
+
+### Parallel prop batch collection and collection sub-zones (#266)
+
+- `scene_instances_collect_batches` runs its placement loop on the job pool
+  (§5.10 "Per-frame work on the pool"). A first version chose the LOD in a
+  separate pass (jobs list the LOD placements, the host thread chooses) and
+  was slower than serial in the harness (0.36 ms warm against 0.28 ms): two
+  pool dispatches and a serial pass over every LOD placement. The shipped
+  version is one dispatch with the LOD chosen in place through
+  `std::atomic_ref`.
+- Equivalence: `city_submission` compares the pooled loop with the same
+  loop run inside a job (where a batch runs serially) on the same frame
+  state: identical batches and placement order. The 640x360 and 2560x1440
+  captures match the pre-#266 build on 24 threads and with the test process
+  pinned to one and to two cores. Windows has no ThreadSanitizer here (MSVC
+  only, no g++/clang); the review covers what the jobs read and write.
+- New profiler zones in sync_instances: `CollectInstances` (the main view's
+  `scene_instances_collect`), `CollectSkins` (walker palettes, every
+  collection), `CollectPreviews` (script viewport previews) and `Residency`
+  (`src/render/bgfx_lib_backend.cpp:sync_instances`), shown under "Scene
+  collection + residency" in the snapshot.
+- Harness (`city_submission`, 2560x1440, world view, 24 pool threads; "cold"
+  overwrites 96 MB before every frame): batches zone 0.28-0.32 ms warm,
+  0.50 ms cold before; 0.17-0.23 ms warm, 0.26-0.31 ms cold after.
+  sync_instances cold 0.72-0.73 -> 0.46-0.54 ms. Main-view
+  `scene_instances_collect` (still serial) takes 0.11-0.15 ms warm and
+  0.16-0.21 ms cold.
+- Known harness flake, present before #266 (seen on the #264 build with
+  no source change): about one run in three, the 2560x1440 capture differs
+  from another run's in 17 scattered pixels of the lamp-lit road by 1 in one
+  channel, between two runs in the same process too (warm against cold).
+  The cause is not found; it is not thread related (it happens with the
+  serial #264 code). `city_submission` prints the warm/cold comparison and
+  requires only caches on/off and pooled/serial equality.

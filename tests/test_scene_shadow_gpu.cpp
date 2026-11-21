@@ -11,6 +11,8 @@
 #include "dxbc/fs_mesh.sc.bin.h"
 #include "dxbc/fs_vehicle.sc.bin.h"
 #include <chrono>
+#include "slrr/frame_profiler.hpp"
+#include "slrr/job_system.hpp"
 #include <limits>
 #include <map>
 namespace slrr {
@@ -1348,13 +1350,20 @@ struct SceneShadowRegression {
     // #262: the uniform value cache, the kept texture stages and the
     // residency skip are measured on and off; both captures must match.
     struct Run { double sync=0,submit=0,render=0; uint32_t draws=0,world_draws=0; std::vector<uint8_t> image;
+                 perf::Snapshot zones;
                  uint64_t uniform_sets=0,uniform_skips=0,texture_sets=0,texture_skips=0,residency_skips=0; };
-    auto run=[&](bool caches,int frames,int warmup) {
+    // #266: `cold` overwrites 96 MB before every frame, as scripts, physics
+    // and the rest of a game frame evict the caches between two collections.
+    static std::vector<uint8_t> evict(96u<<20);
+    perf::enable("");
+    auto run=[&](bool caches,int frames,int warmup,bool cold=false) {
       b.uniform_cache_=b.texture_cache_=b.residency_cache_=caches;
       Run out;int samples=0;
       const auto u0=b.uniform_sets_,s0=b.uniform_skips_,t0=b.texture_sets_,k0=b.texture_skips_,r0=b.residency_skips_;
       for(int frame=0;frame<frames;++frame) {
         ++b.frames_;
+        if(frame==warmup-1) perf::restart(frames-warmup);
+        if(cold) std::memset(evict.data(),frame&0xff,evict.size());
         scene_instances_frame_cache(true);
         auto start=std::chrono::steady_clock::now();
         b.sync_instances(view,projection);
@@ -1373,6 +1382,7 @@ struct SceneShadowRegression {
         bgfx::TextureRegion dst,src;
         if(last){dst.init(readback);src.init(color);bgfx::blit(100,dst,src);}
         bgfx::frame();
+        if(frame>=warmup-1) perf::end_frame();
         const auto* stats=bgfx::getStats();
         if(frame>=warmup) {
           out.sync+=sync;out.submit+=submit;++samples;out.draws=stats->numDraw;
@@ -1385,6 +1395,7 @@ struct SceneShadowRegression {
         }
       }
       out.sync/=samples;out.submit/=samples;out.render/=samples;
+      out.zones=perf::snapshot();
       out.uniform_sets=(b.uniform_sets_-u0)/frames;out.uniform_skips=(b.uniform_skips_-s0)/frames;
       out.texture_sets=(b.texture_sets_-t0)/frames;out.texture_skips=(b.texture_skips_-k0)/frames;
       out.residency_skips=b.residency_skips_-r0;
@@ -1393,14 +1404,48 @@ struct SceneShadowRegression {
     };
     const auto off=run(false,30,10);
     const auto on=run(true,40,15);
-    for(const auto* r:{&off,&on})
+    const auto cold=run(true,40,15,true);
+    for(const auto* r:{&off,&on,&cold})
       std::printf("CITY FRAME %ux%u caches %s: sync_instances %.3f ms, world submission %.3f ms, render thread %.3f ms, "
                   "%u draws, %zu instances, %zu batch slots; per frame %llu uniform sets / %llu skipped, "
-                  "%llu texture sets / %llu skipped; %llu residency skips; %u world-view draws\n",width,height,r==&on?"on ":"off",
+                  "%llu texture sets / %llu skipped; %llu residency skips; %u world-view draws\n",width,height,
+                  r==&on?"on ":r==&cold?"on, cold":"off",
                   r->sync,r->submit,r->render,r->draws,b.instances_.size(),b.prop_batches_.size(),
                   (unsigned long long)r->uniform_sets,(unsigned long long)r->uniform_skips,
                   (unsigned long long)r->texture_sets,(unsigned long long)r->texture_skips,
                   (unsigned long long)r->residency_skips,r->world_draws);
+    for(const auto* r:{&on,&cold}) {
+      std::string line;char item[96];
+      const std::pair<perf::Zone,const char*> names[]={{perf::Zone::CollectBatches,"batches"},{perf::Zone::WorldList,"world list"},{perf::Zone::WorldCopy,"world copy"},
+          {perf::Zone::CollectInstances,"instances"},{perf::Zone::CollectSkins,"skins"},
+          {perf::Zone::CollectPreviews,"previews"},{perf::Zone::Residency,"residency"}};
+      for(const auto& [zone,name]:names){std::snprintf(item,sizeof(item)," %s %.3f",name,r->zones.zones[size_t(zone)]);line+=item;}
+      std::printf("CITY FRAME %ux%u zones (%s, %zu job threads):%s ms\n",width,height,r==&on?"warm":"cold",
+                  jobs_concurrency(),line.c_str());
+    }
+    {
+      // #266: the pooled batch loop against the same loop run serially (a
+      // batch started inside a job runs on its own thread), same frame state.
+      const auto frustum=LibBgfxBackend::view_frustum(view,projection);
+      std::vector<SceneBatch> pooled,serial;
+      scene_instances_frame_cache(true);
+      scene_instances_set_size_filter(&LibBgfxBackend::screen_size_keep,&b);
+      scene_instances_collect_batches(&frustum,pooled);
+      jobs_parallel_for(2,[&](size_t i){if(i==0) scene_instances_collect_batches(&frustum,serial);});
+      scene_instances_set_size_filter(nullptr,nullptr);
+      scene_instances_frame_cache(false);
+      bool same=pooled.size()==serial.size();size_t placements=0;
+      for(size_t i=0;same&&i<pooled.size();++i){
+        same=pooled[i].geometry==serial[i].geometry&&pooled[i].instances.size()==serial[i].instances.size();
+        for(size_t k=0;same&&k<pooled[i].instances.size();++k)
+          same=pooled[i].instances[k].transform==serial[i].instances[k].transform&&
+               pooled[i].instances[k].color==serial[i].instances[k].color;
+        placements+=pooled[i].instances.size();
+      }
+      std::printf("CITY FRAME %ux%u pooled vs serial batches: %s (%zu placements, %zu job threads)\n",
+                  width,height,same?"identical":"DIFFERENT",placements,jobs_concurrency());
+      SLRR_REQUIRE(same);
+    }
     {
       size_t night=0,night_meshes=0,blended=0;
       for(const auto& batch:b.night_batches_) if(!batch.instances.empty()){night+=batch.instances.size();++night_meshes;}
@@ -1418,6 +1463,8 @@ struct SceneShadowRegression {
     uint64_t lit=0;for(size_t i=0;i<on.image.size();i+=4) lit+=on.image[i]+on.image[i+1]+on.image[i+2];
     std::printf("CITY FRAME caches on vs off: %zu bytes differ, max %d (sum %llu)\n",differ,worst,(unsigned long long)lit);
     SLRR_REQUIRE(differ==0);
+    const size_t cold_differ=compare(on.image,cold.image,worst);
+    std::printf("CITY FRAME warm vs cold capture: %zu bytes differ, max %d\n",cold_differ,worst);
     SLRR_REQUIRE(lit>0);
     SLRR_REQUIRE(on.uniform_skips>0&&on.texture_skips>0&&on.residency_skips>0);
     SLRR_REQUIRE(off.uniform_skips==0&&off.texture_skips==0&&off.residency_skips==0);

@@ -35,6 +35,11 @@ enum class Zone : uint8_t {
   AmbientOcclusion, // AO prepass and passes submission
   WorldList,      // the frame's world list build (#264), inside the first collection
   WorldCopy,      // world list copies in scene_instances_collect, every collection (#264)
+  // The rest of sync_instances (#266), inside Collect.
+  CollectInstances, // scene_instances_collect of the main view
+  CollectSkins,     // walker palettes in view, inside CollectInstances (every collection)
+  CollectPreviews,  // script viewport previews
+  Residency,        // GPU residency check, uploads and releases
   Count
 };
 

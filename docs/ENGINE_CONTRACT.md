@@ -250,7 +250,11 @@ when the batch ends, so the log reads as a serial run's. A task outside the
 pool holds its lines with `JobLogCapture` for its caller to print. Steady
 per-frame work stays serial: it takes a few milliseconds and reads state that
 the frame mutates; [MILESTONES.md M7](MILESTONES.md#m7--multicore-frame) plans
-how to spread it.
+how to spread it. The first exception (#266) is the placement loop of
+`scene_instances_collect_batches`: it reads data no one writes during the
+batch, its jobs list placements per run of visible cells, and the host
+thread appends the runs in order. Map prop LOD levels are the one value it
+writes, through `std::atomic_ref` (see KNOWLEDGE_BASE.md §5.10).
 
 Map loading used to spend most of its time on the host thread: about 13 s
 of a warm Valo City start, mostly a merge of the placement collision that

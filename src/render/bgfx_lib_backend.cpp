@@ -1120,7 +1120,10 @@ void LibBgfxBackend::cache_scene_mesh(
       else
         prop_batches_.clear();
     }
-    instances_ = scene_instances_collect(&frustum, &resident_props, true, &night_batches_);
+    {
+      perf::Scope instance_scope(perf::Zone::CollectInstances);
+      instances_ = scene_instances_collect(&frustum, &resident_props, true, &night_batches_);
+    }
     if (!render_debug().map_props) night_batches_.clear();
     lod_view.update = false;
     scene_instances_set_lod_view(lod_view);
@@ -1136,6 +1139,8 @@ void LibBgfxBackend::cache_scene_mesh(
         });
     }
     scene_instances_set_size_filter(nullptr, nullptr);
+    {
+    perf::Scope preview_scope(perf::Zone::CollectPreviews);
     previews_.clear();
     for(const auto* camera:gameref_active_cameras()) {
       const auto* vp=gameref_get(camera->viewport);
@@ -1152,6 +1157,8 @@ void LibBgfxBackend::cache_scene_mesh(
       if(!objects.empty())previews_.push_back({*camera,*vp,std::move(objects)});
     }
     std::sort(previews_.begin(),previews_.end(),[](const Preview&a,const Preview&b){return a.viewport.vp_pri!=b.viewport.vp_pri?a.viewport.vp_pri<b.viewport.vp_pri:a.viewport.vp_x<b.viewport.vp_x;});
+    }
+    perf::Scope residency_scope(perf::Zone::Residency);
     // Residency (#262): the meshes this frame keeps, with their revisions.
     auto& uses = residency_scratch_;
     uses.clear();
