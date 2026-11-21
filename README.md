@@ -194,6 +194,25 @@ are from the last completed measurement window, alongside bgfx's delayed render
 and GPU counters. A large GPU reading alone does not identify the whole frame's
 bottleneck.
 
+The Renderer tab is organised in sections. **Timings** lists the GPU time of
+every bgfx view (sun cascades, lamp and car lamp shadow tiles, AO passes,
+reflection faces, world, OSD), sorted by cost, with a 120-frame average,
+minimum and maximum, the CPU time of renderer phases (collection, prop
+batches, lamp selection, sun/vehicle/lamp shadows, fixture shadows, AO,
+reflections, submission), draws, primitives, instances, batches, texture and
+render-target memory; **Freeze**, **Copy to clipboard** and **Log** take a
+snapshot. **Log** also appends it to `perf/renderer_debug_YYYYMMDD_HHMMSS.txt`
+next to `slrr_host.exe` (for example `build/Release/perf/`); the menu shows
+the path. **Passes** and **Budgets and quality** are debug overrides that are
+not saved: AO, each sun cascade, shadow caching, vehicle and character
+casters, garage fixture shadows, street lamp lighting and shadows, car lamp
+tiles, reflections, sky, clouds, fog, MSAA, anisotropic filtering, map props,
+vehicles, characters and the OSD; lamp count and distance, shadowed lamps, car
+lamp tiles, shadow tile sizes, cascade radius scale, AO resolution and
+reflection faces per frame. **Buffers** shows the lamp/fixture shadow atlas,
+the sun cascade atlas and the AO buffer. **Options (saved)** holds the saved
+Enhanced graphics options as before.
+
 `--perf-log` prints one `[perf]` line per simulated second and writes the same fields to the CSV file. Add `--bench-shots DIR` to capture the window every 10 seconds. The run writes `save/game/options` on exit like a normal session.
 Select a visible vehicle or a preview in **Vehicle**, or use **Freeze
 telemetry** to hold a sample. **Tuning** changes tyre parameters and

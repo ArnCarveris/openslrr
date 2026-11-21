@@ -25,6 +25,14 @@ enum class Zone : uint8_t {
   Pedestrians, // pedestrian publication/stepping, nested inside Physics
   Collision,   // scene collision preparation, nested inside Physics
   Gc,          // end-of-frame VM collection
+  // Renderer detail (#243), nested inside the zones above.
+  CollectBatches, // instanced prop batches, inside Collect
+  SunShadows,     // sun cascades / point shadow, inside Shadows
+  CarDepth,       // daytime vehicle depth map, inside Shadows
+  FixtureShadows, // garage fixture atlas
+  LampSelect,     // street lamp selection (update_local_light)
+  LampShadows,    // lamp and car lamp shadow tiles, inside Shadows
+  AmbientOcclusion, // AO prepass and passes submission
   Count
 };
 

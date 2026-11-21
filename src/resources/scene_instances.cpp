@@ -2306,6 +2306,7 @@ std::vector<SceneInstance> scene_instances_collect(
           if (!mesh) continue;
           SceneInstance instance;
           instance.cull_backfaces = true;
+          instance.ground_prop = true;
           instance.type_id = static_cast<int32_t>(prop.render_id);
           instance.color = prop.color;
           instance.emissive_overlay = prop.night_only;

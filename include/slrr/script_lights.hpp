@@ -109,5 +109,6 @@ std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
                       uint32_t groups_on,
                       const std::function<bool(void *, float *)> &matrix,
-                      const SceneryLightFrustum *frustum = nullptr);
+                      const SceneryLightFrustum *frustum = nullptr,
+                      float max_distance = kSceneryLightMaxDistance);
 } // namespace slrr

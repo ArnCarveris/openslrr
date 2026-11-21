@@ -145,9 +145,9 @@ std::vector<SceneryLightPick>
 scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
                       uint32_t groups_on,
                       const std::function<bool(void *, float *)> &matrix,
-                      const SceneryLightFrustum *frustum) {
+                      const SceneryLightFrustum *frustum, float max_distance) {
   std::vector<SceneryLightPick> candidates;
-  if (!budget || !groups_on || !matrix)
+  if (!budget || !groups_on || !matrix || !(max_distance > 0.f))
     return candidates;
   // Normalised planes, so the sphere test uses metres.
   SceneryLightFrustum planes{};
@@ -160,7 +160,7 @@ scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
       else
         planes[i] = {0.f, 0.f, 0.f, 1.f}; // degenerate: accept everything
     }
-  constexpr float limit2 = kSceneryLightMaxDistance * kSceneryLightMaxDistance;
+  const float limit2 = max_distance * max_distance;
   for (const auto &[parent, list] : g_scenery_lights) {
     float m[16];
     if (!matrix(parent, m))
@@ -206,7 +206,7 @@ scenery_lights_select(const std::array<float, 3> &eye, size_t budget,
       return a.position < b.position;
     return a.source < b.source;
   };
-  float cutoff = kSceneryLightMaxDistance;
+  float cutoff = max_distance;
   if (candidates.size() > budget) {
     std::nth_element(candidates.begin(), candidates.begin() + budget,
                      candidates.end(), nearer);

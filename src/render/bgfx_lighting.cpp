@@ -210,7 +210,7 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
     const bool cascaded = receive && shadow_cascades_active_;
     const float origin[4]={shadow_origin_[0],shadow_origin_[1],shadow_origin_[2],0.f};
     bgfx::setUniform(u_shadow_origin_,origin);
-    const float ranges[4] = {cascaded ? shadow_radii[0] : 0.f, shadow_radii[1],shadow_radii[2],shadow_radii[3]};
+    const float ranges[4] = {cascaded ? cascade_radii()[0] : 0.f, cascade_radii()[1],cascade_radii()[2],cascade_radii()[3]};
     bgfx::setUniform(u_shadow_ranges_,ranges);
     if (cascaded) bgfx::setUniform(u_shadow_cascades_,shadow_cascade_matrices_.data(),4);
     if (receive) {
@@ -307,7 +307,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       bgfx::setUniform(u_sun_amb_, amb);
     }
     const float fog_color[4] = {fog_color_[0], fog_color_[1], fog_color_[2],
-                                fog_enabled_ ? 1.f : 0.f};
+                                fog_enabled_ && render_debug().fog ? 1.f : 0.f};
     const float fog_range[4] = {fog_near_, fog_far_, 0.f, 0.f};
     const float fog_eye[4] = {fog_eye_[0], fog_eye_[1], fog_eye_[2], 0.f};
     if (bgfx::isValid(u_fog_color_)) bgfx::setUniform(u_fog_color_, fog_color);
@@ -554,7 +554,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       const auto& graphics = host_enhanced_graphics();
       const bool procedural_sky = instance.sky && outdoor_lighting_;
       const float sky[4] = {matrix[12], matrix[13], matrix[14],
-                            graphics.volumetric_clouds ? 2.f : 1.f};
+                            graphics.volumetric_clouds && render_debug().clouds ? 2.f : 1.f};
       const bool scene_light = procedural_sky ||
           (world_mesh && graphics.dynamic_lighting &&
            (outdoor_lighting_ || (garage_ && instance.lighting.set &&

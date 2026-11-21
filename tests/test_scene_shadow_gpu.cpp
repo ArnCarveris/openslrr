@@ -3,6 +3,7 @@
 #include "../src/render/reflection_capture.hpp"
 #include "../src/render/point_shadows.hpp"
 #include "../src/render/shadow_cascades.hpp"
+#include "../src/render/shadow_quality.hpp"
 #include "save_io_fixture.hpp"
 #include "slrr/mainloop.hpp"
 #include "slrr/script_lights.hpp"
@@ -806,6 +807,177 @@ struct SceneShadowRegression {
     b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
     gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
     std::puts("PASS car casts a shadow from every lamp reaching it, fixed under camera orbit, smooth while driving");
+  }
+  // #243: renderer debug overrides. Defaults equal normal behaviour; each
+  // pass toggle removes its views (no GPU time) and restores them; budgets
+  // bound the lamp selections. Also prints a first per-view cost table.
+  static void render_debug_overrides(LibBgfxBackend& b) {
+    SLRR_REQUIRE(render_debug()==RenderDebugOverrides{});
+    SLRR_REQUIRE(render_debug_budget(-1,40,40)==40 && render_debug_budget(70,40,40)==40 &&
+                 render_debug_budget(3,40,40)==3);
+    SLRR_REQUIRE(local_shadow_resolution()==uint16_t(256u<<std::clamp(host_enhanced_graphics().shadow_quality,0,2)));
+    SLRR_REQUIRE(cascade_radii()==shadow_radii);
+    Fixture f;scene_instances_set_resources(&f.packs);
+    Object world,shell;
+    gameref_upsert(&world)->flags=kWorldTreeRoot;
+    gameref_upsert(&shell,GameRefKind::RenderRef)->empty=false;
+    gameref_set_parent(&shell,&world);gameref_make_live(&shell);gameref_set_matrix(&shell,0,0,0,0,0,0);
+    scene_instances_select(&world,nullptr,false,SceneEnvironment::Exterior);
+    auto lights=std::make_shared<std::vector<SceneryLight>>();
+    for(int i=-12;i<=12;++i) for(float side:{-8.f,8.f}) {
+      SceneryLight lamp;lamp.position={side,7.8f,30.f*i+(side>0?15.f:0.f)};lamp.color={.972f,.888f,.615f};
+      lamp.range=500;lamp.attenuation={1,.03f,0};lamp.group=kLightGroupCity;lamp.lights_scene=true;
+      lights->push_back(lamp);
+    }
+    SLRR_REQUIRE(scenery_lights_attach(&shell,lights));
+    const auto saved=host_enhanced_graphics();const float old_time=scene_sun_time();
+    auto saved_parts=std::move(b.parts_);auto saved_batches=std::move(b.prop_batches_);
+    b.parts_.clear();b.prop_batches_.clear();
+    host_enhanced_graphics().local_lights=host_enhanced_graphics().dynamic_lighting=true;
+    host_enhanced_graphics().ao_method=1;host_enhanced_graphics().ao_quality=1;
+    host_enhanced_graphics().shadow_quality=2;
+    b.garage_=false;b.outdoor_lighting_=true;b.fog_enabled_=false;
+    b.interior_sun_active_=false;b.static_shadow_active_=false;b.car_depth_active_=false;
+    b.fixture_shadow_active_=false;b.point_light_.reset();b.local_light_={};b.fixture_lights_.clear();
+    auto floor=std::make_shared<ScxGeometry>();floor->info.ok=true;floor->info.version=4;floor->position_scale=1;
+    floor->positions={-60,0,60,60,0,60,-60,0,-60,60,0,-60};floor->normals={0,1,0,0,1,0,0,1,0,0,1,0};
+    floor->uvs.resize(8);floor->indices={0,2,1,1,2,3};ScxGroup group;group.index_count=6;floor->groups={group};
+    floor->info.bbox_min[0]=-60;floor->info.bbox_max[0]=60;floor->info.bbox_min[2]=-60;floor->info.bbox_max[2]=60;
+    floor->ground_polygons=true;
+    SceneInstance road;road.geometry=floor;bx::mtxIdentity(road.transform.data());
+    road.lighting.set=road.lighting.has_direction=true;road.lighting.direction[1]=-1;
+    for(int i=0;i<3;++i){road.lighting.diffuse[i]=0;road.lighting.ambient[i]=.08f;road.lighting.specular[i]=0;}
+    b.cache_scene_mesh(floor,nullptr,false);
+    auto car_mesh=std::make_shared<ScxGeometry>();
+    {
+      const float x0=-.9f,y0=0,z0=-2,x1=.9f,y1=1.4f,z1=2;
+      car_mesh->info.ok=true;car_mesh->info.version=4;car_mesh->position_scale=1;
+      car_mesh->positions={x0,y0,z0,x1,y0,z0,x1,y1,z0,x0,y1,z0,x0,y0,z1,x1,y0,z1,x1,y1,z1,x0,y1,z1};
+      car_mesh->indices={0,1,2,0,2,3,4,6,5,4,7,6,0,4,5,0,5,1,3,2,6,3,6,7,0,3,7,0,7,4,1,5,6,1,6,2};
+      car_mesh->normals.resize(24,0.f);car_mesh->uvs.resize(16,0.f);
+      car_mesh->info.bbox_min[0]=x0;car_mesh->info.bbox_min[1]=y0;car_mesh->info.bbox_min[2]=z0;
+      car_mesh->info.bbox_max[0]=x1;car_mesh->info.bbox_max[1]=y1;car_mesh->info.bbox_max[2]=z1;
+      ScxGroup g;g.index_count=36;car_mesh->groups={g};
+    }
+    b.cache_scene_mesh(car_mesh,nullptr,false);
+    SceneInstance car;car.geometry=car_mesh;car.vehicle_material=true;bx::mtxIdentity(car.transform.data());
+    b.instances_={road,car};
+    scene_sun_set_time(22*3600.f);
+    b.lamp_shadow_dt_override_=1.f;
+    constexpr uint16_t width=1280,height=720;
+    const auto color=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::RGBA8,BGFX_TEXTURE_RT);
+    const auto depth=bgfx::createTexture2D(width,height,false,1,bgfx::TextureFormat::D32F,BGFX_TEXTURE_RT);
+    const bgfx::TextureHandle attachments[]={color,depth};const auto fb=bgfx::createFrameBuffer(2,attachments,true);
+    float view[16],projection[16],render[16];
+    bx::mtxLookAt(view,{0,2.5f,-7},{0,1,0});
+    bx::mtxProj(projection,60.f,float(width)/height,.05f,2000.f,bgfx::getCaps()->homogeneousDepth);
+    std::copy(projection,projection+16,render);
+    for(int i:{2,6,10,14}) render[i]=bgfx::getCaps()->homogeneousDepth?-render[i]:render[i+1]-render[i];
+    b.cull_eye_[0]=0;b.cull_eye_[1]=2.5f;b.cull_eye_[2]=7;
+    std::copy(view,view+16,b.cull_view_);std::copy(projection,projection+16,b.cull_proj_);
+    bgfx::setDebug(BGFX_DEBUG_PROFILER);
+    // GPU ms per view over the last frames, with the car moving (every lamp
+    // and car tile is redrawn each frame).
+    const auto run=[&](int frames) {
+      std::map<uint16_t,double> total;int samples=0;
+      for(int frame=0;frame<frames;++frame) {
+        const float z=std::sin(frame*.1f)*.5f;
+        b.instances_[1].transform[14]=z;
+        const float focus[3]={0,0,-z};b.set_lamp_shadow_focus(focus);
+        b.update_local_light();VideoOptions v;v.shadows=2;b.update_lamp_shadows(v);
+        b.update_ambient_occlusion(view,projection,width,height,5);
+        bgfx::setViewFrameBuffer(5,fb);bgfx::setViewRect(5,0,0,width,height);
+        bgfx::setViewClear(5,BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,uint32_t(0xff),0.f);
+        bgfx::setViewTransform(5,view,render);
+        b.draw_instance(5,road,road.transform.data(),false,0);
+        b.draw_instance(5,b.instances_[1],b.instances_[1].transform.data(),false,0);
+        bgfx::frame();
+        const auto* stats=bgfx::getStats();
+        if(frame<frames/3 || stats->gpuTimerFreq<=0) continue;
+        ++samples;
+        for(uint16_t i=0;i<stats->numViews;++i) {
+          const auto& vs=stats->viewStats[i];
+          total[vs.view]+=double(vs.gpuTimeEnd-vs.gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
+        }
+      }
+      for(auto& [id,value]:total) value/=std::max(samples,1);
+      return total;
+    };
+    const auto lamp_views=[](const std::map<uint16_t,double>& t) {
+      double sum=0;for(const auto& [id,value]:t) if(id>=128&&id<136) sum+=value;return sum;
+    };
+    const auto ao_views=[](const std::map<uint16_t,double>& t) {
+      double sum=0;for(const auto& [id,value]:t) if(id>=140&&id<144) sum+=value;return sum;
+    };
+    const auto has=[](const std::map<uint16_t,double>& t,uint16_t lo,uint16_t hi) {
+      for(const auto& [id,value]:t) if(id>=lo&&id<hi) return true;
+      return false;
+    };
+    // Cached scenery lamp tiles are not resubmitted: with caching on they
+    // have no view time after the first frame.
+    auto cached=run(20);
+    SLRR_REQUIRE(!has(cached,128,136) && has(cached,136,137));
+    // Shadow caching off redraws every tile each frame (worst case).
+    render_debug().shadow_caching=false;
+    auto all=run(60);
+    std::printf("RENDER DEBUG per-view GPU ms (1280x720, 50 lamps, caching off: 6 lamp + 7 car tiles redrawn, HBAO):\n");
+    for(const auto& [id,value]:all) std::printf("  view %3u %-32s %.3f\n",unsigned(id),render_debug_view_name(id),value);
+    SLRR_REQUIRE(has(all,128,136) && has(all,136,137) && has(all,140,144));
+    auto& o=render_debug();
+    // Each toggle removes its views and restores them.
+    o.lamp_shadows=false;auto t=run(20);
+    std::printf("RENDER DEBUG lamp shadows off: lamp views %.3f ms (on %.3f), car tiles present=%d\n",
+                lamp_views(t),lamp_views(all),int(has(t,136,137)));
+    SLRR_REQUIRE(!has(t,128,137) && b.lamp_shadow_count_==0);
+    o.lamp_shadows=true;
+    o.car_lamp_tiles=false;t=run(20);
+    SLRR_REQUIRE(has(t,128,136) && !has(t,136,137) && b.car_shadow_tiles_.empty());
+    o.car_lamp_tiles=true;
+    o.ambient_occlusion=false;t=run(20);
+    std::printf("RENDER DEBUG AO off: AO views %.3f ms (on %.3f)\n",ao_views(t),ao_views(all));
+    SLRR_REQUIRE(!has(t,140,144) && !b.ao_active_);
+    o.ambient_occlusion=true;
+    o.lamp_lighting=false;t=run(10);
+    SLRR_REQUIRE(b.scenery_lamps_.empty() && !has(t,128,137));
+    o.lamp_lighting=true;
+    t=run(20);
+    SLRR_REQUIRE(has(t,128,136) && has(t,136,137) && has(t,140,144));
+    // Budgets.
+    o.shadowed_lamps=2;o.car_tiles=3;o.lamp_budget=5;o.lamp_distance=60.f;
+    run(10);
+    size_t wanted=0;for(const auto& slot:b.lamp_shadow_slots_) wanted+=slot.source&&slot.wanted;
+    SLRR_REQUIRE(wanted==2 && b.car_shadow_tiles_.size()==3);
+    // Lit lamps: at most 5 frustum lamps within 60 m, plus the shadowed/car ones.
+    size_t frustum_only=b.scenery_lamps_.size()-b.lamp_shadow_count_;
+    SLRR_REQUIRE(frustum_only<=5);
+    for(const auto& lamp:b.scenery_lamps_)
+      SLRR_REQUIRE(bx::length(bx::sub(bx::Vec3{lamp.position[0],lamp.position[1],lamp.position[2]},
+                                      bx::Vec3{0,2.5f,-7}))<=60.f+LibBgfxBackend::kLampShadowReach);
+    o.local_shadow_tile=256;SLRR_REQUIRE(local_shadow_resolution()==256);
+    o.cascade_scale=2.f;SLRR_REQUIRE(cascade_radii()[0]==64.f);
+    {
+      // Snapshot header (#243): only overrides that differ from the defaults.
+      const auto text=render_debug_overrides_text(o);
+      std::printf("RENDER DEBUG overrides header:\n%s",text.c_str());
+      SLRR_REQUIRE(text.find("shadowed lamps = 2")!=std::string::npos);
+      SLRR_REQUIRE(text.find("car lamp tiles budget = 3")!=std::string::npos);
+      SLRR_REQUIRE(text.find("lamp distance = 60 m")!=std::string::npos);
+      SLRR_REQUIRE(text.find("cascade radius scale = 2x")!=std::string::npos);
+      SLRR_REQUIRE(text.find("ambient occlusion")==std::string::npos);
+      SLRR_REQUIRE(render_debug_overrides_text(RenderDebugOverrides{}).empty());
+    }
+    o={};SLRR_REQUIRE(render_debug()==RenderDebugOverrides{});
+    run(5);
+    bgfx::setDebug(BGFX_DEBUG_NONE);
+    bgfx::frame();bgfx::destroy(fb);
+    host_enhanced_graphics()=saved;scene_sun_set_time(old_time);
+    b.destroy_ao_targets();
+    b.scenery_lamps_.clear();b.lamp_shadow_dt_override_=-1.f;b.set_lamp_shadow_focus(nullptr);
+    b.update_lamp_shadows(VideoOptions{});
+    b.instances_.clear();b.outdoor_lighting_=false;
+    b.parts_=std::move(saved_parts);b.prop_batches_=std::move(saved_batches);
+    gameref_remove(&shell);gameref_remove(&world);scene_instances_set_resources(nullptr);
+    std::puts("PASS renderer debug overrides: defaults, pass toggles remove their views, budgets");
   }
   static void reflection_occupants() {
     Fixture f;Object car,seat,person,pedestrian,world;
@@ -2408,6 +2580,7 @@ int main() {
     SceneShadowRegression::lamp_shadows(backend);
     SceneShadowRegression::lamp_shadow_stability(backend);
     SceneShadowRegression::car_lamp_shadows(backend);
+    SceneShadowRegression::render_debug_overrides(backend);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");
