@@ -2979,3 +2979,24 @@ city at night.
   `fs_mesh` is about 600 vec4 (64-lamp arrays, 24 lamp-shadow and 24
   car-tile matrices, fixtures, cascades). Cutting render-thread and GPU upload
   cost needs a smaller cbuffer, e.g. lamp and shadow arrays in a texture.
+
+### High AO at half resolution (#248)
+
+- `src/render/bgfx_ao.cpp:update_ambient_occlusion` now sizes the AO buffers
+  at half resolution for every quality; the debug "AO resolution scale"
+  multiplies that half size (0.25–2, 2 = full resolution, the old High).
+- Samples per pixel (`shaders/fs_ao.sc`, quality Low / Medium / High):
+  HBAO directions × steps 4×3 / 6×4 / 10×6 (High was 8×6 at full res);
+  GTAO slices × steps (× 2 sides) 2×4 / 3×6 / 5×8 (High was 4×8 at full res).
+  High therefore keeps about 1.25× the old per-pixel samples on a quarter of
+  the pixels, and 2.2× Medium's GTAO samples.
+- Upsample unchanged: `shaders/ambient_occlusion.sh:ambientVisibility`, 2×2
+  bilinear taps weighted by view-depth similarity. In the AO test (160×120,
+  blocker on a floor) half-res High differs from full-res High by more than 12
+  levels on 0.6 % (HBAO) and 0.15 % (GTAO) of pixels; the contact shading
+  widens by about one half-res texel (HBAO 376 vs 246 contact pixels, GTAO
+  135 vs 94) and does not cross the blocker silhouette.
+- Harness timing at 2560×1440 (small scene, noisy between runs): GTAO High
+  pass 1 0.26–0.29 ms vs 0.61–0.80 ms full-res (−55 to −65 %), HBAO High
+  0.25–0.38 vs 0.55–0.79 ms. Applied to the in-game 2.6 ms that is roughly
+  −1.5 to −1.7 ms; confirm in game with the debug menu.

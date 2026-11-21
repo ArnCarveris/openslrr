@@ -44,10 +44,13 @@ void LibBgfxBackend::update_ambient_occlusion(const float *view,
     return;
   }
   const int quality = std::clamp(options.ao_quality, 0, 2);
-  // Debug resolution scale (#243) on top of the quality's full/half size.
-  const float scale = std::clamp(render_debug().ao_resolution_scale, .25f, 1.f);
-  const uint16_t aw = uint16_t(std::max(16.f, (quality == 2 ? width : (width + 1) / 2) * scale));
-  const uint16_t ah = uint16_t(std::max(16.f, (quality == 2 ? height : (height + 1) / 2) * scale));
+  // Every quality runs at half resolution (#248); High spends the saving on
+  // more slices/steps (fs_ao.sc) and the depth-aware 2x2 upsample in
+  // ambient_occlusion.sh rebuilds full-resolution edges. The debug scale
+  // (#243) multiplies the half size: 2 is full resolution, for comparison.
+  const float scale = std::clamp(render_debug().ao_resolution_scale, .25f, 2.f);
+  const uint16_t aw = uint16_t(std::clamp(((width + 1) / 2) * scale, 16.f, float(width)));
+  const uint16_t ah = uint16_t(std::clamp(((height + 1) / 2) * scale, 16.f, float(height)));
   if (ao_screen_width_ != width || ao_screen_height_ != height ||
       ao_width_ != aw || ao_height_ != ah)
     destroy_ao_targets();

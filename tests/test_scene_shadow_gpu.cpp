@@ -107,8 +107,65 @@ struct SceneShadowRegression {
       for(size_t i=0;i<image.size();i+=4) if(int(plain[i])-int(image[i])>3) ++shaded;
       std::printf("AO method=%d quality=%d contact pixels=%u dimensions=%ux%u\n",method,quality,shaded,b.ao_width_,b.ao_height_);
       SLRR_REQUIRE(shaded>10 && shaded<width*height/2);
-      SLRR_REQUIRE(b.ao_width_==(quality==2?width:width/2));
+      SLRR_REQUIRE(b.ao_width_==width/2 && b.ao_height_==height/2);
       methods[method-1]=image;
+    }
+    // #248: High at half resolution against the old full-resolution High
+    // (debug scale 2). The depth-aware upsample must keep the contact shading
+    // and not spread AO across the blocker silhouette.
+    for(int method=1;method<=2;++method) {
+      const auto half=capture(method,2);
+      render_debug().ao_resolution_scale=2.f;
+      const auto full=capture(method,2);
+      SLRR_REQUIRE(b.ao_width_==width && b.ao_height_==height);
+      render_debug().ao_resolution_scale=1.f;
+      unsigned half_contact=0,full_contact=0,differ=0;
+      for(size_t i=0;i<half.size();i+=4) {
+        half_contact+=int(plain[i])-int(half[i])>3;
+        full_contact+=int(plain[i])-int(full[i])>3;
+        differ+=std::abs(int(half[i])-int(full[i]))>12;
+      }
+      std::printf("AO method=%d High half vs full: contact %u vs %u pixels, %u pixels differ by >12\n",
+                  method,half_contact,full_contact,differ);
+      // Half resolution widens contact shading by about one half-res texel
+      // (2 px); it must not create or lose it.
+      SLRR_REQUIRE(half_contact>10 && half_contact*10>full_contact*6 && half_contact*10<full_contact*17);
+      SLRR_REQUIRE(differ<width*height/50);
+    }
+    // #248: GPU time of the AO passes at 2560x1440, per method and quality,
+    // with High also forced to the old full resolution (scale 2).
+    {
+      bgfx::setDebug(BGFX_DEBUG_PROFILER);
+      const auto ao_ms=[&](int method,int quality,float scale) {
+        host_enhanced_graphics().ao_method=method;host_enhanced_graphics().ao_quality=quality;
+        render_debug().ao_resolution_scale=scale;
+        float big[16];bx::mtxProj(big,60.f,2560.f/1440.f,.05f,100.f,bgfx::getCaps()->homogeneousDepth);
+        double pass1=0,all=0;int samples=0;
+        for(int frame=0;frame<40;++frame) {
+          b.update_ambient_occlusion(view,big,2560,1440,5);
+          bgfx::frame();
+          const auto* stats=bgfx::getStats();
+          if(frame<15||stats->gpuTimerFreq<=0) continue;
+          ++samples;
+          for(uint16_t i=0;i<stats->numViews;++i) {
+            const auto& v=stats->viewStats[i];
+            const double ms=double(v.gpuTimeEnd-v.gpuTimeBegin)*1000.0/double(stats->gpuTimerFreq);
+            if(v.view==141) pass1+=ms;
+            if(v.view>=140&&v.view<144) all+=ms;
+          }
+        }
+        render_debug().ao_resolution_scale=1.f;
+        return std::pair{pass1/std::max(samples,1),all/std::max(samples,1)};
+      };
+      for(int method=1;method<=2;++method) {
+        const auto medium=ao_ms(method,1,1.f),high=ao_ms(method,2,1.f),old_high=ao_ms(method,2,2.f);
+        std::printf("AO 2560x1440 %s pass1/all ms: Medium %.3f/%.3f, High (half) %.3f/%.3f, "
+                    "High full-res (old) %.3f/%.3f\n",method==1?"HBAO":"GTAO",medium.first,medium.second,
+                    high.first,high.second,old_high.first,old_high.second);
+        SLRR_REQUIRE(high.first<old_high.first);
+      }
+      bgfx::setDebug(BGFX_DEBUG_NONE);
+      b.destroy_ao_targets();
     }
     SLRR_REQUIRE(methods[0]!=methods[1]);
     b.instances_={receiver};

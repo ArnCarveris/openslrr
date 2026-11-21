@@ -1056,7 +1056,8 @@ Startup reports each failed program as `[bgfx] program <name> failed to link`.
 Ambient occlusion uses a separate camera-matched reversed-Z D32F prepass in view
 140, then R8 horizon evaluation and separable depth-aware filtering in views
 141–143 before the main world draw. It does not replace the swapchain or require
-a colour post-process chain. Low/medium AO use half resolution; high full.
+a colour post-process chain. Every AO quality runs at half resolution (#248); high
+uses more directions/slices (HBAO 10×6, GTAO 5×8) instead of full resolution.
 HBAO and GTAO are independent horizon/slice implementations, not vendor SDKs.
 Reconstruct sample positions at the exact depth texel centres, including the
 centre used by normal reconstruction; otherwise flat receivers develop false AO.

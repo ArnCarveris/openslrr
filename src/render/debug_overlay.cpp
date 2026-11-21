@@ -392,7 +392,7 @@ void draw_render_budgets(DebugOverlay::RenderOptions& options) {
   size_combo("Sun cascade tile", o.sun_shadow_size, 512,
              "From Shadow quality\0" "512\0" "1024\0" "2048\0" "4096\0");
   ImGui::SliderFloat("Cascade radius scale", &o.cascade_scale, .25f, 4.f, "%.2fx");
-  ImGui::SliderFloat("AO resolution scale", &o.ao_resolution_scale, .25f, 1.f, "%.2fx");
+  ImGui::SliderFloat("AO resolution scale (2 = full res)", &o.ao_resolution_scale, .25f, 2.f, "%.2fx");
   ImGui::SliderInt("Reflection faces per frame (0 freezes)", &options.reflection_faces, 0, 6);
   if (ImGui::Button("Reset debug overrides")) o = {};
 }
