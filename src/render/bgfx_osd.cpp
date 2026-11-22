@@ -486,7 +486,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       return;
     const auto& path = mesh.textures.front();
     const auto texture = tex_for_osd_icon(path);
-    if (texture.idx == white_tex_.idx) return;
+    // Build 606 binds a 4x4 0x80808080 texture for a texture it could not
+    // load (0x4B9788, SetTexture wrapper 0x4C0180): the item still draws,
+    // as half-transparent grey times its colour.
+    const bool missing = texture.idx == white_tex_.idx;
     bgfx::TransientVertexBuffer vb;
     bgfx::TransientIndexBuffer ib;
     bgfx::allocTransientVertexBuffer(&vb, static_cast<uint32_t>(count), layout_);
@@ -509,11 +512,12 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     for (char& c : extension)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const bool premultiplied = !opaque && extension != ".dds";
-    const float opacity = float(color >> 24) / 255.f;
+    const float opacity = float(color >> 24) / 255.f * (missing ? .5f : 1.f);
     const float rgb_scale = premultiplied ? opacity / 255.f : 1.f / 255.f;
-    const float tint[] = {float((color >> 16) & 255) * rgb_scale,
-                          float((color >> 8) & 255) * rgb_scale,
-                          float(color & 255) * rgb_scale, opacity};
+    const float grey = missing ? .5f : 1.f;
+    const float tint[] = {float((color >> 16) & 255) * rgb_scale * grey,
+                          float((color >> 8) & 255) * rgb_scale * grey,
+                          float(color & 255) * rgb_scale * grey, opacity};
     const float alpha[] = {0.f, 1.f, opaque ? 0.f : 1.f,
                            color_mix && premultiplied ? 2.f : 0.f};
     enc()->setTransform(identity);
@@ -672,12 +676,19 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       }
       float x = item.position[0];
       float y = override.defined ? item.position[1] : stock_y(i);
-      if (std::abs(x) > 1.f || item.position[2] != 0.f) {
+      // Build 606 draws CFG font readouts in screen space (0x526D10 ->
+      // 0x4F4D80 -> 0x4F4DE0): the glyph cell's top-left sits at NDC (x, y),
+      // y down, glyph c is SCX quad c*4 at 1 pixel per 10 SCX units at any
+      // resolution, and the pen advances by the glyph width only. The stock
+      // table keeps its own 16:9 calibration.
+      if (!override.defined && (std::abs(x) > 1.f || item.position[2] != 0.f)) {
         x *= .42f;
         y *= -.82f;
       }
-      const float sy = .00024f * (override.defined ? 1.f : stock_scale);
-      const float sx = sy * pixel_aspect;
+      const float sy = override.defined ? .2f / static_cast<float>(height_)
+                                        : .00024f * stock_scale;
+      const float sx = override.defined ? .2f / static_cast<float>(width_)
+                                        : sy * pixel_aspect;
       for (const unsigned char ch : std::string(buffer)) {
         const size_t start = size_t(ch) * 4;
         if ((start + 4) * 3 > mesh->positions.size()) continue;
@@ -685,7 +696,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         const float w = p[3] - p[0], h = p[7] - p[1];
         if (w <= 0 || h <= 0 || w > 2000 || h > 2000) continue;
         draw(*mesh, start, 4, quad, 6, x, y, sx, sy, 0, p[0], p[1], item.color);
-        x += (w + 20.f) * sx;
+        x += (override.defined ? w : w + 20.f) * sx;
       }
       continue;
     }

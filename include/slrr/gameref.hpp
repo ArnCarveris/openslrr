@@ -132,6 +132,12 @@ struct GameRefState {
   // look, move and a controller rebind clear it.
   float angle_offset = 0.f, angle_gain = 0.f, angle_rate = 0.f, angle_phase = 0.f;
   bool angle_seed = false;
+  // `simulate 1` (0x43b24e, flag 0x2000): the camera keeps real time while
+  // System.timeWarp scales the world; otherwise its angle phase runs on game time.
+  bool camera_simulate = false;
+  // `zoom aov rate` (0x43ade6, tick 0x438b04): aov eases to the goal at
+  // rate/s; a negative rate snaps. Goal 0: no zoom command yet.
+  float aov_goal = 0.f, aov_rate = 3.f;
   // A script setMatrix (or angle) holds the driving follow body where it is
   // until the target pulls the dist rope taut (ROC and day race staging).
   bool follow_hold = false;
@@ -297,7 +303,8 @@ bool gameref_scene_command(void* key, const std::string& line);
 bool gameref_world_camera(float eye[3], float at[3], float* fov, float* znear,
                           float* zfar, float* up = nullptr);
 void gameref_activate_camera(GameRefState& camera, GameRefState& viewport, int priority);
-void gameref_advance_world_camera(float dt);
+// time_warp: System.timeWarp, for the `simulate` camera clock.
+void gameref_advance_world_camera(float dt, float time_warp = 1.f);
 bool gameref_world_camera_can_drag();
 // key_yaw / key_pitch: controller look axes (host_input_camera_axis).
 void gameref_orbit_world_camera(float yaw_delta, float pitch_delta, float key_yaw,

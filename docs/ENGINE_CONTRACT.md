@@ -1322,10 +1322,15 @@ world camera can be dragged (`gameref_world_camera_can_drag`), never in menus.
 Camera look keys are the controller's bindings (stock `CAMTURNSET`), not raw
 arrows, so a script that resets to `DRIVERSET` stops the orbit. The pointer is
 visible while `MouseCursor.visible` (set by `MouseCursor.enable`) is nonzero.
-The driving chase look returns behind the car after the drag. A script
+A driving chase look is not undone by time: a parked car keeps it, and
+forward travel tows the camera back behind the car like a rope (tan(a/2)
+shrinks by exp(-s/r) over s metres at follow distance r). A script
 `setMatrix` on the bound follow camera holds it in place until the car pulls
-the `dist` range taut, and `angle offset gain rate` turns a held follow camera
-around the car (relative azimuth 0 is behind it).
+the `dist` range taut. `angle offset gain rate` turns a held follow camera or
+a script orbit camera around its target (relative azimuth 0 is behind it);
+its rate runs on game time unless `simulate 1` keeps the camera on real time.
+`zoom aov rate` eases the view angle toward aov at rate per second (a negative
+rate snaps).
 
 SDL3 owns joystick/gamepad discovery and polling on that same host thread;
 Win32 still owns the window, keyboard scan codes and mouse. Devices 0/1 remain

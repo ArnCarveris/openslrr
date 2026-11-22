@@ -941,7 +941,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     const int mode = field_int(sections.actual(), "cameraMode");
     camera->follow_variant = mode == 3 || mode == 4 ? mode : 0;
   }
-  gameref_advance_world_camera(frame_dt);
+  gameref_advance_world_camera(frame_dt, static_cast<float>(jvm.time_warp()));
   dispatch_mechanic_pointer(jvm);
   dispatch_world_pointer(jvm);
 
