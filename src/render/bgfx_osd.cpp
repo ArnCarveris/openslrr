@@ -828,20 +828,27 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     // above the slot cameras and the cans disappear. A plate that only covers
     // a preview slot stays under that camera. A fullscreen plate still covers
     // the preview, so a dialog does not open a hole onto the car.
-    auto plate_behind_preview = [&](const OsdWidget& w) {
-      if (w.half_w > 0.9f && w.half_h > 0.9f) return false;
+    // Viewport priority still decides between the plate and the camera:
+    // the GPS frame (Player Osd, priority 18) must cover the navigator
+    // (viewport 12), while the slot cameras share the parts bar's viewport.
+    enum class PreviewOverlap { None, Behind, Above };
+    auto plate_preview_overlap = [&](const OsdWidget& w) {
+      if (w.half_w > 0.9f && w.half_h > 0.9f) return PreviewOverlap::None;
       const float left = (w.x - w.half_w + 1.f) * 0.5f;
       const float top = (w.y - w.half_h + 1.f) * 0.5f;
       const float right = (w.x + w.half_w + 1.f) * 0.5f;
       const float bot = (w.y + w.half_h + 1.f) * 0.5f;
+      PreviewOverlap overlap = PreviewOverlap::None;
       for (const auto& p : previews_) {
         const float x0 = std::max(left, p.viewport.vp_x);
         const float y0 = std::max(top, p.viewport.vp_y);
         const float x1 = std::min(right, p.viewport.vp_x + p.viewport.vp_w);
         const float y1 = std::min(bot, p.viewport.vp_y + p.viewport.vp_h);
-        if (x1 - x0 > 0.01f && y1 - y0 > 0.01f) return true;
+        if (x1 - x0 <= 0.01f || y1 - y0 <= 0.01f) continue;
+        if (p.viewport.vp_pri >= w.layer) return PreviewOverlap::Behind;
+        overlap = PreviewOverlap::Above;
       }
-      return false;
+      return overlap;
     };
 
     struct IconDraw { const OsdWidget* widget; bool glow, color_chip; };
@@ -895,8 +902,11 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
           continue;
         // A modal dialog (BUY PART) overlaps the catalog previews. Sending
         // that plate to view 2 put it under the parts and under their names.
+        const PreviewOverlap overlap = plate_preview_overlap(w);
         osd_view_ = (!osd_owner_modal(w.owner) &&
-                     (layer == page_background_layer || plate_behind_preview(w)))
+                     overlap != PreviewOverlap::Above &&
+                     (layer == page_background_layer ||
+                      overlap == PreviewOverlap::Behind))
                         ? kOsdUnder
                         : kOsdView;
         draw_osd_quad(w);

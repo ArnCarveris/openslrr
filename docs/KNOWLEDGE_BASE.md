@@ -2245,6 +2245,25 @@ previews. Evidence is in assets/validation/map-views/{before,after}.txt.
   Baiern, F1 posted as WM_KEYDOWN): before, an empty world; after, the city
   seen from the car's first cfg camera.
 
+### OSD plates over preview cameras (#348)
+
+- `src/render/bgfx_osd.cpp` draws OSD plates either on `kOsdUnder` (view 7,
+  below the preview cameras that start at view 8) or on `kOsdView` (70, above
+  everything). A non-fullscreen plate that overlapped a preview used to go
+  under it unconditionally, for the garage parts bar whose slot cameras live
+  in the same viewport (InventoryPanel, priority 15).
+- That put the driving GPS frame (`Player` Osd, priority 18, `frontend:0x0083`)
+  under the navigator map (`Navigator.show`, viewport priority 12): the map
+  covered the bezel's top and left edges and its glass. A plate now goes
+  under a preview only when the preview's viewport priority is >= the plate's
+  layer (its Osd viewport priority). A plate above a lower-priority preview
+  stays on `kOsdView`, even when it is the lowest page-background layer.
+- Catalog (Osd 10 / CarViewport 12) and MultiPlayer (Osd 10 / car viewports
+  12) keep their plates under the cars.
+- Validation: bench drive in ValoCity (Baiern, `--bench-shots`). Before, the
+  map covered the frame; after, the frame is drawn over it. No automated test
+  covers the OSD view choice.
+
 ## Authored map alpha versus colour mixing (#50)
 
 The opaque bridge and construction openings are not missing texture alpha:
