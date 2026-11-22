@@ -1,8 +1,24 @@
 # OpenSLRR Enhanced
 
-Copy the `sl` and `system` folders from this patch into the game root and accept the replacement of `OptionsDialog.class` and `Garage.class`. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources of OptionsDialog, Garage and the light classes are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
+Copy the `sl`, `system` and `parts` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class` and the base `Swaybar.class`. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
 
 The **Video Options** menu applies the resolution and the Enhanced settings in game. Exterior scenery range is 3 km. The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
+
+## Anti-roll bars (#300)
+
+**Running Gear → Suspension** now includes the existing anti-roll bars. Copy
+`parts` as well as `sl`: the base Swaybar class adds the authored series prefix
+to its name. The stock variants retain their original IDs, tuning and generic
+attachment compatibility; a nominal front/rear name is not a fit restriction.
+
+Fit a purchased bar to an existing chassis mount: 701 selects the front axle,
+702 the rear. No missing mount geometry or automatic stock installations are
+added. Installed bars apply condition-scaled spring/damping inputs through the
+host's bounded anti-roll approximation, including while coasting with no engine
+or controller. Removing or moving a bar replaces its contribution rather than
+accumulating another command. Cars without a bar retain their prior physics.
+This deliberately enables a dormant stock feature; it is not recovered MWM
+anti-roll physics.
 
 ## Java natives
 

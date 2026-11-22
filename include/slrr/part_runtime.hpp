@@ -124,6 +124,8 @@ struct PartPhysicsState {
   double mass = 0, height = 0, vertical_speed = 0;
   uint64_t ticks = 0, backlog = 0;
   std::array<double, 4> length{}, force{};
+  // Installed front/rear anti-roll inputs (N/m and N s/m), zero when absent.
+  std::array<double, 2> anti_roll_stiffness{}, anti_roll_damping{};
   std::array<std::array<double, 3>, 4> wheel_center{};
   std::array<bool, 4> contact{};
   std::array<bool, 4> geometry_solved{};
