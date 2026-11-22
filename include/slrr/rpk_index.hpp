@@ -125,6 +125,7 @@ class RpkIndex {
                                           int garage_index) const;
 
   // Dependency-qualified children across all packs, in stable pack/TOC order.
+  // As with find_entry, only the first TOC entry for each local ID is visible.
   std::vector<uint32_t> children_of(uint32_t parent) const;
 
   int32_t total_entries() const;

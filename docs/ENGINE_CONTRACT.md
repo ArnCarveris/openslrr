@@ -365,8 +365,10 @@ count, so visiting many packs does not retain a CRT file stream for each.
 Pack basename lookup and the generation-scoped parent/child index avoid
 repeated global scans during resource traversal. Exact path lookup still
 wins over the first-opened basename match, and children retain pack/TOC
-order. Registration/root changes invalidate derived traversal data and
-must remain quiescent as described in §6.
+order. A duplicate local type ID resolves to its first TOC entry; child
+traversal uses that same entry, so a shadowed duplicate cannot reparent or
+repeat the canonical resource. Registration/root changes invalidate derived
+traversal data and must remain quiescent as described in §6.
 
 ### Load chain
 

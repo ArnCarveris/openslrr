@@ -113,9 +113,68 @@ void scripted_parts_survive_other_car_filter() {
   gameref_clear();
   std::puts("PASS scripted cross-car catalog entries, folder filtering, own-car order and repeated car changes");
 }
+void duplicate_ids_keep_their_canonical_parent() {
+  Fixture f;
+  write_pack(f.root / "parts.rpk", {}, {
+    {0, 0xf24b, ""}, {0, 0x0282, ""},
+    {0xf24b, 0xd282, "script orange.class\n"},
+    {0xf24b, 0xd285, "script green.class\n"},
+    {0x0282, 0xd282, ""}, // Stock-like duplicate folder in another category.
+    {0x0282, 0xf282, "script header.class\n"},
+    {0x0282, 0xf282, "script shadow.class\n"}, // Same-parent duplicates looped.
+    {0x0282, 0x1234d282, ""}, // Lookup and runtime IDs both use local16.
+    {0x0282, 0xf285, "script other_header.class\n"},
+    {0, 0xf290, "script parentless.class\n"},
+    {0x0282, 0xf290, "script shadow_parentless.class\n"},
+    {0xf291, 0xf291, "script self_parent.class\n"},
+    {0x0282, 0xf291, "script shadow_self_parent.class\n"}});
+  const int pack = f.packs.open_lib("parts.rpk");
+  const auto id = [pack](uint32_t local) { return RpkIndex::make_full_id(pack, local); };
+  const auto neons = id(0xf24b), exhaust = id(0x0282);
+  SLRR_REQUIRE(f.packs.pack_by_id(pack)->entries.size() == 13);
+  const std::vector<uint32_t> expected = {id(0xf282), id(0xf285)};
+  SLRR_REQUIRE(f.packs.children_of(neons) == std::vector<uint32_t>({id(0xd282), id(0xd285)}));
+  SLRR_REQUIRE(f.packs.children_of(exhaust) == expected);
+  SLRR_REQUIRE(f.packs.resolve(id(0xd282))->super_id == 0xf24b);
+  SLRR_REQUIRE(f.packs.payload_prop(id(0xd282), "script") == "orange.class");
+  SLRR_REQUIRE(f.packs.payload_prop(id(0xf282), "script") == "header.class");
+
+  register_resref_natives(f.vm, f.packs, f.sections);
+  Object root;
+  gameref_set_type(*gameref_upsert(&root), exhaust);
+  auto node = f.registry.invoke("java.util.resource.ResourceRef", "getFirstChild",
+                               "()Ljava.util.resource.ResourceRef;", &root, {});
+  std::vector<uint32_t> walked;
+  while (node.tag == ValueTag::Obj && node.v.o) {
+    const auto* state = gameref_get(node.v.o);
+    SLRR_REQUIRE(state && walked.size() < expected.size());
+    walked.push_back(static_cast<uint32_t>(state->type_id));
+    const auto* entry = f.packs.resolve(walked.back());
+    SLRR_REQUIRE(entry && f.packs.resolve_embedded_id(pack, entry->super_id) == exhaust);
+    node = f.registry.invoke("java.util.resource.ResourceRef", "getNextChild",
+                             "()Ljava.util.resource.ResourceRef;", node.v.o, {});
+  }
+  SLRR_REQUIRE(walked == expected);
+  auto array = f.registry.invoke("java.util.resource.ResourceRef", "getChildNodes",
+                                "()[Ljava.util.resource.ResourceRef;", &root, {});
+  SLRR_REQUIRE(array.tag == ValueTag::Obj && array.v.o && array.v.o->slots.size() == expected.size());
+  for (size_t i = 0; i < expected.size(); ++i)
+    SLRR_REQUIRE(static_cast<uint32_t>(gameref_get(array.v.o->slots[i].v.o)->type_id) == expected[i]);
+
+  // Rebuilding after registration retains the policy and distinct pack IDs.
+  write_pack(f.root / "late.rpk", {"parts.rpk"}, {{0x00010282, 0xf282, "script late.class\n"}});
+  const int late = f.packs.open_lib("late.rpk");
+  auto with_late = expected;
+  with_late.push_back(RpkIndex::make_full_id(late, 0xf282));
+  SLRR_REQUIRE(f.packs.children_of(exhaust) == with_late);
+  SLRR_REQUIRE(f.packs.children_of(neons) == std::vector<uint32_t>({id(0xd282), id(0xd285)}));
+  gameref_clear();
+  std::puts("PASS canonical duplicate-ID parents, finite sibling walk, array enumeration and child-cache rebuild");
+}
 }  // namespace
 
 int main() {
-  const standalone::Test tests[] = {scripted_parts_survive_other_car_filter};
+  const standalone::Test tests[] = {scripted_parts_survive_other_car_filter,
+                                   duplicate_ids_keep_their_canonical_parent};
   return standalone::run("catalog_resources", tests);
 }
