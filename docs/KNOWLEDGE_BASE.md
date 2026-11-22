@@ -1889,6 +1889,26 @@ seated animation or a full garage transition. Evidence:
 `assets/validation/driver-mask/after.txt`. No production Java/native API change.
 
 
+### Driver head in the cockpit camera (#320)
+
+- `src/resources/part_runtime.cpp:pose_driver` aims the seated driver's neck
+  at the car's first cfg camera, 7.2 cm below it, so camera 0 sits in the
+  head. The cockpit camera also leans with acceleration (`cockpit_offset`, in
+  `part_camera_pose`), and the face then filled the view (seen in a bench
+  drive: the driver's face from the front at full throttle).
+- While this car's `_hostCockpitCamera` is camera 0 and is the scene camera
+  (`fullscreen_script_camera`), `pose_driver` shrinks `Bip01 Head` to 1/1000
+  about its joint with `src/resources/character.cpp:character_scale_bone`.
+  Hair and face follow the head bone; neck, body and hands stay. The pose is
+  rebuilt from bind every frame, so the head is back in every other view,
+  for other cars and for the other internal cameras.
+- Not checked: whether the original exe hides the head the same way (the
+  view flag `+0x3C` of #301 is a candidate). The head is also missing from
+  the car's shadow and mirrors while in the cockpit view.
+- In game (`--bench-drive`, ValoCity, Baiern, F1 with #318): before, the face
+  in front of the camera on six shots at full throttle; after, none. F3 back to
+  the chase view runs unchanged.
+
 ### File texture replacement and hidden preview viewports
 
 The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,
