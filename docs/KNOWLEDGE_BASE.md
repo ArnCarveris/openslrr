@@ -4035,6 +4035,15 @@ the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
 - Tests: `tests/test_cockpit_needles.cpp` (suite `cockpit_needles`): parse
   defaults and limits, stock Baiern (flat) and Enula (pitched) at rest and
   driving, pivot and axis fixed, pins removed with the car.
-- Not seen in game yet: in a `--bench-drive` run, F1 (internal camera) shows
-  an empty world with only the overlay, on `main` as well, so the pins could
-  not be captured. The chase view and the overlay pins are unchanged.
+- Pin material: `cars\meshes\pin_small.SCX` is SCX3 with one group of flags
+  `0x101` (SCX3 blend) on `cars	extures\Pin.dds`, a DXT5 card that is clear
+  except for the needle. The vehicle path
+  (`src/render/bgfx_lighting.cpp:draw_instance`) only sent the SCX4
+  transparent bit `0x40000000` and flag-256 flames to its blended pass, so the
+  card was drawn opaque: a black square behind each needle. SCX3 blend now
+  blends on any vehicle mesh without `light_flags`. In the MWM `cars/` and
+  `parts/`, the other SCX3 blend groups are lamp glows (`lampglow.SCX`,
+  Focer and Enula light meshes), drawn with `light_flags`, so unchanged.
+- In game (`--bench-drive`, ValoCity, Baiern, F1 with the #318 fix): both pins
+  show on the dashboard dials at rest, thin needles with no card. The chase
+  view and the overlay pins are unchanged.
