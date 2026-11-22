@@ -1909,6 +1909,36 @@ seated animation or a full garage transition. Evidence:
   in front of the camera on six shots at full throttle; after, none. F3 back to
   the chase view runs unchanged.
 
+### Driver hands on the wheel (#302, P2)
+
+- `src/resources/part_runtime.cpp:pose_driver` aims each hand at the rim at
+  ±1 rad from the top (radius = rim radius − 1.5 cm). It used to put the wrist
+  7.8 cm behind that point along the seat's +Z and leave the hand on the
+  forearm's bind orientation.
+- Measured on stock Baiern and Enula, wheel centred and at both locks (bench
+  drive, temporary log; the "palm" is the wrist plus 8 cm along the hand
+  bone's X axis): the wrist target was always reached (reach 44–52 cm for a
+  62 cm arm, no clamping), but the palm sat 2–3 cm inside the rim, 0.5 cm at
+  Enula's right lock. On a raked column the seat's +Z is not the wheel axis,
+  so the wrist landed 4.1 cm (Baiern) or 6.5 cm (Enula) out of the wheel
+  plane instead of 7.8 cm.
+- First fix (06610f4): the wrist on the elbow-to-palm line and the hand's X
+  axis pointed at the rim. The palm point then sat within 1.2 mm of the rim,
+  but in game the fists only rested on the wheel: the stock driver
+  (`humans\drivers\vin.SCX`, 20 bones) has a single `Bip01 L/R Hand` bone and
+  no finger bones; the fist is modelled closed.
+- Grip: in hand space (bind pose, vertices weighted to the hand bone) the
+  fist spans x 1.7–12.1 cm, palm toward -Z, and its grip hole is at about
+  (9.5, 0, -1.2) cm, open along the hand's Y axis (both hands; the left one
+  is mirrored in Y). `pose_driver` now puts that hole on the rim's centreline
+  with Y along the rim, the palm (-Z) toward the wheel's centre and X as
+  close to the forearm as that allows, solves the arm to the resulting wrist
+  (two passes) and turns the hand with two `character_align_axis` calls (X,
+  then Y, which is a twist about X).
+- In game (cockpit view, Baiern, with #318 and #320 applied): the rim now
+  runs into both fists. Not checked: steering locks in game, other drivers
+  (the grip-hole numbers are for `vin.SCX`), P3 (gear-shift gesture).
+
 ### File texture replacement and hidden preview viewports
 
 The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,
