@@ -1955,6 +1955,7 @@ bool part_command(Object *part, const std::string &command) {
     if (auto* target = gameref_find_live(id); target && target->kind == GameRefKind::Camera) {
       target->camera_free = verb == "controllable";
       target->cam_pose_init = false;
+      target->follow_hold = false;
       return true;
     }
     if (verb == "controllable") {
@@ -1991,6 +1992,8 @@ bool part_command(Object *part, const std::string &command) {
       cam->aim_look = cam->aim_move = cam->camera_attached = cam->camera_free = false;
       cam->camera_autozoom = false;
       cam->cam_pose_init = false;
+      // A rebind is a fresh chase pose; native "control" keeps the angle.
+      cam->follow_hold = false;
     }
     return true;
   }

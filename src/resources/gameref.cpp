@@ -257,6 +257,14 @@ void gameref_set_matrix(void* key, float px, float py, float pz, float yaw,
   n->ypr[2] = roll;
   std::fill(std::begin(n->vel), std::end(n->vel), 0.f);
   std::fill(std::begin(n->angular_vel), std::end(n->angular_vel), 0.f);
+  // ROCTrack.moveCamera and City.startRace stage the bound follow camera and
+  // keep the binding until the race starts. Put the body there and hold it.
+  if (n->kind == GameRefKind::Camera && n->follow_vehicle && n->cockpit_index < 0 &&
+      !n->camera_free) {
+    std::copy_n(n->pos, 3, n->eye_s);
+    std::fill(std::begin(n->eye_vel), std::end(n->eye_vel), 0.f);
+    n->cam_pose_init = n->follow_hold = true;
+  }
 }
 
 void gameref_set_event_mask(void* key, int32_t mask) {
@@ -444,6 +452,15 @@ void target_point(GameRefState* cam, int32_t id, const float off[3],
   out[2] = pz - sy * off[0] + cy * off[2];
 }
 
+// Heading of a camera target, as target_point turns its offsets.
+static float target_heading(GameRefState* cam, int32_t id) {
+  GameRefState* n = gameref_find_live(id);
+  if (!n) n = cam->parent ? gameref_get(cam->parent) : nullptr;
+  if (const float* m = n ? gameref_render_matrix(*n) : nullptr)
+    return std::atan2(m[8], m[10]);
+  return n ? n->ypr[0] : 0.f;
+}
+
 void refresh_aim(GameRefState* cam) {
   if (!cam->aim_look && !cam->aim_move) return;
   float eye[3] = {cam->pos[0], cam->pos[1], cam->pos[2]};
@@ -506,6 +523,8 @@ bool gameref_scene_command(void* key, const std::string& line) {
     st->look_id = id;
     std::copy(off, off + 3, st->look_off);
     st->aim_look = true;
+    st->angle_gain = st->angle_rate = 0.f;  // native look clears angle
+    st->follow_hold = false;
     refresh_aim(st);
     return false;
   }
@@ -530,6 +549,8 @@ bool gameref_scene_command(void* key, const std::string& line) {
         st->cam_distance = st->script_dist_max;
     }
     st->aim_move = true;
+    st->angle_gain = st->angle_rate = 0.f;  // native move clears angle
+    st->follow_hold = false;
     refresh_aim(st);
     return false;
   }
@@ -568,11 +589,20 @@ bool gameref_scene_command(void* key, const std::string& line) {
     return true;
   }
   if (std::strcmp(word, "zoom") == 0) {
-    float aov = st->half_aov;
-    std::sscanf(text, "%*s %f", &aov);
-    if (aov > 1.f && aov < 179.f) st->half_aov = aov;
+    float aov = st->aov_goal > 0.f ? st->aov_goal : st->half_aov;
+    std::sscanf(text, "%*s %f %f", &aov, &st->aov_rate);
+    st->aov_goal = std::clamp(aov, 5.f, 120.f);
     GameRefState* vp = st->viewport ? gameref_get(st->viewport) : nullptr;
-    return !vp || vp->vp_w >= 0.9f || vp->vp_h >= 0.9f;
+    const bool full = !vp || vp->vp_w >= 0.9f || vp->vp_h >= 0.9f;
+    // Only the world camera is ticked; other views take the goal at once.
+    if (st->aov_rate < 0.f || !full) st->half_aov = st->aov_goal;
+    return full;
+  }
+  if (std::strcmp(word, "simulate") == 0) {
+    int on = 0;
+    std::sscanf(text, "%*s %d", &on);
+    st->camera_simulate = on != 0;
+    return true;
   }
   if (std::strcmp(word, "nearplane") == 0) {
     std::sscanf(text, "%*s %f", &st->dmin);
@@ -581,6 +611,16 @@ bool gameref_scene_command(void* key, const std::string& line) {
   if (std::strcmp(word, "farplane") == 0) {
     std::sscanf(text, "%*s %f", &st->dmax);
     return false;
+  }
+  if (std::strcmp(word, "angle") == 0) {
+    float a[3] = {};
+    std::sscanf(text, "%*s %f %f %f", &a[0], &a[1], &a[2]);
+    st->angle_offset = a[0];
+    st->angle_gain = a[1];
+    st->angle_rate = a[2];
+    // The optional phase time is unused by stock scripts; start from here.
+    st->angle_seed = a[2] != 0.f;
+    return true;
   }
   return std::strcmp(word, "torque") == 0;
 }
@@ -652,7 +692,23 @@ void move_orbit_body(GameRefState* cam, float delta[3], float dt) {
 // perpendicular term brakes sideways speed. Releasing the drag leaves the
 // body where it is: nothing pulls the angle back, so there is no bounce.
 // The two forces do not cancel cleanly, which is the tremble.
-void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt) {
+static float g_camera_warp = 1.f;
+
+// Native angle goal (handler 0x43af6d, update 0x439d3c): a nonzero rate turns
+// the goal at rate rad per second of game time from the azimuth the command
+// found; `simulate` keeps it on real time unless the game is paused.
+static float angle_goal(GameRefState& cam, float rel, float dt) {
+  if (cam.angle_rate == 0.f) return cam.angle_offset;
+  const float clock =
+      cam.camera_simulate && g_camera_warp > 1e-5f ? 1.f : g_camera_warp;
+  cam.angle_phase = cam.angle_seed ? rel
+      : std::remainder(cam.angle_phase + cam.angle_rate * dt * clock, 6.2831853f);
+  cam.angle_seed = false;
+  return cam.angle_phase;
+}
+
+void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt,
+                 float heading) {
   const float ax = cam->ctl_x;
   const float ay = cam->ctl_y;
   cam->ctl_x = 0.f;
@@ -660,6 +716,11 @@ void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt
   float rem = frame_dt;
   if (rem < 0.f) rem = 0.f;
   if (rem > 0.1f) rem = 0.1f;
+  // `angle`: an uncapped tangential force err * gain (N) along Ypr(azimuth).x.
+  float angle_to = 0.f;
+  if (cam->angle_gain > 0.f && rem > 0.f)
+    angle_to = heading + angle_goal(*cam, std::remainder(std::atan2(
+        cam->eye_s[0] - hub[0], cam->eye_s[2] - hub[2]) - heading, 6.2831853f), rem);
   constexpr float kStep = 1.f / 120.f;
   while (rem > 1e-4f) {
     float dt = rem;
@@ -707,6 +768,12 @@ void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt
     float Fx = rx * fx + ux * fy - v[0] * 0.0025f;
     float Fy = uy * fy - v[1] * 0.0025f;
     float Fz = rz * fx + uz * fy - v[2] * 0.0025f;
+    if (cam->angle_gain > 0.f) {
+      const float az = std::atan2(p[0] - hub[0], p[2] - hub[2]);
+      const float f = std::remainder(angle_to - az, 6.2831853f) * cam->angle_gain;
+      Fx += std::cos(az) * f;
+      Fz -= std::sin(az) * f;
+    }
     if (cam->cam_height_set) {
       const float err = cam->cam_height + hub[1] - p[1];
       if (std::fabs(err) > 0.001f) Fy += err * 30.f - 2.f * v[1];
@@ -754,6 +821,34 @@ void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt
   }
 }
 
+// Held follow body: it stays where the script put it, looks at the target,
+// keeps inside the dist range and turns toward the `angle` goal. Relative
+// azimuth 0 is behind the target. The native angle is a tangential force
+// err * gain on the camera body, which perpendicular damping turns into an
+// angular speed err * gain / (|perpdamp| * r); this steps at that rate.
+static void held_follow_pose(GameRefState& cam, const float* center, float heading,
+                             float dt) {
+  float d[3] = {cam.eye_s[0] - center[0], cam.eye_s[1] - center[1],
+                cam.eye_s[2] - center[2]};
+  if (cam.angle_gain > 0.f && dt > 0.f) {
+    const float rel = std::remainder(std::atan2(d[0], d[2]) - heading, 6.2831853f);
+    const float goal = angle_goal(cam, rel, dt);
+    const float r = std::max(std::hypot(d[0], d[2]), .5f);
+    const float rate = cam.angle_gain / (std::max(std::abs(cam.cam_perpdamp), .05f) * r);
+    const float step = std::remainder(goal - rel, 6.2831853f) * -std::expm1(-dt * rate);
+    const float c = std::cos(step), s = std::sin(step), x = d[0], z = d[2];
+    d[0] = x * c + z * s;
+    d[2] = z * c - x * s;
+  }
+  const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  const float lo = cam.script_dist_min, hi = cam.script_dist_max;
+  const float scale = len < 1e-4f ? 1.f : len > hi ? hi / len : len < lo ? lo / len : 1.f;
+  // The target pulled away or the player took the view: chase again.
+  if (dt > 0.f && cam.angle_gain <= 0.f && (len > hi + .5f || host_input().rmb_down))
+    cam.follow_hold = false;
+  for (int i = 0; i < 3; ++i) cam.eye_s[i] = center[i] + d[i] * scale;
+}
+
 static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
                                 float* up, float dt) {
   using physics::Vec3;
@@ -794,13 +889,29 @@ static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
     return true;
   }
 
+  const double distance = cam.follow_variant == 4 ? 11. : cam.follow_variant == 3 ? 12. :
+      std::clamp(cam.cam_distance > 0.f ? cam.cam_distance : 7.f,
+                 cam.script_dist_min, cam.script_dist_max);
+  // Native follow camera (update 0x438b60; its angle gain stays 0): the body
+  // feels only the dist spring along the eye-car line and perpendicular
+  // damping, so time never undoes a look and a parked car keeps it. Driving
+  // tows the eye back behind like a rope (tractrix): tan(a/2) shrinks by
+  // exp(-s/r) over s metres of forward travel. This runs on every pose query,
+  // including dt = 0 ones, because look_s is the last focus it saw.
+  if (cam.cam_pose_init) {
+    const double back = std::hypot(frame[8], frame[10]);
+    const double s = back > 1e-6 ? -((frame[12] - cam.look_s[0]) * frame[8] +
+                                     (frame[14] - cam.look_s[2]) * frame[10]) / back : 0.;
+    if (s > 0.) {
+      const double keep = std::exp(-s / distance);
+      cam.orbit_yaw = float(2. * std::atan(std::tan(.5 * cam.orbit_yaw) * keep));
+      cam.orbit_pitch = float(2. * std::atan(std::tan(.5 * cam.orbit_pitch) * keep));
+    }
+  }
   // SLRR_rev FollowCamera keeps the car's actual translation and damps
   // the offset. This avoids camera lag when a render frame has fewer ticks.
   const double azimuth = std::atan2(frame[8], frame[10]) + cam.orbit_yaw +
                          (cam.follow_variant == 4 ? 3.141592653589793 : 0);
-  const double distance = cam.follow_variant == 4 ? 11. : cam.follow_variant == 3 ? 12. :
-      std::clamp(cam.cam_distance > 0.f ? cam.cam_distance : 7.f,
-                 cam.script_dist_min, cam.script_dist_max);
   const double lift = cam.follow_variant == 4 ? 1.9 : cam.follow_variant == 3 ? 2.4 : 1.4;
   const double radius = std::hypot(distance, lift);
   const double elevation = std::clamp(std::atan2(lift, distance) + cam.orbit_pitch, -1.35, 1.35);
@@ -814,6 +925,9 @@ static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
   if (!cam.cam_pose_init) {
     std::copy_n(position, 3, cam.eye_s);
     cam.cam_pose_init = true;
+  } else if (cam.follow_hold || cam.angle_gain > 0.f) {
+    cam.follow_hold = true;
+    held_follow_pose(cam, center, float(std::atan2(frame[8], frame[10])), dt);
   } else {
     const float weight = -std::expm1(-dt * (cam.follow_variant ? 9.f : 5.f));
     for (int i = 0; i < 3; ++i)
@@ -841,6 +955,8 @@ static bool world_camera_pose(float eye[3], float at[3], float* fov, float* znea
   GameRefState* cam = fullscreen_script_camera();
   if (!cam || !eye || !at) return false;
   if (up) { up[0] = 0; up[1] = 1; up[2] = 0; }
+  if (dt > 0.f && cam->aov_goal > 0.f)
+    cam->half_aov += (cam->aov_goal - cam->half_aov) * -std::expm1(-dt * cam->aov_rate);
   if (driving_camera_pose(*cam, eye, at, up, dt)) {
     const bool cockpit = cam->camera_attached && !cam->follow_variant;
     if (fov) *fov = cockpit ? cam->half_aov : 42.f;
@@ -931,7 +1047,7 @@ static bool world_camera_pose(float eye[3], float at[3], float* fov, float* znea
       cam->eye_vel[0] = cam->eye_vel[1] = cam->eye_vel[2] = 0.f;
       cam->cam_pose_init = true;
     }
-    if (dt > 0.f) drive_orbit(cam, hub, dist, dt);
+    if (dt > 0.f) drive_orbit(cam, hub, dist, dt, target_heading(cam, cam->move_id));
     std::copy(cam->eye_s, cam->eye_s + 3, eye);
     std::copy(cam->look_s, cam->look_s + 3, at);
   } else if (have_follow && !cam->aim_look) {
@@ -983,7 +1099,8 @@ bool gameref_world_camera(float eye[3], float at[3], float* fov, float* znear,
   return world_camera_pose(eye, at, fov, znear, zfar, 0.f, up);
 }
 
-void gameref_advance_world_camera(float dt) {
+void gameref_advance_world_camera(float dt, float time_warp) {
+  g_camera_warp = time_warp;
   float eye[3], at[3];
   world_camera_pose(eye, at, nullptr, nullptr, nullptr, dt);
 }
@@ -994,8 +1111,8 @@ bool gameref_world_camera_can_drag() {
                  (cam->aim_move && cam->aim_look && cam->move_dist > .25f));
 }
 
-void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
-                                float zoom_axis, float dt) {
+void gameref_orbit_world_camera(float yaw_delta, float pitch_delta, float key_yaw,
+                                float key_pitch, float zoom_axis, float dt) {
   auto& in = host_input();
   float ax = 0.f;
   float ay = 0.f;
@@ -1006,10 +1123,8 @@ void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
     ax = std::max(-1.f, std::min(1.f, ax));
     ay = std::max(-1.f, std::min(1.f, ay));
   }
-  if (in.keys_left) ax += 0.005f;
-  if (in.keys_right) ax -= 0.005f;
-  if (in.keys_up) ay += 0.003f;
-  if (in.keys_down) ay -= 0.003f;
+  ax += key_yaw;
+  ay += key_pitch;
   GameRefState* cam = fullscreen_script_camera();
   if (cam && (cam->camera_free || (cam->follow_vehicle && cam->cockpit_index < 0))) {
     cam->orbit_yaw = std::remainder(cam->orbit_yaw + in.mouse_dx * .003f, 6.2831853f);

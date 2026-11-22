@@ -144,6 +144,18 @@ SLRR_TEST(nonfinite_part_does_not_color_regions) {
   hud_assign_damage(b, std::span(&p, 1), outline, true);
   SLRR_REQUIRE(!b[0].present);
 }
+SLRR_TEST(only_font_render_flags_spell_a_readout) {
+  // cars.rpk 0x58 lcdfont / 0x5C sliderfont carry "flags 4.000".
+  SLRR_REQUIRE(hud_render_draws_text("4.000"));
+  SLRR_REQUIRE(hud_render_draws_text("1028.000"));
+  // Easy Forza OSD puts its gauge plate (render 0xBAA4, "flags 1152.000",
+  // osd.SCX: one textured quad, no glyphs) on osd_rpm: drawn whole, not spelled.
+  SLRR_REQUIRE(!hud_render_draws_text("1152.000"));
+  // Stock gauge/needle renders (0x55, 0x56) have no flags line.
+  SLRR_REQUIRE(!hud_render_draws_text(""));
+  SLRR_REQUIRE(!hud_render_draws_text("font"));
+  SLRR_REQUIRE(!hud_render_draws_text("-4"));
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -159,6 +171,7 @@ int main(int argc, char** argv) {
       custom_font_preserves_spatial_mapping_without_fender_glyphs,
       custom_fender_quads_are_not_forced_to_stock_quadrants,
       nonfinite_part_does_not_color_regions,
+      only_font_render_flags_spell_a_readout,
   };
   if (const int result = slrr::standalone::run("vehicle_hud_damage", tests)) return result;
   // Optional integration check using the user's original, unmodified SCX.

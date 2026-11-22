@@ -373,6 +373,10 @@ uint32_t rpk_resolve_resource(const std::string& pack, uint32_t local) {
   return loc;
 }
 
+std::string rpk_payload_prop(uint32_t full_id, const char* key) {
+  return g_active_rpk ? g_active_rpk->payload_prop(full_id, key) : std::string{};
+}
+
 const RpkEntry* RpkIndex::find_entry(int32_t pack_id, uint32_t type_id) const {
   const RpkPack* p = pack_by_id(pack_id);
   if (!p) return nullptr;

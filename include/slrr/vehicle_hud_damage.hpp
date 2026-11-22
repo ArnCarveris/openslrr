@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <span>
+#include <string>
 
 namespace slrr {
 struct HudDamageBlip {
@@ -99,5 +102,17 @@ inline bool hud_stock_left_fender_uv(const ScxGeometry& mesh, std::array<float, 
     uv[i * 2 + 1] = mesh.uvs[p + mirrored[i] * 2 + 1];
   }
   return true;
+}
+
+// Render RSD `flags` bit 4 ("flags 4.000" on the stock lcdfont, osdfont and
+// slider renders) selects the original's font batch (build 606 0x0052CF2C:
+// kind 3, the only batch whose object copies Osd text). Any other render on
+// osd_rpm/speed/gear/mileage is an ordinary mesh drawn whole; the readout
+// text is ignored. A missing or malformed value is not a font.
+inline bool hud_render_draws_text(const std::string& rsd_flags) {
+  char* end = nullptr;
+  const double value = std::strtod(rsd_flags.c_str(), &end);
+  return end != rsd_flags.c_str() && std::isfinite(value) && value >= 0 &&
+         value < 4294967296.0 && (static_cast<uint32_t>(value) & 4u) != 0;
 }
 } // namespace slrr

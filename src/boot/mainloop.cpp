@@ -17,6 +17,7 @@
 
 #include "slrr/gameref.hpp"
 #include "slrr/part_runtime.hpp"
+#include "slrr/host_cursor.hpp"
 #include "slrr/host_input.hpp"
 #include "slrr/object.hpp"
 #include "slrr/osd_registry.hpp"
@@ -290,7 +291,10 @@ void spin_mechanic_inventory(Jvm& jvm, float dt) {
 
 void dispatch_mechanic_pointer(Jvm& jvm) {
   auto& in = host_input();
-  if (g_mechanic_pointer_depth) {
+  // The cursor handlers' gate, plus loading plates and section changes: a
+  // click there must not remove a part from the garage that follows.
+  if (g_mechanic_pointer_depth || video_fmv_block_osd() || osd_has_modal() ||
+      osd_loading_dialog() || !osd_loading_overlay().empty() || scene_transition_active()) {
     in.part_click = false;
     return;
   }
@@ -543,11 +547,20 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   painter_tick();
 
   auto& in = host_input();
-  const float yaw = host_input_camera_axis(7);
-  const float pitch = host_input_camera_axis(8);
-  const float zoom = host_input_camera_axis(10);
+#ifdef _WIN32
+  // MouseCursor.enable() sets visible; no MouseCursor yet keeps the pointer.
+  {
+    const Value cursor = jvm.get_static("java.io.Input", "cursor");
+    host_cursor_set_visible(cursor.tag != ValueTag::Obj || !cursor.v.o ||
+                            field_int(cursor.v.o, "visible") != 0);
+  }
+#endif
+  const float key_yaw = host_input_camera_axis(controller, 7);
+  const float key_pitch = host_input_camera_axis(controller, 8);
+  const float zoom = host_input_camera_axis(controller, 10);
   // One camera: the script camera. Orbit, spring and Pori all live on it.
-  gameref_orbit_world_camera(yaw * 2.5f, pitch * 1.5f, zoom, frame_dt);
+  gameref_orbit_world_camera((in.look_yaw + key_yaw) * 2.5f, (in.look_pitch + key_pitch) * 1.5f,
+                             key_yaw, key_pitch, zoom, frame_dt);
   in.look_yaw = 0.f;
   in.look_pitch = 0.f;
   in.look_zoom = 0.f;
@@ -832,6 +845,12 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
       osd_set_loading_dialog(false);
       osd_set_loading_overlay({});
     }
+    // Clicks latched or held while a plate came up or went away belong to
+    // neither side of it.
+    static bool was_loading = false;
+    const bool loading = osd_loading_dialog() || !osd_loading_overlay().empty();
+    if (loading != was_loading) host_input_cancel_pointer_gestures();
+    was_loading = loading;
   }
 
   // Compatibility tick only without a running Java time refresher.
@@ -918,7 +937,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     const int mode = field_int(sections.actual(), "cameraMode");
     camera->follow_variant = mode == 3 || mode == 4 ? mode : 0;
   }
-  gameref_advance_world_camera(frame_dt);
+  gameref_advance_world_camera(frame_dt, static_cast<float>(jvm.time_warp()));
   dispatch_mechanic_pointer(jvm);
   dispatch_world_pointer(jvm);
 

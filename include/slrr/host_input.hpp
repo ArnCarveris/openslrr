@@ -55,10 +55,12 @@ struct HostInput {
   bool world_button = false;
   bool world_press = false;
   bool world_release = false;
-  bool keys_left = false;
-  bool keys_right = false;
-  bool keys_up = false;
-  bool keys_down = false;
+  // Bumped when a loading plate or scene transition starts or ends. A
+  // button held across it is cancelled: its release is not a click.
+  uint32_t pointer_epoch = 0;
+  // Win32 tick of the last cancel. A synchronous load queues the clicks made
+  // during it; button messages stamped before this are dropped.
+  uint32_t pointer_cancel_ms = 0;
   bool keys_pgup = false;
   bool keys_pgdn = false;
   float drive_steer = 0, drive_throttle = 0, drive_brake = 0;
@@ -80,7 +82,12 @@ void host_input_clear_history();
 // Poll keyboard held keys into HostInput (call each frame).
 void host_input_poll_keys();
 
-float host_input_camera_axis(int axis);
+// Camera look axes. 7/8 are the controller's look bindings without mouse
+// ones (the drag is look_* / mouse_d*); 10 is the zoom.
+float host_input_camera_axis(const Object* controller, int axis);
+// Drop latched clicks and world press edges, release a held world button and
+// cancel every gesture still held (see pointer_epoch).
+void host_input_cancel_pointer_gestures();
 const char* host_input_device_name(int device);
 std::string host_input_axis_name(int device, int axis);
 float host_input_physical_axis(int device, int axis);
