@@ -4142,3 +4142,32 @@ the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
 - In game (`--bench-drive`, ValoCity, Baiern, F1 with the #318 fix): both pins
   show on the dashboard dials at rest, thin needles with no card. The chase
   view and the overlay pins are unchanged.
+
+### Pointer gestures and race cameras: review notes on PR #308 (#295-#299)
+
+Verified on the PR branch (f422ebb), by reading the code; not run in game.
+
+- The loading dialog's click/Enter to continue does not use window messages:
+  `src/boot/mainloop.cpp:mainloop_frame` polls `GetAsyncKeyState`
+  (VK_LBUTTON, RETURN, SPACE, ESCAPE) with its own armed/held edge. Gating
+  `WM_LBUTTONDOWN` under the plate therefore cannot break the skip.
+- Stock `ControlSet.java` binds look keys only in group 3 (`CAMTURNSET`):
+  arrows at 0.005 (yaw) and 0.003 (pitch), the same constants the host had
+  hard-coded. No group binds axes 7/8 on a gamepad, so routing the look
+  through `host_input_camera_axis(controller, axis)` keeps stock speed.
+- `angle offset gain rate` is used beyond ROC: `City.java` night races
+  (start orbit around the bot, finish orbit) call `angle 0 4.0 0.7853` then
+  `dist 5.5 6.5`, and `angle 0 0` with `dist 8.0 16.0` at the start. These
+  paths were not run in game by the PR.
+- A held follow camera (`follow_hold`, set by `setMatrix` on the bound
+  follow camera or by a positive `angle` gain) is clamped to the `dist`
+  range every frame and released only when gain is 0 and the eye is more
+  than `dist max + 0.5` from the car, or on a right-drag. A staging point
+  beyond `dist max` is pulled in at once; City day races stage at about
+  7.2 m with the default `dist 1 10`, so they hold.
+- `zoom` keeps `aov_goal`; the camera constructor (`natives_osd.cpp`) and
+  the cockpit camera rebind (`part_runtime.cpp`) set `half_aov` directly but
+  not `aov_goal`, so a reused camera eases back to an older zoom goal.
+- `host_input_cancel_pointer_gestures` turns a held world button into a
+  `world_release`, which `dispatch_world_pointer` emits as cursor event 2
+  in the frame after the boundary, without a matching press in that scene.
