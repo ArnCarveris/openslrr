@@ -1939,6 +1939,34 @@ seated animation or a full garage transition. Evidence:
   runs into both fists. Not checked: steering locks in game, other drivers
   (the grip-hole numbers are for `vin.SCX`), P3 (gear-shift gesture).
 
+### Gear-shift gesture (#302, P3)
+
+- Build 606 (read-only disassembly of `StreetLegal_Redline.exe`): the chassis
+  cfg line `shifter x y z [yaw pitch roll]` (handler 0x00444990) stores the
+  lever knob at car+0x9AC. No stock racer has the line (only
+  `cars\traffic\Wreck_data`), so the knob stays at the chassis origin.
+- On a gear change (0x0044D0C0, gear at +0x1DF8, 0 = N, 1-6, 7 = R) the exe
+  plays `sfx_gearchange`, sets two timers to now + 0.3 s and now + 0.7 s,
+  and re-targets the console-side hand (right when the seat x < 0, otherwise
+  left) to the knob plus an H-pattern offset per gear (table 0x0063C6B0,
+  metres): N 0, 1 (-0.05, 0, -0.05), 2 (-0.05, 0, 0.05), 3 (0, 0, -0.05),
+  4 (0, 0, 0.05), 5 (0.05, 0, -0.05), 6 (0.05, 0, 0.05), R (-0.09, 0, -0.05).
+  When both timers have run out, 0x0044D260 puts the hand back on the wheel.
+  The driver setup (0x00449200) reads the bone names `lfbone`, `rfbone`,
+  `lhbone`, `rhbone`, `sthbone` and `gsbone` from the human, with Biped
+  defaults; no stock human overrides them.
+- OpenSLRR: `PartConfig::shifter` (parsed in
+  `src/resources/part_config.cpp:parse_part_config`), and
+  `src/resources/part_runtime.cpp:pose_driver` keeps the last gear per
+  `DriverSeat`. A change starts a 0.7 s gesture counted in physics ticks (a
+  pause holds it; releasing the seat cancels it). The console-side fist moves
+  to the knob over 0.15 s, closes across the car with the palm down, and
+  eases back over the last 0.15 s. The exe switches the hand at once.
+- Tests: `cockpit_needles` case `parse_shifter_line`. In game (bench drive,
+  Baiern, cockpit view): on the 1 to 2 shift the right hand leaves the rim for
+  about 0.7 s and returns. With the knob at the chassis origin it goes below
+  the view, as the stock data implies.
+
 ### File texture replacement and hidden preview viewports
 
 The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,

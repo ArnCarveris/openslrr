@@ -231,7 +231,19 @@ void stock_pins_follow_rpm_and_speed() {
   std::puts("PASS stock dashboard pins follow rpm and speed and leave with their car");
 }
 
+// `shifter x y z` (build 606 cfg handler 0x00444990): the lever knob that the
+// gear-shift gesture reaches for. No line keeps the origin, as the exe does.
+void parse_shifter_line() {
+  const auto wreck = parse_part_config("render 0x1\nshifter         0.000  -0.039 0.020\n");
+  SLRR_REQUIRE(wreck.valid && wreck.unknown.empty());
+  SLRR_REQUIRE(close_to(wreck.shifter[1], -.039f) && close_to(wreck.shifter[2], .02f));
+  const auto racer = parse_part_config("render 0x1\n");
+  SLRR_REQUIRE(racer.shifter[0] == 0.f && racer.shifter[1] == 0.f && racer.shifter[2] == 0.f);
+  std::puts("PASS shifter line parses, origin by default");
+}
+
 int main() {
-  const standalone::Test tests[] = {parse_cockpit_lines, stock_pins_follow_rpm_and_speed};
+  const standalone::Test tests[] = {parse_cockpit_lines, stock_pins_follow_rpm_and_speed,
+                                    parse_shifter_line};
   return standalone::run("cockpit_needles", tests);
 }
