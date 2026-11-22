@@ -114,6 +114,29 @@ units, and 1/1 Garage unit producing three classes (94,397 bytes with the three 
 `W_UNVERIFIED` warnings for constructs already in the MWM source (a final
 static method, an empty `else ;`).
 
+### Patched car classes: stock anti-roll bars
+
+The installed MWM 2.2.1 car classes differ from the `sources/` tree (MWM added
+stock neons), and MWM ships no car source. The ten patched sources under
+`patch/cars/racers/*_data/scripts/src/` were first rebuilt to the installed
+bytecode, then edited. A copied game root has no `src/` folder for cars, so
+only the files placed there compile:
+
+```bash
+R=build/swaybar-compile-root   # copy of game/ as above
+for f in patch/cars/racers/*/scripts/src/*.java; do
+  mkdir -p "$(dirname "$R/${f#patch/}")"; cp "$f" "$R/${f#patch/}"; done
+for d in Duhen_data Einvagen_data Focer_data; do
+  ./build/Release/compile_game_sources.exe "$(cygpath -w $R)" cars/racers/$d/scripts; done
+```
+
+Check: compiling the sources with the bar lines still commented must give the
+installed `game/` classes byte for byte, apart from header bytes 9-11
+(`cmp -l a b | awk '$1>11'` prints nothing). Source line numbers are part of the
+bytecode, so blank lines matter. Results: 10/10 units identical before the
+edit; after it each class grows by the bar list (217 bytes, 434 for the Focer
+RC 300 with its stage-1 list).
+
 Reference projects consulted: SLRR-JVM, SLRR-JVM-compiler,
 SLRR-JVM-decompiler and slrr-reverse. The bundled compiler's exact provenance
 and license are recorded in `third_party/slrrc/README.openslrr.md` and `LICENSE`.

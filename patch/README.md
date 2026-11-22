@@ -1,6 +1,6 @@
 # OpenSLRR Enhanced
 
-Copy the `sl`, `system` and `parts` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class` and the base `Swaybar.class`. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
+Copy the `sl`, `system`, `parts` and `cars` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class`, the base `Swaybar.class` and ten car classes (Duhen, Einvagen and Focer models). `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
 
 The **Video Options** menu applies the resolution and the Enhanced settings in game. Exterior scenery range is 3 km. The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
 
@@ -12,8 +12,15 @@ to its name. The stock variants retain their original IDs, tuning and generic
 attachment compatibility; a nominal front/rear name is not a fit restriction.
 
 Fit a purchased bar to an existing chassis mount: 701 selects the front axle,
-702 the rear. No missing mount geometry or automatic stock installations are
-added. Installed bars apply condition-scaled spring/damping inputs through the
+702 the rear. No missing mount geometry is added.
+
+New stock cars that have mounts now come with their own bars: the four Duhen
+SunStrip models and the three Focer models get front and rear bars, the three
+Einvagen models a front bar (they have no rear mount). The patched car scripts
+in `cars` only uncomment the stock bar lists; they are the MWM 2.2.1 scripts,
+stock neons included. Cars already bought or saved keep their parts. The Duhen
+SunStrip 1.5 DVC lists its front bar twice in the stock script; the patch uses
+the matching rear bar for the rear. Installed bars apply condition-scaled spring/damping inputs through the
 host's bounded anti-roll approximation, including while coasting with no engine
 or controller. Removing or moving a bar replaces its contribution rather than
 accumulating another command. Cars without a bar retain their prior physics.

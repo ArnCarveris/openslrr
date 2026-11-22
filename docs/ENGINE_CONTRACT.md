@@ -720,7 +720,10 @@ Wheel YPR and the existing arm/hub kinematics still affect contact geometry.
 Anti-roll bars are an optional host approximation, deliberately enabling a
 stock feature whose Java commands and catalog branch were dormant. The patched
 Catalog exposes the existing `parts:0220` branch on Running Gear / Suspension;
-no resource IDs, stock installations or chassis mount poses are changed.
+no resource IDs or chassis mount poses are changed. The patched Duhen, Einvagen
+and Focer chassis scripts uncomment their stock `*_parts_list_RGear_sways`
+lists, so new stock cars of those ten models come with bars; the generic
+`addPart` keeps only the bars an authored mount can hold.
 `part_runtime` replaces each axle's configuration from its current installed
 `Swaybar` on authored mount 701 (front) or 702 (rear). Existing generic CFG
 compatibility remains authoritative, not the part class's model/axle name.

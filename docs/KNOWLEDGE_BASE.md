@@ -3853,3 +3853,50 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   `tests/test_vehicle_dynamics.cpp`, `tests/test_script_lights.cpp` and the
   `scene_shadow_gpu` nitrous case. Compilation and actual gameplay captures
   must still be reported separately; these sources alone are not pixel acceptance.
+
+### Anti-roll bars: stock data behind the catalog branch (#300, PR #307)
+
+Read-only scan of `game/parts.rpk` (RPAK TOC; the 16-byte TOC header sits after
+the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
+
+- The stock RPK already holds 48 bar resources. They hang under
+  `0x0220 "anti-roll"` → `0x021F "_hidden_"` → `0x0019 "runinggear"`, in nine
+  brand folders `0x00DC..0x00E4` (Baiern … Shimutshibu). The stock Catalog only
+  browses `0xF229` (Suspensions), so the hidden branch never showed. PR #307
+  adds `parts:0x0220r` as a second root of the Running Gear/Suspension page;
+  no RPK byte changes. `0xF232 "anti-roll"` under Shocks is an empty folder.
+- The brand folders live in parts.rpk, so the Catalog's car-pack filter
+  (`id() >> 16` against car packs) never hides them: every car sees all 48 bars,
+  as it already does for the Suspensions brand folders.
+- Each bar RSD is `script parts\running_gear\scripts\sways\swaybar_*.class` +
+  `native part parts\running_gear\scripts\swaybar.cfg`. That CFG has
+  `compatible 0x00004000 1`; `parts:0x4000` is the base class node
+  `Swaybar` (`script java.game.parts.rgearpart.Swaybar`). Car mounts use
+  `attach 0x00044000 1`, dependency 4 = parts.rpk. Fit is therefore generic:
+  any bar fits any 701 (front) / 702 (rear) mount; the front/rear in the name
+  is not a restriction.
+- Only ten stock chassis CFGs author mounts: Duhen ×4 (701+702), Focer ×3
+  (701+702), Einvagen ×3 (701 only). Other cars can buy a bar but cannot fit it.
+- All 48 scripts set `force = 25000`, `damping = 2500`: every bar is
+  functionally identical. Stock data also gives the six Ishima bars and the
+  Duhen 1.8/2.0/2.2 bars `name_prefix = "Duhen SunStrip 1.5 DVC"`, which the
+  patched `Swaybar.calcStuffs` now shows in their names.
+- The Java `updatevariables` still has its `addrollbar` commands commented
+  out; the host reads `force`/`damping` from the installed part instead
+  (`src/resources/part_runtime.cpp:configure_anti_roll`).
+- Every stock racer script lists its bars in commented-out
+  `stock_parts_list_RGear_sways` lines (Focer RC 300 also `stg_1_`). `Chassis`
+  already pushes that list with the other running-gear lists, and
+  `src/resources/part_runtime.cpp:add_part` destroys a part no slot accepts, so
+  a listed bar without a mount (Einvagen rear, Baiern, MC...) adds nothing.
+  The patch uncomments only the ten models with mounts.
+- **The installed MWM 2.2.1 car classes are not built from `sources/`.** MWM
+  added stock neons to the NOS branches: five `addPart( parts:0xD2xxr, "<color>" )`
+  after the canisters of each branch (`parts:0xD273` Red, `0xD285` Green,
+  `0xD288` Blue, `0xD291` Cyan, `0xD294` Aqua, `0xD279` Pink, `0xD276` Purple,
+  `0xD282` Orange, `0xD267` Yellow; neon RSDs under `parts:0xF24B`). No MWM car
+  source ships, and recompiling `sources/` would drop them. The bundled compiler
+  reproduces original classes byte for byte (only header bytes 9-11 differ;
+  source line numbers are encoded in the tree), so a reconstruction is proven
+  by an identical output. The reconstructed sources are in
+  `patch/cars/racers/*_data/scripts/src/`; see SCRIPT_COMPILER.md.

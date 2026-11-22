@@ -67,7 +67,10 @@ struct SwaybarFixture : Fixture {
   std::vector<Vehicle> cars;
   std::vector<Object *> parts;
 
-  SwaybarFixture() {
+  // `patched` overlays the shipped patch classes (patch/**/*.class) over the
+  // stock ones, as a player installing the Enhanced patch would.
+  bool patched = false;
+  explicit SwaybarFixture(bool with_patch = false) : patched(with_patch) {
     const auto game = fs::absolute(fs::is_directory("game") ? "game" : "data/game");
     SLRR_REQUIRE(fs::is_directory(game));
     // Same stock bootstrap as test_nitrous: native file writes still use the
@@ -78,10 +81,28 @@ struct SwaybarFixture : Fixture {
         fs::create_directories(out.parent_path());
         fs::copy_file(entry.path(), out);
       }
+    if (patched) {
+      const auto patch = fs::absolute("patch");
+      SLRR_REQUIRE(fs::is_directory(patch));
+      for (const auto &entry : fs::recursive_directory_iterator(patch))
+        if (entry.is_regular_file() && entry.path().extension() == ".class") {
+          const auto out = root / fs::relative(entry.path(), patch);
+          fs::create_directories(out.parent_path());
+          fs::copy_file(entry.path(), out, fs::copy_options::overwrite_existing);
+        }
+    }
     packs.set_root(game.string());
     packs.open_all();
     rpk_set_active(&packs);
     SLRR_REQUIRE(vm.bootstrap_classpath());
+    // part_create loads a car script from the RPK root (the installed game)
+    // unless a class of that name is already loaded, so load the patched car
+    // scripts from the overlaid VM root first.
+    if (patched)
+      for (const auto &entry : fs::recursive_directory_iterator(root / "cars"))
+        if (entry.is_regular_file() && entry.path().extension() == ".class" &&
+            fs::exists(fs::absolute("patch") / fs::relative(entry.path(), root)))
+          SLRR_REQUIRE(vm.load_class(entry.path().string()));
     gameref_clear();
     osd_clear_widgets();
     host_input() = {};
@@ -143,8 +164,9 @@ struct SwaybarFixture : Fixture {
     SLRR_REQUIRE(part_command(car, "damage_multiplier 0"));
     gameref_set_matrix(car, kPad + float(cars.size() - 1) * 20, 0, kPad, 0, 0, 0);
     part_park_chassis(car);
-    // Keep the stock script decision: adding catalog bars must NOT make them
-    // appear automatically in a newly assembled vehicle.
+    // Stock scripts keep their bar lists commented out: catalog bars must NOT
+    // appear automatically. The patched car scripts restore those lists.
+    if (patched) return car;
     for (const auto &part : part_installed_tree(car))
       SLRR_REQUIRE(!vm.tree_instance_of(part.object, kSwaybar));
     expect(car);
@@ -473,6 +495,36 @@ void stock_vehicle_save_load_reconstructs_mounts_and_native_condition() {
   f.expect(car, {}, kStock);
 }
 
+// The patched car scripts uncomment their stock bar lists.
+// Chassis.addStockParts adds them through the generic addPart, which keeps
+// only the bars a mount can hold: Einvagen's rear bar has no 702 mount.
+void patched_stock_cars_install_their_listed_bars() {
+  SwaybarFixture f(true);
+  auto *duhen = f.spawn(kDuhen), *einvagen = f.spawn(kEinvagen), *baiern = f.spawn(kBaiern);
+  auto axle = [&](Object *bar) {
+    SLRR_REQUIRE(bar && f.vm.tree_instance_of(bar, kSwaybar));
+    const auto part = installed(bar);
+    const double health = std::clamp<double>(part.wear, 0, 1) * std::clamp<double>(part.tear, 0, 1);
+    return Axle{kStock.stiffness * health, kStock.damping * health};
+  };
+  auto *front = on_slot(duhen, 701), *rear = on_slot(duhen, 702);
+  SLRR_REQUIRE(installed(front).resource == f.resource("parts.rpk", 0x41ff));
+  SLRR_REQUIRE(installed(rear).resource == f.resource("parts.rpk", 0x017c));
+  f.expect(duhen, axle(front), axle(rear));
+  auto *einvagen_front = on_slot(einvagen, 701);
+  SLRR_REQUIRE(installed(einvagen_front).resource == f.resource("parts.rpk", 0x0185));
+  SLRR_REQUIRE(!on_slot(einvagen, 702));
+  f.expect(einvagen, axle(einvagen_front));
+  // The failed rear addPart leaves no stray bar anywhere on the car.
+  size_t bars = 0;
+  for (const auto &part : part_installed_tree(einvagen))
+    bars += f.vm.tree_instance_of(part.object, kSwaybar);
+  SLRR_REQUIRE(bars == 1);
+  for (const auto &part : part_installed_tree(baiern))
+    SLRR_REQUIRE(!f.vm.tree_instance_of(part.object, kSwaybar));
+  f.expect(baiern);
+}
+
 void installed_damping_reduces_contacted_stock_chassis_roll() {
   SwaybarFixture f;
   auto *plain = f.spawn(kDuhen), *damped = f.spawn(kDuhen);
@@ -581,6 +633,7 @@ int main() {
       active_world_live_edits_do_not_need_controls_or_a_running_engine,
       stock_vehicle_save_load_reconstructs_mounts_and_native_condition,
       installed_damping_reduces_contacted_stock_chassis_roll,
+      patched_stock_cars_install_their_listed_bars,
   };
   return standalone::run("swaybars", tests);
 }
