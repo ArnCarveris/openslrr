@@ -91,6 +91,13 @@ struct Record {
     double spin = 0;
   };
   std::vector<InlineWheel> inline_wheels;
+  // Chassis `cockpit_rpm` / `cockpit_speed` pins (#301). Not in `renders`:
+  // they turn every frame, so deformation, lamp snapping and bounds skip them.
+  struct Needle {
+    Object *node = nullptr;
+    CockpitGauge gauge = CockpitGauge::Rpm;
+  };
+  std::vector<Needle> needles;
   std::unique_ptr<physics::DeformationCage> deformation;
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
@@ -686,6 +693,14 @@ void snap_lamp_glass(Record &rec) {
     node->deformed_type = node->type_id;
   }
 }
+// The pin's pose with the gauge angle added to its roll, as build 606 does
+// (0x0043C0A0): with part_pose_matrix's yaw-pitch-roll order this turns it
+// about its own posed Z axis.
+PartMatrix cockpit_needle_matrix(const CockpitNeedle &needle, double value) {
+  PartPose pose = needle.pose;
+  pose.rotation[2] += cockpit_needle_angle(needle, value);
+  return part_pose_matrix(pose);
+}
 void render_part(Jvm &jvm, Object *self, Record &rec) {
   rec.inline_wheels.clear();
   collect_lamps(rec);
@@ -699,16 +714,15 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
       pick += count;
     return colors[static_cast<size_t>(pick)];
   };
-  auto add = [&](uint32_t resource, const PartMatrix &local,
-                 const std::vector<PartLink> *rules,
-                 const std::vector<uint32_t> *colors,
-                 uint32_t light_flags = 0) {
+  auto create = [&](uint32_t resource, const PartMatrix &local,
+                    const std::vector<uint32_t> *colors,
+                    uint32_t light_flags) -> Object * {
     if (!resource ||
         !index
              ->model_for_resource(RpkIndex::pack_from_full(resource),
                                   resource & 0xffff)
              .ok)
-      return;
+      return nullptr;
     Object *render = jvm.new_object("java.util.resource.RenderRef");
     auto *node = gameref_upsert(render, GameRefKind::RenderRef);
     gameref_set_type(*node, static_cast<int32_t>(resource));
@@ -724,6 +738,15 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
     std::copy(local.begin(), local.end(), node->local_matrix);
     node->matrix_override = true;
     render->fields["id"] = Value::make_int(resource);
+    return render;
+  };
+  auto add = [&](uint32_t resource, const PartMatrix &local,
+                 const std::vector<PartLink> *rules,
+                 const std::vector<uint32_t> *colors,
+                 uint32_t light_flags = 0) {
+    Object *render = create(resource, local, colors, light_flags);
+    if (!render)
+      return;
     rec.renders.push_back(render);
     if (rules && !rules->empty())
       rec.links.push_back({render, resource, *rules, local});
@@ -789,6 +812,18 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
     }
   }
   snap_lamp_glass(rec);
+  for (const auto &needle : rec.needles)
+    gameref_remove(needle.node);
+  rec.needles.clear();
+  if (rec.config->native_kind == "car")
+    for (size_t i = 0; i < rec.config->cockpit.size(); ++i) {
+      const auto &cfg = rec.config->cockpit[i];
+      if (!cfg.defined)
+        continue;
+      const auto gauge = static_cast<CockpitGauge>(i);
+      if (Object *pin = create(cfg.resource, cockpit_needle_matrix(cfg, 0), nullptr, 0))
+        rec.needles.push_back({pin, gauge});
+    }
 }
 void stock_parts(Jvm &jvm, Object *part, Object *descriptor, int depth = 0) {
   if (depth > 48 || records.size() > 2000)
@@ -2255,6 +2290,8 @@ bool part_destroy(Object *part) {
     parent->children.erase(rec->state.parent_slot);
   for (auto *render : rec->renders)
     gameref_remove(render);
+  for (const auto &needle : rec->needles)
+    gameref_remove(needle.node);
   release_side(*rec);
   records.erase(part);
   gameref_remove(part);
@@ -5022,6 +5059,30 @@ void pose_steering_wheels() {
   }
 }
 
+// Instrument values, shared by the overlay HUD and the dashboard pins.
+// Without an engine the tachometer rests at zero.
+double gauge_rpm(const Record& rec) {
+  return rec.dynamics.drive.torque ? rec.dynamics.engine_omega * 9.54929658551372 : 0;
+}
+double gauge_speed(const Record& rec) {
+  return rec.dynamics.body.velocity.length() * 3.6;
+}
+// Dashboard pins follow their chassis every frame (#301), like the column.
+void pose_cockpit_needles() {
+  for (auto& entry : records) {
+    auto& rec = entry.second;
+    for (const auto& needle : rec.needles) {
+      auto* node = gameref_get(needle.node);
+      if (!node) continue;
+      const auto& cfg = rec.config->cockpit[static_cast<size_t>(needle.gauge)];
+      const double value = needle.gauge == CockpitGauge::Rpm ? gauge_rpm(rec) : gauge_speed(rec);
+      const auto local = cockpit_needle_matrix(cfg, value);
+      std::copy(local.begin(), local.end(), node->local_matrix);
+      node->matrix_override = true;
+    }
+  }
+}
+
 float wheel_rim_radius(Object* wheel) {
   const auto* rec = record(wheel);
   if (!rec) return 0.15f;
@@ -5128,6 +5189,17 @@ void pose_driver() {
   const auto bone = [&](const char* name) {
     return character_find_bone(seat.render, type, *index, name);
   };
+  // The first cockpit camera sits where the head is, and it leans back
+  // with acceleration: from inside the car, the head would fill the view.
+  // Shrink it to its joint while this car's camera 0 draws the world.
+  if (const auto cockpit = chassis->fields.find("_hostCockpitCamera");
+      cockpit != chassis->fields.end() && cockpit->second.v.o) {
+    const GameRefState* camera = gameref_get(cockpit->second.v.o);
+    if (camera && camera->cockpit_index == 0 && camera == fullscreen_script_camera()) {
+      const int head = bone("Bip01 Head");
+      if (head >= 0) character_scale_bone(seat.render, type, *index, head, 1e-3f);
+    }
+  }
   if (!rec->config->cameras.empty()) {
     const auto& camera = rec->config->cameras[0].position;
     float target[3];
@@ -6007,6 +6079,7 @@ void part_physics_advance(double seconds) {
   publish_render_poses(physics_elapsed / kPhysicsTick);
   // After the solver, so a flap or a wheel placement cannot put the column back.
   pose_steering_wheels();
+  pose_cockpit_needles();
   pose_driver();
   {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(seconds);}
 }
@@ -6222,8 +6295,8 @@ bool part_vehicle_hud(VehicleHudState &state) {
   if (!rec) return true; // The GPS frame also belongs to the empty HUD.
   state.layout = hud_preview_directory.empty() ? &rec->config->hud : &hud_preview;
   state.preview_directory = hud_preview_directory.empty() ? nullptr : &hud_preview_directory;
-  state.rpm = rec->dynamics.drive.torque ? rec->dynamics.engine_omega * 9.54929658551372 : 0;
-  state.speed = rec->dynamics.body.velocity.length() * 3.6;
+  state.rpm = gauge_rpm(*rec);
+  state.speed = gauge_speed(*rec);
   state.mileage = rec->mileage * .01;
   state.unit_scale = 1000.f / host_game_options().unit_meters;
   const double capacity = nitro_capacity(rec->state.object);
@@ -7584,6 +7657,7 @@ void part_visit_gc_roots(const GcRootVisitor& visit) {
     visit(entry.first); visit(r.state.object); visit(r.state.parent); visit(r.physics_parent);
     for (const auto& child : r.children) visit(child.second);
     for (auto* render : r.renders) visit(render);
+    for (const auto& needle : r.needles) visit(needle.node);
     for (const auto& link : r.links) visit(link.node);
     for (auto* sfx : r.sfx) visit(sfx);
   }

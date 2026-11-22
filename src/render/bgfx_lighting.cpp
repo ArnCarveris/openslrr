@@ -608,11 +608,14 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         // 5 = ColorMixTex with a spheremap (headlight lens).
         // 4 = ColorMixTex. 3 = glass. 2 = chrome (0x33, no color map, or a
         // 0x0c cap whose color slot never loaded). A bare pipe is flags 0.
-        // Flag-256 exhaust overlays can be SCX3 (Flame: flags 0x101),
-        // whose blend bit is not SCX4's transparent-group bit.
-        const bool flame_blend = (instance.light_flags & 256u) &&
-            scx_surface(part.geo.info.version, group).blend;
-        const bool transparent = (group.material_flags & 0x40000000u) != 0 || flame_blend;
+        // SCX3 blend (flags 0x101) is not SCX4's transparent-group bit, but
+        // it blends too: flag-256 exhaust flames and the cockpit_rpm /
+        // cockpit_speed pins (pin_small, a needle on a clear DXT5 card).
+        // Lamp glows keep their own lamp path.
+        const bool scx3_blend = scx_surface(part.geo.info.version, group).blend;
+        const bool flame_blend = (instance.light_flags & 256u) && scx3_blend;
+        const bool transparent = (group.material_flags & 0x40000000u) != 0 || flame_blend ||
+            (scx3_blend && part.geo.info.version == 3 && !instance.light_flags);
         if (transparent != (pass == 1)) continue;
         const uint32_t kind_id = group.material_type;
         const bool glass = transparent && kind_id == 0x33u;
