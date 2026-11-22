@@ -126,9 +126,11 @@ All three inherit `setPosition`, `setDirection` (parent-local, metres),
 `destroy` from `LightSource`. Lights follow their parent and disappear with it.
 Car lights stay engine-driven.
 
-`Garage.java` also saves only after a successful Choose Track, car dealer or
-car lot transition. A refused command (no car, undriveable car, dealer closed)
-stays in the garage and does not save. Street lamps and other scenery lights do not use
+`Garage.java` also saves only after a successful Choose Track or car dealer
+transition. A refused command (no car, undriveable car, dealer closed)
+stays in the garage and does not save. The Car Lot saves before it opens, as
+in MWM, after moving the parts bought in the garage to your inventory. Saving
+after it opened took the current car out of its slot (#315). Street lamps and other scenery lights do not use
 this API: the engine reads them from the map objects (#237).
 
 ## Street lamps (#237)

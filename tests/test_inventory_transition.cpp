@@ -88,7 +88,8 @@ struct InventoryProbe : DispatchProbe {
   return inv_effect(owner,name,self,values);
  }
  Value inv_effect(const std::string& owner,const std::string& name,Object* self,const std::vector<Value>& args){
-  if(name=="size"){SLRR_REQUIRE(self==&inventory);return Value::make_int(3);}
+  // Three items on the strip; a second flush (Garage.exit after #315) finds none.
+  if(name=="size"){SLRR_REQUIRE(self==&inventory);return Value::make_int(moves<3?3-moves:0);}
   if(name=="moveToInventory"){
    SLRR_REQUIRE(self==&inventory && args.size()==2 && args[0].tag==ValueTag::Int && args[0].v.i==0 && args[1].tag==ValueTag::Obj && args[1].v.o==&parts);
    ++moves;return Value::make_void();
@@ -165,6 +166,7 @@ struct GarageProbe : InventoryProbe {
    if(name=="changeActiveSection"){events.push_back("change");return Value::make_void();}
    if(name=="autoSaveQuiet"||name=="autoSave"){events.push_back("save");return Value::make_void();}
    if(name=="giveWarning"){events.push_back("warn");return Value::make_void();}
+   if(name=="flushInventory"){events.push_back("flush");return Value::make_void();}
    if(name=="getTime")return Value::make_float(hour*3600);
    if(name=="isDriveable")return problem;
   }
@@ -200,9 +202,23 @@ void shipped_garage_save_order() {
  SLRR_REQUIRE(host.saved==3 && host.moves==3 && host.exit_calls==1 && host.enter_calls==1);
  std::puts("PASS actual Garage.osdCommand -> GameLogic change -> Garage.exit -> Mechanic flush -> autosave ordering");
 }
+// Car Lot (#315) keeps the MWM order, save then change section: a save after
+// CarLot.enter hands the parked car back to the player and empties its slot.
+// The handler flushes the strip itself, so the save still holds every part.
+void shipped_carlot_save_order() {
+ GarageProbe host("patch/sl/Scripts/game/Garage.class");
+ Object carlot;carlot.class_name="java.game.CarLot";
+ host.player.fields["carlot"]=Value::make_obj(&carlot);
+ host.run("java.game.Garage","osdCommand",&host.old,{host.tree_get_static("java.game.Garage","CMD_CARLOT")});
+ std::printf("carlot snapshot=%d moves=%d exit=%d enter=%d\n",host.saved,host.moves,host.exit_calls,host.enter_calls);
+ SLRR_REQUIRE(host.saved==3 && host.moves==3 && host.exit_calls==1 && host.enter_calls==1);
+ SLRR_REQUIRE(host.actual.v.o==&carlot);
+ std::puts("PASS Car Lot: Mechanic flush -> autosave -> GameLogic change -> Garage.exit");
+}
 // Garage commands that are refused (dealer closed, no car, undriveable car)
 // stay in the garage, so the mechanic strip is not flushed: they must not
-// autosave. Accepted commands change section first, then save.
+// autosave. Accepted commands change section first, then save, except Car Lot,
+// which flushes the strip and saves before the transition (#315).
 std::string garage_command(const std::string& path,const char* command,bool car,bool driveable,float hour){
  GarageProbe probe(path);
  probe.record_only=true;probe.hour=hour;
@@ -220,7 +236,7 @@ void garage_rejected_commands_do_not_save() {
   {"CMD_TRACKSELECT",true,true,12,"change,save"},
   {"CMD_BUYCARS",true,true,20,"warn"},{"CMD_BUYCARSUSED",true,true,3,"warn"},
   {"CMD_BUYCARS",true,true,12,"change,save"},{"CMD_BUYCARSUSED",true,true,12,"change,save"},
-  {"CMD_CARLOT",true,true,12,"change,save"},
+  {"CMD_CARLOT",true,true,12,"flush,save,change"},
   {"CMD_TESTTRACK",false,true,12,"warn"},{"CMD_TESTTRACK",true,false,12,"warn"}};
  // The #59 class is the behavioural reference when a local copy exists.
  const bool baseline=fs::exists("build/garage-59.class");
@@ -233,7 +249,7 @@ void garage_rejected_commands_do_not_save() {
   failures+=got!=c.expected;
  }
  SLRR_REQUIRE(failures==0);
- std::puts("PASS refused Garage commands do not autosave; accepted ones save after the transition");
+ std::puts("PASS refused Garage commands do not autosave; accepted ones save after the transition, Car Lot before it");
  // Every other command must save exactly when the #59 class does (where a
  // local copy exists), apart from the order fixed above.
  if(baseline){
@@ -255,4 +271,4 @@ void garage_rejected_commands_do_not_save() {
   SLRR_REQUIRE(compared>10 && differ==0);
  }
 }
-int main(){const standalone::Test tests[]={transition,shipped_transition,shipped_inventory_flush,shipped_garage_save_order,garage_rejected_commands_do_not_save};return standalone::run("inventory_transition",tests);}
+int main(){const standalone::Test tests[]={transition,shipped_transition,shipped_inventory_flush,shipped_garage_save_order,shipped_carlot_save_order,garage_rejected_commands_do_not_save};return standalone::run("inventory_transition",tests);}
