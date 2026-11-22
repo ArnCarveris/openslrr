@@ -1331,7 +1331,8 @@ unchanged. While script lights own the scene, including when all of them are
 disabled, the neon point record stays ambient-only (intensity 0, no shadows).
 The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 10
 and 12 lights, intensity 30, range 26 m, set per garage in its fixture tables);
-the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
+the open-air ROC garage has none, and since #330 it has no neon either: it is an
+exterior scene (`internalScene = 0`) lit by the sun. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
 
 ### Scenery lights (#237)
