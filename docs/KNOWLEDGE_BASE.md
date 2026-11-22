@@ -3869,3 +3869,65 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   `tests/test_vehicle_dynamics.cpp`, `tests/test_script_lights.cpp` and the
   `scene_shadow_gpu` nitrous case. Compilation and actual gameplay captures
   must still be reported separately; these sources alone are not pixel acceptance.
+
+### Anti-roll bars: stock data behind the catalog branch (#300, PR #307)
+
+Read-only scan of `game/parts.rpk` (RPAK TOC; the 16-byte TOC header sits after
+the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
+
+- The stock RPK already holds 48 bar resources. They hang under
+  `0x0220 "anti-roll"` → `0x021F "_hidden_"` → `0x0019 "runinggear"`, in nine
+  brand folders `0x00DC..0x00E4` (Baiern … Shimutshibu). The stock Catalog only
+  browses `0xF229` (Suspensions), so the hidden branch never showed. PR #307
+  adds `parts:0x0220r` as a second root of the Running Gear/Suspension page;
+  no RPK byte changes. `0xF232 "anti-roll"` under Shocks is an empty folder.
+- The brand folders live in parts.rpk, so the Catalog's car-pack filter
+  (`id() >> 16` against car packs) never hides them: every car sees all 48 bars,
+  as it already does for the Suspensions brand folders.
+- Each bar RSD is `script parts\running_gear\scripts\sways\swaybar_*.class` +
+  `native part parts\running_gear\scripts\swaybar.cfg`. That CFG has
+  `compatible 0x00004000 1`; `parts:0x4000` is the base class node
+  `Swaybar` (`script java.game.parts.rgearpart.Swaybar`). Car mounts use
+  `attach 0x00044000 1`, dependency 4 = parts.rpk. Fit is therefore generic:
+  any bar fits any 701 (front) / 702 (rear) mount; the front/rear in the name
+  is not a restriction.
+- Only ten stock chassis CFGs author mounts: Duhen ×4 (701+702), Focer ×3
+  (701+702), Einvagen ×3 (701 only). Other cars can buy a bar but cannot fit it.
+- All 48 scripts set `force = 25000`, `damping = 2500`: every bar is
+  functionally identical. Stock data also gives the six Ishima bars and the
+  Duhen 1.8/2.0/2.2 bars `name_prefix = "Duhen SunStrip 1.5 DVC"`, which the
+  patched `Swaybar.calcStuffs` now shows in their names.
+- The Java `updatevariables` still has its `addrollbar` commands commented
+  out; the host reads `force`/`damping` from the installed part instead
+  (`src/resources/part_runtime.cpp:configure_anti_roll`).
+- Every stock racer script lists its bars in commented-out
+  `stock_parts_list_RGear_sways` lines (Focer RC 300 also `stg_1_`). `Chassis`
+  already pushes that list with the other running-gear lists, and
+  `src/resources/part_runtime.cpp:add_part` destroys a part no slot accepts, so
+  a listed bar without a mount adds nothing. #311 adds the missing mounts to
+  the 17 other racer chassis CFGs (Einvagen gets 702 only) and uncomments all
+  24 lists. Stock lists that named the wrong bar are corrected: Duhen 1.5 rear
+  `0x41FF` to `0x017C`, Ishima Enula WRZ `0x41FF` to `0x0195/0x0196` (stage 1
+  `0x0197/0x0198`), WR SuperTurizmo `0x41FF` to `0x0197/0x0198`.
+- **The installed MWM 2.2.1 car classes are not built from `sources/`.** MWM
+  added stock neons to the NOS branches: five `addPart( parts:0xD2xxr, "<color>" )`
+  after the canisters of each branch (`parts:0xD273` Red, `0xD285` Green,
+  `0xD288` Blue, `0xD291` Cyan, `0xD294` Aqua, `0xD279` Pink, `0xD276` Purple,
+  `0xD282` Orange, `0xD267` Yellow, `0xD270` White; neon RSDs under
+  `parts:0xF24B`). The count per branch varies (5, 7 or 8). The SuperDuty top
+  branch replaces the four canisters with two bottles (`parts:0xD215` Botle,
+  `0xD339` Double Botle), ten neons and `cars.racers.SuperDuty:0xD1` rollbar
+  (the RID form must match the `stg_` list one exactly, or the constant pool
+  differs). No MWM car
+  source ships, and recompiling `sources/` would drop them. The bundled compiler
+  reproduces original classes byte for byte (only header bytes 9-11 differ;
+  source line numbers are encoded in the tree), so a reconstruction is proven
+  by an identical output. The reconstructed sources are in
+  `patch/cars/racers/*_data/scripts/src/`; see SCRIPT_COMPILER.md.
+- **The local `game/` may hold an installed patch.** On 2026-11-22 the patch
+  (sl, parts and ten car classes) was copied into `game/` for in-game tests, so
+  tests that expect stock classes failed there. To test against stock, build a
+  hard-linked view whose changed files come from the untouched MWM 2.2.1 copy
+  and run the test executable from it; `tests/test_swaybars.cpp` builds its
+  patched game view the same way (patched files replace their link, never
+  written through).

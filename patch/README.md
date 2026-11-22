@@ -1,6 +1,6 @@
 # OpenSLRR Enhanced
 
-Copy the `sl`, `system` and `parts` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class` and the base `Swaybar.class`. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
+Copy the `sl`, `system`, `parts` and `cars` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class`, the base `Swaybar.class`, 24 racer classes and 17 racer chassis CFGs (`_main_*.cfg`). `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
 
 The **Video Options** menu applies the resolution and the Enhanced settings in game. Exterior scenery range is 3 km. The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
 
@@ -11,14 +11,30 @@ The **Video Options** menu applies the resolution and the Enhanced settings in g
 to its name. The stock variants retain their original IDs, tuning and generic
 attachment compatibility; a nominal front/rear name is not a fit restriction.
 
-Fit a purchased bar to an existing chassis mount: 701 selects the front axle,
-702 the rear. No missing mount geometry or automatic stock installations are
-added. Installed bars apply condition-scaled spring/damping inputs through the
+Fit a purchased bar to a chassis mount: 701 selects the front axle, 702 the
+rear. Installed bars apply condition-scaled spring/damping inputs through the
 host's bounded anti-roll approximation, including while coasting with no engine
 or controller. Removing or moving a bar replaces its contribution rather than
 accumulating another command. Cars without a bar retain their prior physics.
 This deliberately enables a dormant stock feature; it is not recovered MWM
 anti-roll physics.
+
+### Stock bars on every racer (#311)
+
+Copy `cars` too. Every stock racer now has both mounts and comes with its own
+bars when it is newly assembled (dealer, used cars, opponents):
+
+- The 17 chassis CFGs (`_main_*.cfg`) that lacked a mount get one: Baiern,
+  Enula, MC, Nonus, Prime and SuperDuty get 701 and 702, Einvagen gets 702.
+  Positions follow the authored Duhen mounts relative to the wheels (front bar
+  0.224 m ahead of the front axle, rear bar 0.225 m ahead of the rear axle). The
+  bar mesh is not resized to the car's track.
+- The 24 car scripts uncomment their stock bar lists. They are the MWM 2.2.1
+  scripts (stock neons, NOS bottles and rollbars included), rebuilt byte for
+  byte before the edit. Stock lists that named a Duhen bar or the front bar
+  twice now name the car's own bars: Duhen SunStrip 1.5 DVC rear, Ishima Enula
+  WRZ (and its stage-1 WRS list) and WR SuperTurizmo.
+- Cars already bought or saved keep their parts.
 
 ## Java natives
 
