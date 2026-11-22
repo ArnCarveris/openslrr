@@ -628,6 +628,27 @@ void character_set_bone_local(void* key, int32_t type_id, const RpkIndex& packs,
   store_local(*character, bone, local);
 }
 
+bool character_scale_bone(void* key, int32_t type_id, const RpkIndex& packs, int bone,
+                          float scale) {
+  Character* character = ensure_character(key, type_id, &packs);
+  if (!character || !character->bind || bone < 0 ||
+      static_cast<size_t>(bone) >= character->bind->bones.size()) return false;
+  float local[16];
+  const size_t slot = static_cast<size_t>(bone);
+  if (slot < character->overrides.size() && character->overrides[slot].set) {
+    std::memcpy(local, character->overrides[slot].local, sizeof local);
+  } else {
+    std::vector<float> locals(character->bind->bones.size() * 16);
+    skeleton_local_bind(*character->bind, locals.data());
+    std::memcpy(local, locals.data() + slot * 16, sizeof local);
+  }
+  // The three axis columns; the joint position (12..14) stays.
+  for (int i = 0; i < 12; ++i)
+    if (i % 4 != 3) local[i] *= scale;
+  store_local(*character, bone, local);
+  return true;
+}
+
 bool character_aim_bone(void* key, int32_t type_id, const RpkIndex& packs,
                         int bone, int end, const float target_cm[3], float max_radians) {
   Character* character = ensure_character(key, type_id, &packs);

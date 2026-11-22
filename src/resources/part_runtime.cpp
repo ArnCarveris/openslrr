@@ -5128,6 +5128,17 @@ void pose_driver() {
   const auto bone = [&](const char* name) {
     return character_find_bone(seat.render, type, *index, name);
   };
+  // The first cockpit camera sits where the head is, and it leans back
+  // with acceleration: from inside the car, the head would fill the view.
+  // Shrink it to its joint while this car's camera 0 draws the world.
+  if (const auto cockpit = chassis->fields.find("_hostCockpitCamera");
+      cockpit != chassis->fields.end() && cockpit->second.v.o) {
+    const GameRefState* camera = gameref_get(cockpit->second.v.o);
+    if (camera && camera->cockpit_index == 0 && camera == fullscreen_script_camera()) {
+      const int head = bone("Bip01 Head");
+      if (head >= 0) character_scale_bone(seat.render, type, *index, head, 1e-3f);
+    }
+  }
   if (!rec->config->cameras.empty()) {
     const auto& camera = rec->config->cameras[0].position;
     float target[3];

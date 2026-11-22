@@ -116,6 +116,10 @@ bool character_solve_limb(void* key, int32_t type_id, const RpkIndex& packs,
 // to pin bone00/bone01 on their two anchors.
 bool character_place_bone(void* key, int32_t type_id, const RpkIndex& packs, int bone,
                           const float position_m[3]);
+// Scale `bone` (and so its children) about its joint, from its current
+// override or its bind pose. A tiny scale hides the skin it carries.
+bool character_scale_bone(void* key, int32_t type_id, const RpkIndex& packs, int bone,
+                          float scale);
 // Drop bone overrides so the next aim starts from the bind pose. A limb solved
 // from last frame's result shrinks, because the measured bone length drifts.
 void character_reset_pose(void* key);
