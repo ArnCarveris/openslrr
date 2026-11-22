@@ -72,6 +72,10 @@ void run(FlapState& s, const FlapGeometry& g, const FlapLoads& loads, double sec
   for (int i = 0; i < static_cast<int>(seconds / kStep); ++i) flap_step(s, g, loads, kStep);
 }
 
+// Where a script open comes to rest: build 606's spring aims at 95% of the
+// travel.
+double open_target(const FlapGeometry& g) { return FlapTuning::open_fraction * g.upper; }
+
 }  // namespace
 
 SLRR_TEST(stock_hinge_lines_open_outward_and_upward) {
@@ -129,10 +133,17 @@ SLRR_TEST(script_toggle_opens_holds_closes_and_latches) {
   SLRR_REQUIRE(!s.open && s.latched);
   SLRR_REQUIRE(flap_toggle(s));
   SLRR_REQUIRE(s.open && !s.latched);
-  run(s, door, loads, .6);
-  SLRR_REQUIRE(near(s.angle, door.upper, 1e-3));
+  // The spring throws it onto its stop, it shakes, then rests near 95%.
+  double highest = 0, lowest_after = 10;
+  for (int i = 0; i < 240; ++i) {
+    flap_step(s, door, loads, kStep);
+    if (highest > door.upper - 1e-3) lowest_after = std::fmin(lowest_after, s.angle);
+    highest = std::fmax(highest, s.angle);
+  }
+  SLRR_REQUIRE(highest > door.upper - 1e-3);
+  SLRR_REQUIRE(lowest_after < open_target(door) - .05);
   run(s, door, loads, 2);
-  SLRR_REQUIRE(near(s.angle, door.upper, 1e-3));
+  SLRR_REQUIRE(near(s.angle, open_target(door), .06) && !s.driving);
   SLRR_REQUIRE(!flap_toggle(s));
   run(s, door, loads, .6);
   SLRR_REQUIRE(s.latched && s.angle == 0 && !s.open);
@@ -142,11 +153,13 @@ SLRR_TEST(script_toggle_opens_holds_closes_and_latches) {
   FlapState h;
   flap_toggle(h);
   run(h, hood, loads, 3);
-  SLRR_REQUIRE(near(h.angle, hood.upper, 1e-3));
-  // Toggling back mid-way reverses without a jump.
+  // Its weight sags it below the target, as on build 606's spring.
+  SLRR_REQUIRE(h.angle > .5 && h.angle < open_target(hood));
+  // Toggling back reverses without a jump.
+  const double held = h.angle;
   flap_toggle(h);
   flap_step(h, hood, loads, kStep);
-  SLRR_REQUIRE(h.angle > hood.upper - .05);
+  SLRR_REQUIRE(h.angle > held - .05);
   run(h, hood, loads, 1);
   SLRR_REQUIRE(h.latched);
 }
@@ -213,7 +226,7 @@ SLRR_TEST(a_door_left_open_gives_way_when_the_car_pulls_away) {
   FlapState s;
   FlapLoads loads;
   flap_toggle(s);
-  run(s, door, loads, 1);
+  run(s, door, loads, 3);
   SLRR_REQUIRE(s.hold && !s.driving);
   // 0.02 g does not move it off its check.
   const double none[3] = {};
@@ -285,8 +298,8 @@ SLRR_TEST(a_free_panel_that_settles_shut_relatches) {
   SLRR_REQUIRE(d.latched && !d.open);
   // Toggling it now opens it on the first click.
   SLRR_REQUIRE(flap_toggle(d));
-  run(d, door, still, .6);
-  SLRR_REQUIRE(near(d.angle, door.upper, 1e-3));
+  run(d, door, still, 3);
+  SLRR_REQUIRE(near(d.angle, open_target(door), .06));
   // A door released by a hit that does not push it (a vertical jolt) drifts
   // off its seal and stays free.
   FlapState hit;
@@ -332,10 +345,12 @@ SLRR_TEST(an_obstacle_swings_an_open_door_shut_or_tears_it_off) {
   const auto door = baiern_left_door();
   FlapLoads still;
   const auto open_door = [&] {
+    // Opened by the script and resting against its stop.
     FlapState s;
     flap_toggle(s);
-    run(s, door, still, .6);
-    s.since_release = 1;
+    run(s, door, still, 3);
+    s.angle = door.upper;
+    s.rate = 0;
     return s;
   };
   // Free edge of the open door, and a pole in front of it: the car drives to
@@ -386,8 +401,8 @@ SLRR_TEST(a_bent_panel_closes_but_no_longer_latches) {
   run(s, door, still, 1);
   SLRR_REQUIRE(!s.latched && !s.open && s.angle < .02);
   SLRR_REQUIRE(flap_toggle(s));
-  run(s, door, still, .6);
-  SLRR_REQUIRE(near(s.angle, door.upper, 1e-3));
+  run(s, door, still, 3);
+  SLRR_REQUIRE(near(s.angle, open_target(door), .06));
 }
 
 SLRR_TEST(end_stops_bound_motion_without_nan) {

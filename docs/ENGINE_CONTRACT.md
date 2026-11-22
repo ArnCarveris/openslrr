@@ -558,9 +558,12 @@ such a slot is a one-degree-of-freedom hinged plate
 
 - Closed, it is latched and does not move.
 - `Part.flap(1)` and the `flap_toggle` command (Mechanic's tuning click)
-  drive it open to the stop, where a strut holds it against gravity, or shut,
-  where it latches. A load that forces a held panel well back from the stop
-  beats the strut, so a door left open swings shut when the car pulls away.
+  push it with build 606's spring (gain 60 per second squared): open aims at
+  95% of the travel, so the panel overshoots, hits its stop and shakes before
+  it rests (a heavy hood sags below the target, where the spring carries its
+  weight); close aims through the closed pose, where it latches. A load that
+  forces a held panel well back from the stop beats the spring once it has
+  settled, so a door left open swings shut when the car pulls away.
   `flap(0)` returns 1 while it is open, by script or by a hit.
 - A chassis impact reaching the panel (`damage_chassis` hands it on) releases
   the latch above 3.5 m/s local speed, independently of the damage options.
@@ -590,9 +593,10 @@ such a slot is a one-degree-of-freedom hinged plate
 The car does not feel its panels' contacts, and the panels do not collide
 with each other, loose bodies, other cars or the ground (floor triangles are
 left out, as for the chassis walls). In the garage, where the car is
-suspended, a panel opens without world contacts. Its constants are an
-OpenSLRR design; the original flap solver is not recovered and SLRR_rev has
-no `flap` native.
+suspended, a panel opens without world contacts. The script spring's gain and
+95% target are build 606's (flap solver 0x0043F850); its light damping and
+the other constants are an OpenSLRR design, and SLRR_rev has no `flap`
+native.
 
 ## 11. Physics and damage
 

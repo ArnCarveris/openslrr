@@ -284,12 +284,16 @@ bool flap_step(FlapState &state, const FlapGeometry &g, const FlapLoads &loads,
   if (state.open && state.hold && !state.driving &&
       state.angle < g.upper - T::hold_giveway)
     state.hold = false;
+  // Build 606 (flap solver 0x0043F850, at 0x0044030D): a script open pulls
+  // the free edge toward 95% of the travel, a close toward the closed limit,
+  // with an undamped spring of gain 60 per second squared. The panel
+  // overshoots, hits its stop and shakes before it settles.
+  const double open_target = T::open_fraction * g.upper;
   if (state.open && state.hold) {
-    // Strut: pushes the panel past the open stop so the stop holds it. While
-    // the script opening is under way it is a firm drive; afterwards it only
-    // beats gravity at the open pose and a small detent.
-    const double w = T::drive_frequency;
-    double drive = w * w * (g.upper + T::hold_margin - state.angle) - 2 * w * state.rate;
+    // While the script opening is under way the spring is firm; afterwards
+    // it only beats gravity at the open pose and a small detent, so a load
+    // can still swing the panel off it.
+    double drive = T::script_spring * (open_target - state.angle) - T::script_damping * state.rate;
     double limit = T::drive_limit;
     if (!state.driving) {
       double open_lever[3];
@@ -299,9 +303,9 @@ bool flap_step(FlapState &state, const FlapGeometry &g, const FlapLoads &loads,
     }
     accel += std::clamp(drive, -limit, limit);
   } else if (!state.open && state.driving) {
-    // Script close: drive it shut through the closed pose so it latches.
-    const double w = T::drive_frequency;
-    const double drive = w * w * (-T::hold_margin - state.angle) - 2 * w * state.rate;
+    // Script close: the same spring, aimed through the closed pose so the
+    // panel arrives with speed and latches.
+    const double drive = T::script_spring * (-T::hold_margin - state.angle);
     accel += std::clamp(drive, -T::drive_limit, T::drive_limit);
   }
   state.rate = std::clamp(state.rate + accel * seconds, -T::max_rate, T::max_rate);
@@ -311,11 +315,10 @@ bool flap_step(FlapState &state, const FlapGeometry &g, const FlapLoads &loads,
     if (state.rate > 0) state.rate *= -T::open_restitution;
     if (std::fabs(state.rate) < .05) state.rate = 0;
   }
-  // The script opening ends at the stop, or just short of it where a heavy
-  // panel settles against the drive.
+  // The script opening ends once the panel has stopped shaking: a heavy
+  // hood rests below the target, where the spring balances its weight.
   if (state.driving && state.open && std::fabs(state.rate) < .05 &&
-      (state.angle >= g.upper - .005 ||
-       (state.angle > g.upper - .05 && std::fabs(state.rate) < .02)))
+      state.since_release > 1)
     state.driving = false;
   const bool driven = !state.open && state.driving;
   if (state.angle <= 0 && (before > 0 || driven)) {
