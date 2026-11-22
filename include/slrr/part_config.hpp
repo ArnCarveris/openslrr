@@ -133,6 +133,10 @@ struct PartConfig {
   bool has_seat = false;
   float pedals[3] = {};
   bool has_pedals = false;
+  // Gear lever knob, chassis-local metres (`shifter x y z`). Build 606
+  // stores it at car+0x9AC and keeps it at the origin when the cfg has no
+  // line, which is the case for every stock racer.
+  float shifter[3] = {};
   std::vector<PartPose> wheels;
   float max_steer = .6f, ackermann_length = 0;
   std::vector<PartPose> cameras;

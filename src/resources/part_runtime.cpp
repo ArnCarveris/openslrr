@@ -279,6 +279,10 @@ struct DriverSeat {
   // Other copies of the same driver (the bind-pose Mitch parented to the map)
   // are hidden while this seat is active, then shown again on release.
   GameRefRenderMask duplicate_mask;
+  // Gear-shift gesture: last gear seen and the physics tick it changed.
+  int gear = -1;
+  uint64_t shift_tick = 0;
+  bool shifting = false;
 };
 std::unordered_map<Object*, DriverSeat> drivers;
 
@@ -5110,6 +5114,8 @@ void release_driver(DriverSeat& seat) {
     gameref_remove(seat.render);
   seat.render = nullptr;
   seat.owned = false;
+  seat.gear = -1;
+  seat.shifting = false;
 }
 
 Object* player_render() {
@@ -5231,6 +5237,42 @@ void pose_driver() {
       std::copy(wheel_node->local_matrix, wheel_node->local_matrix + 16, wheel_m.begin());
       const float grip_r = std::max(0.04f, wheel_rim_radius(wheel) - 0.015f);
       const char* sides[2] = {"L", "R"};
+      // Gear-shift gesture (build 606, 0x0044D0C0 and 0x0044D260): on each
+      // gear change the hand on the console side (the right one when the
+      // seat is left of centre) goes to the lever knob, `shifter` plus an H
+      // offset for the new gear, and returns to the wheel 0.7 s later. The
+      // exe re-targets the hand at once; here it eases over 0.15 s each way.
+      // Physics ticks, so a pause holds the gesture.
+      static constexpr float kShiftGrid[8][3] = {
+          {0.f, 0.f, 0.f},     {-.05f, 0.f, -.05f}, {-.05f, 0.f, .05f}, {0.f, 0.f, -.05f},
+          {0.f, 0.f, .05f},    {.05f, 0.f, -.05f},  {.05f, 0.f, .05f},  {-.09f, 0.f, -.05f}};
+      const int gear = std::clamp(rec->dynamics.gear, 0, 7);
+      if (seat.gear >= 0 && gear != seat.gear) {
+        seat.shift_tick = rec->dynamics.ticks;
+        seat.shifting = true;
+      }
+      seat.gear = gear;
+      float lever_weight = 0.f;
+      if (seat.shifting) {
+        const double t = double(rec->dynamics.ticks - seat.shift_tick) *
+                         physics::VehicleDynamics::timestep;
+        if (t >= .7) seat.shifting = false;
+        else lever_weight = float(std::clamp(std::min(t, .7 - t) / .15, 0., 1.));
+      }
+      const int shift_side = rec->config->seat.position[0] < 0.f ? 1 : 0;
+      float lever[3], lever_x[3], lever_down[3];
+      {
+        const float* knob = rec->config->shifter;
+        const float* cell = kShiftGrid[gear];
+        const float p[3] = {knob[0] + cell[0], knob[1] + cell[1], knob[2] + cell[2]};
+        to_cm(p[0], p[1], p[2], lever);
+        to_cm(p[0] + .01f, p[1], p[2], lever_x);
+        to_cm(p[0], p[1] - .01f, p[2], lever_down);
+        for (int i = 0; i < 3; ++i) {
+          lever_x[i] -= lever[i];
+          lever_down[i] -= lever[i];
+        }
+      }
       for (int side = 0; side < 2; ++side) {
         const float sign = side == 0 ? -1.f : 1.f;
         const float grip_angle = sign;
@@ -5280,6 +5322,23 @@ void pose_driver() {
         };
         float tangent[3] = {rim_ahead[0] - palm[0], rim_ahead[1] - palm[1], rim_ahead[2] - palm[2]};
         float inward[3] = {centre[0] - palm[0], centre[1] - palm[1], centre[2] - palm[2]};
+        if (side == shift_side && lever_weight > 0.f) {
+          // On the knob the fist closes across the car (hole along X), palm
+          // down. Blend the hole, its axis and the palm direction.
+          const float w = lever_weight;
+          float across[3], down[3];
+          std::copy(lever_x, lever_x + 3, across);
+          std::copy(lever_down, lever_down + 3, down);
+          unit(tangent);
+          unit(inward);
+          unit(across);
+          unit(down);
+          for (int i = 0; i < 3; ++i) {
+            palm[i] += (lever[i] - palm[i]) * w;
+            tangent[i] += (across[i] - tangent[i]) * w;
+            inward[i] += (down[i] - inward[i]) * w;
+          }
+        }
         float hand_x[3] = {}, hand_y[3] = {};
         bool oriented = false;
         const bool frame = unit(tangent) && unit(inward);

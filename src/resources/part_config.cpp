@@ -325,6 +325,9 @@ PartConfig parse_part_config(const std::string &source,
         open_wheel = -1;
         for (int i = 0; i < 3; ++i) out.pedals[i] = number(t, 1 + i);
         out.has_pedals = true;
+      } else if (command == "shifter" && t.size() >= 4) {
+        open_wheel = -1;
+        for (int i = 0; i < 3; ++i) out.shifter[i] = number(t, 1 + i);
       } else if (command == "stockpart") {
         open_wheel = -1;
         out.stock.push_back(rid(t.at(1)));
