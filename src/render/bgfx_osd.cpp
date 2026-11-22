@@ -700,7 +700,12 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     const size_t count = mesh->positions.size() / 3;
     if (count > 65535) continue;
     const std::vector<uint16_t> indices(mesh->indices.begin(), mesh->indices.end());
-    const float yscale = override.defined ? -.82f : -.406f * stock_scale;
+    // CFG mesh items sit in the Osd scene: camera at z = 5.48 (Osd.CAM_OFFSET),
+    // 30 deg vertical view, so the z = 0 plane spans +-1.469 (Osd.SCALE_3D)
+    // vertically and +-1.469*aspect horizontally; items nearer (z > 0) grow.
+    const float depth = override.defined
+        ? 5.48f / std::max(5.48f - item.position[2], .1f) : 1.f;
+    const float yscale = override.defined ? -depth / 1.469f : -.406f * stock_scale;
     const float xscale = -yscale * pixel_aspect;
     const float x = override.defined ? item.position[0] * xscale : item.position[0];
     const float y = override.defined ? item.position[1] * yscale : stock_y(i);

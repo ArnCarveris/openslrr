@@ -444,6 +444,11 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   `--vehicle-osd` cfg qualifies dependency slot 2 against the installed
   `cars.rpk`, exactly as an installed car cfg does; it has no per-pack file
   fallback (`src/render/bgfx_osd.cpp:draw_vehicle_hud`).
+- CFG mesh overrides (`osd_gauge`, needles, non-font readouts) use the Osd
+  camera of `Osd.java`: `CAM_OFFSET` 5.48, 30 degree vertical view, so the
+  z = 0 plane spans +-1.469 (`SCALE_3D`) vertically and +-1.469 x aspect
+  horizontally, scaled by 5.48 / (5.48 - z). Font readout anchors are screen
+  NDC, y down. The stock table keeps its own 16:9 calibration.
 - HUD values come from `src/resources/part_runtime.cpp:part_vehicle_hud`:
   RPM, km/h, mileage, nitro, turbo, gear, and the damage gauge's parts.
 - Damage gauge (`osd_damage`, stock font `cars\meshes\osdfont.scx`): glyph
