@@ -5165,11 +5165,18 @@ void pose_driver() {
         float chassis_point[3];
         transform_point(wheel_m, std::sin(grip_angle) * grip_r, std::cos(grip_angle) * grip_r,
                         0.f, chassis_point);
+        // Closed fist: the palm is on the rim and the wrist joint ~8 cm behind
+        // it. Start with the wrist along the wheel's axis toward the driver
+        // (the seat's +Z is not that axis on a raked column).
+        float palm[3];
+        to_cm(chassis_point[0], chassis_point[1], chassis_point[2], palm);
+        physics::Vec3 axis{wheel_m[8], wheel_m[9], wheel_m[10]};
+        const physics::Vec3 to_seat{seat_m[12] - wheel_m[12], seat_m[13] - wheel_m[13],
+                                    seat_m[14] - wheel_m[14]};
+        if (axis.x * to_seat.x + axis.y * to_seat.y + axis.z * to_seat.z < 0) axis = axis * -1.;
         float target[3];
-        to_cm(chassis_point[0], chassis_point[1], chassis_point[2], target);
-        // Closed fist: the wrist joint is ~8 cm behind the palm on the rim,
-        // toward the driver (+Z in the seat frame).
-        target[2] += 7.8f;
+        to_cm(chassis_point[0] + float(axis.x) * 0.078f, chassis_point[1] + float(axis.y) * 0.078f,
+              chassis_point[2] + float(axis.z) * 0.078f, target);
         const std::string prefix = std::string("Bip01 ") + sides[side] + " ";
         const int upper = bone((prefix + "UpperArm").c_str());
         const int lower = bone((prefix + "Forearm").c_str());
@@ -5180,6 +5187,22 @@ void pose_driver() {
           character_aim_bone(seat.render, type, *index, clavicle, upper, target, 0.8f);
         const float pole[3] = {sign * 0.5f, -1.f, 0.f};
         character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
+        // A straight wrist: the fist continues the forearm onto the rim. Put
+        // the wrist 7.8 cm before the palm on the elbow-to-palm line, re-solve
+        // (two passes converge to under a millimetre), then point the hand's
+        // X axis (wrist to fingers) along it.
+        for (int pass = 0; pass < 2; ++pass) {
+          float elbow[16];
+          if (!character_bone_metres(seat.render, lower, elbow)) break;
+          float d[3] = {palm[0] - elbow[12] * 100.f, palm[1] - elbow[13] * 100.f,
+                        palm[2] - elbow[14] * 100.f};
+          const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+          if (n < 1.f) break;
+          for (int i = 0; i < 3; ++i) target[i] = palm[i] - d[i] / n * 7.8f;
+          character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
+        }
+        const float grip_dir[3] = {palm[0] - target[0], palm[1] - target[1], palm[2] - target[2]};
+        character_align_axis(seat.render, type, *index, hand, 0, grip_dir);
       }
     }
   }

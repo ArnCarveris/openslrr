@@ -1886,6 +1886,27 @@ seated animation or a full garage transition. Evidence:
 `assets/validation/driver-mask/after.txt`. No production Java/native API change.
 
 
+### Driver hands on the wheel (#302, P2)
+
+- `src/resources/part_runtime.cpp:pose_driver` aims each hand at the rim at
+  ±1 rad from the top (radius = rim radius − 1.5 cm). It used to put the wrist
+  7.8 cm behind that point along the seat's +Z and leave the hand on the
+  forearm's bind orientation.
+- Measured on stock Baiern and Enula, wheel centred and at both locks (bench
+  drive, temporary log; the "palm" is the wrist plus 8 cm along the hand
+  bone's X axis): the wrist target was always reached (reach 44–52 cm for a
+  62 cm arm, no clamping), but the palm sat 2–3 cm inside the rim, 0.5 cm at
+  Enula's right lock. On a raked column the seat's +Z is not the wheel axis,
+  so the wrist landed 4.1 cm (Baiern) or 6.5 cm (Enula) out of the wheel
+  plane instead of 7.8 cm.
+- Now the palm point is the target: the wrist goes 7.8 cm before it on the
+  elbow-to-palm line (two re-solves of the two-bone chain, starting from the
+  wheel axis), and `character_align_axis` points the hand's X axis along that
+  line. Same runs: palm within 1.2 mm of the rim point, centred and at lock,
+  on both cars; the fists close on the rim in the cockpit view.
+- Not done: P3 (gear-shift gesture). The 8 cm wrist-to-palm length is the
+  old constant, not measured on the mesh; the grip angle stays ±1 rad.
+
 ### File texture replacement and hidden preview viewports
 
 The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,
