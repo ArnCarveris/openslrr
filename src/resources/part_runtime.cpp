@@ -881,6 +881,29 @@ float comp(Object *o, const char *name) {
     return static_cast<float>(it->second.v.i);
   return 0;
 }
+// Stock Swaybar fields belong to the currently installed part, not an
+// accumulating add/remove command. Mount IDs choose the axle; CFG compatibility
+// remains authoritative, including the absence of a mount on some chassis.
+void configure_anti_roll(Record &rec) {
+  rec.dynamics.anti_roll = {};
+  if (!runtime || rec.config->native_kind != "car") return;
+  for (size_t axle = 0; axle < rec.dynamics.anti_roll.size(); ++axle) {
+    const int slot = 701 + static_cast<int>(axle);
+    const auto found = rec.children.find(slot);
+    const auto *bar = found == rec.children.end() ? nullptr : record(found->second);
+    if (!bar || bar->state.parent != rec.state.object || bar->state.parent_slot != slot ||
+        !runtime->tree_instance_of(bar->state.object, "java.game.parts.rgearpart.Swaybar"))
+      continue;
+    const double stiffness = comp(bar->state.object, "force");
+    const double damping = comp(bar->state.object, "damping");
+    const double wear = bar->state.wear, tear = bar->state.tear;
+    if (!std::isfinite(stiffness) || stiffness < 0 || !std::isfinite(damping) || damping < 0 ||
+        !std::isfinite(wear) || !std::isfinite(tear))
+      continue;
+    const double health = std::clamp(wear, 0., 1.) * std::clamp(tear, 0., 1.);
+    rec.dynamics.anti_roll[axle] = {stiffness * health, damping * health};
+  }
+}
 double nitro_capacity(Object *chassis) {
   const float capacity = comp(chassis, "tank_nitro");
   return std::isfinite(capacity) ? std::max(0.f, capacity) : 0.;
@@ -1539,8 +1562,9 @@ void refresh_chassis(Object *chassis) {
     return;
   chassis = canonical(chassis);
   auto *rec = record(chassis);
-  if (!rec || field_int(chassis, "suspend_update"))
-    return;
+  if (!rec) return;
+  configure_anti_roll(*rec);
+  if (field_int(chassis, "suspend_update")) return;
   ++refresh_depth;
   // Only installed parts write spring and damper settings during this pass.
   // Clear the old contributions so removing a part cannot leave it active.
@@ -1552,6 +1576,7 @@ void refresh_chassis(Object *chassis) {
                           {Value::make_obj(chassis)}, false);
   record(chassis)->physics_dirty = true;
   clamp_nitro(chassis, *record(chassis));
+  configure_anti_roll(*record(chassis));
   --refresh_depth;
 }
 // A native car with no script (traffic, fake racers) is finished by its cfg:
@@ -4634,6 +4659,7 @@ void advance_chassis_tick() {
         continue;
     if (substep == 0) {
       dynamics_wheels(rec);
+      configure_anti_roll(rec);
       configure_drive(chassis, rec, chassis == controlled);
     }
     if (rec.body_support_dirty) rebuild_body_support(chassis, rec);
@@ -6191,6 +6217,10 @@ bool part_physics_state(Object *key, PartPhysicsState &state) {
   state.nitro_capacity = nitro_capacity(rec->state.object);
   state.nitro_active = rec->nitro_active;
   state.nitro_flame = rec->nitro_flame;
+  for (size_t axle = 0; axle < rec->dynamics.anti_roll.size(); ++axle) {
+    state.anti_roll_stiffness[axle] = rec->dynamics.anti_roll[axle].stiffness;
+    state.anti_roll_damping[axle] = rec->dynamics.anti_roll[axle].damping;
+  }
   state.active = rec->physics_ready && !rec->physics_suspended &&
                  scene_instances_script_matrix(as_part(key), world.data());
   if (!rec->physics_ready)

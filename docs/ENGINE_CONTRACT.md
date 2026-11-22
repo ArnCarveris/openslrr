@@ -365,8 +365,10 @@ count, so visiting many packs does not retain a CRT file stream for each.
 Pack basename lookup and the generation-scoped parent/child index avoid
 repeated global scans during resource traversal. Exact path lookup still
 wins over the first-opened basename match, and children retain pack/TOC
-order. Registration/root changes invalidate derived traversal data and
-must remain quiescent as described in §6.
+order. A duplicate local type ID resolves to its first TOC entry; child
+traversal uses that same entry, so a shadowed duplicate cannot reparent or
+repeat the canonical resource. Registration/root changes invalidate derived
+traversal data and must remain quiescent as described in §6.
 
 ### Load chain
 
@@ -715,7 +717,30 @@ not read by the solver. Likewise, `setInstantCenter` values and the
 `WheelState::jacking` field are retained but have no active load effect:
 there is no instant-centre anti-dive/anti-squat force or jacking feedback.
 Wheel YPR and the existing arm/hub kinematics still affect contact geometry.
-The proposed anti-roll-bar loop is commented out, not implemented.
+Anti-roll bars are an optional host approximation, deliberately enabling a
+stock feature whose Java commands and catalog branch were dormant. The patched
+Catalog exposes the existing `parts:0220` branch on Running Gear / Suspension;
+no resource IDs, stock installations or chassis mount poses are changed.
+`part_runtime` replaces each axle's configuration from its current installed
+`Swaybar` on authored mount 701 (front) or 702 (rear). Existing generic CFG
+compatibility remains authoritative, not the part class's model/axle name.
+Finite nonnegative `force` / `damping` fields are scaled by clamped wear and
+tear; removing, moving, destroying or repairing the part is reflected by the
+next refresh/tick without an accumulated command or new save state. Extraction
+is independent of the engine and controller.
+
+The kernel reimplements the bounded chassis-couple approach found in SLRR_rev
+`77b0fb6` and `4ca11c2`, not a recovered original MWM force law. Both axle corners
+must be enabled, touching and non-rigid. After tyre evaluation, opposite world-Y
+forces act at the two suspension hardpoints, with magnitude capped at half the
+body's weight. Stiffness uses the right-minus-left solved length relative to
+each corner's own rest length (unlike the upstream raw-length rule); damping
+opposes their relative world-Y velocity. This adds no net lift and does not
+rewrite the already-evaluated tyre loads. Zero inputs leave prior behavior
+unchanged. Kernel callers' invalid coefficients act as zero; an invalid script
+coefficient pair disables that installed bar. The couple uses the same fixed
+substeps, including on passive/engine-less cars; it is not a full bar/linkage or
+same-step tyre-load-transfer model.
 
 The approved migration keeps that tyre law but corrects brake coupling.
 After the drivetrain impulse, one bearing/service/handbrake impulse budget

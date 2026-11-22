@@ -821,13 +821,15 @@ std::vector<uint32_t> RpkIndex::children_of(uint32_t parent) const {
   std::lock_guard lock(children_mutex_);
   if (children_generation_!=generation_) {
     // A newly opened dependency can change parents in already indexed packs.
-    // Rebuild once per generation, preserving pack/TOC order and duplicates.
+    // Rebuild once per generation, preserving canonical pack/TOC order.
     std::unordered_map<uint32_t,std::vector<uint32_t>> children;
     for (int32_t pi = 1; pi < pack_count(); ++pi) {
       const auto* pack = pack_by_id(pi);
       if (!pack) continue;
       for (const auto& entry : pack->entries) {
-        if (!entry.super_id) continue;
+        // A ResourceRef identifies the first entry for this local ID. A
+        // shadowed duplicate cannot supply a different parent or sibling.
+        if (find_entry(pi, entry.type_id) != &entry || !entry.super_id) continue;
         const auto id = make_full_id(pi, entry.type_id);
         const auto owner = resolve_embedded_id(pi,entry.super_id);
         if (id!=owner) children[owner].push_back(id);
