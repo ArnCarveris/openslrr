@@ -2147,6 +2147,23 @@ Check M in Valo: map tiles/roads and available markers, bottom-right driving
 view, then M again; repeat, drive to move the GPS and check garage/catalog
 previews. Evidence is in assets/validation/map-views/{before,after}.txt.
 
+### Cockpit camera as the scene camera (#318)
+
+- Stock `Track.changeCamInternal` (F1) hides the follow camera on the OSD
+  viewport, then calls `car.command("render <viewport> <controller> <cam>")`.
+  The host answers with a `_hostCockpitCamera` per chassis
+  (`src/resources/part_runtime.cpp:part_command`, verb `render`) that has
+  `cockpit_index >= 0`, follows the car and has no parent.
+- The ancestry check above then rejected it: the camera is not under the
+  selected world, so no world camera remained and only the clear colour and
+  the OSD were drawn. `src/resources/gameref.cpp:fullscreen_script_camera` now
+  checks the followed car's ancestry for a cockpit camera, so a car stored in a
+  local world (inventory, preview) still never supplies the scene camera.
+- Tests: `map_views` case `cockpit_camera_is_scene_camera` fails on `main`
+  (84517db) and passes with the fix. In game (`--bench-drive`, ValoCity,
+  Baiern, F1 posted as WM_KEYDOWN): before, an empty world; after, the city
+  seen from the car's first cfg camera.
+
 ## Authored map alpha versus colour mixing (#50)
 
 The opaque bridge and construction openings are not missing texture alpha:
