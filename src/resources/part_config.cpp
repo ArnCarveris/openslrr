@@ -90,6 +90,16 @@ PartMatrix part_matrix_inverse_rigid(const PartMatrix &m) {
     out[12 + r] = -(out[r] * m[12] + out[4 + r] * m[13] + out[8 + r] * m[14]);
   return out;
 }
+float cockpit_needle_angle(const CockpitNeedle &needle, double value) {
+  if (!std::isfinite(value))
+    value = 0;
+  float angle = static_cast<float>(value) * needle.factor + needle.offset;
+  if (angle < needle.low)
+    angle = needle.low;
+  else if (angle > needle.high)
+    angle = needle.high;
+  return std::isfinite(angle) ? angle : needle.offset;
+}
 bool part_parked_spring_length(float rest, float minimum, float maximum,
                                float force, float mass_on_wheel,
                                float &length) {
@@ -197,6 +207,24 @@ PartConfig parse_part_config(const std::string &source,
           item.defined = true;
           out.hud[slot] = std::move(item);
         }
+      } else if (command == "cockpit_rpm" || command == "cockpit_speed") {
+        // The original scanner keeps the defaults of every field after the
+        // first it cannot read. Without a render id there is no pin to draw,
+        // so a line shorter than the pose and id is reported as unknown.
+        if (t.size() < 8) {
+          out.unknown.push_back(raw);
+          continue;
+        }
+        const bool rpm = command == "cockpit_rpm";
+        CockpitNeedle item;
+        item.factor = rpm ? -0.0005f : -0.02f;
+        item.pose = pose(t);
+        item.resource = rid(t[7]);
+        float *fields[] = {&item.offset, &item.factor, &item.low, &item.high};
+        for (size_t i = 0; i < 4 && 8 + i < t.size(); ++i)
+          *fields[i] = number(t, 8 + i);
+        item.defined = item.resource != 0;
+        out.cockpit[static_cast<size_t>(rpm ? CockpitGauge::Rpm : CockpitGauge::Speed)] = item;
       } else if (command == "slot") {
         open_wheel = -1;
         PartSlot slot;
@@ -417,6 +445,11 @@ PartConfig parse_part_config(const std::string &source,
         out.unknown.push_back(raw);
     } catch (const std::exception &e) {
       if (command.starts_with("osd_")) continue;
+      // A malformed instrument line loses the pin, not the whole chassis.
+      if (command.starts_with("cockpit_")) {
+        out.unknown.push_back(raw);
+        continue;
+      }
       out.errors.push_back("line " + std::to_string(line) + " (" + command +
                            "): " + e.what());
     }
