@@ -1717,9 +1717,11 @@ bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
   sec = std::fmod(sec, 86400.f);
   if (sec < 0.f)
     sec += 86400.f;
-  // Stock night: outside 6:00..21:00. The selector starts at midnight and
-  // LIGHTS ON/OFF adds twelve hours.
-  return sec < 21600.f || sec >= 75600.f;
+  // Headlights from 17:00 to 6:00 (#313). The stock night starts at 21:00,
+  // but dusk is already dark on the default sun cycle. The selector starts at
+  // midnight and LIGHTS ON/OFF adds twelve hours.
+  constexpr float kLampOn = 17 * 3600.f, kLampOff = 6 * 3600.f;
+  return sec < kLampOff || sec >= kLampOn;
 }
 
 Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,

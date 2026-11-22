@@ -3132,7 +3132,8 @@ city at night.
   removed part has no record; a torn-off loose part, `detach_panel`, has no
   parent), and lit ones only when `part_lamp_lit` is true for their group.
 - Gates (`part_lamp_lit`, shared with the lamp glass): engine running;
-  headlights in the stock night window (before 06:00, from 21:00, on the
+  headlights before 06:00 and from 17:00 (#313; the stock night starts at
+  21:00, moved earlier because dusk is already dark), on the
   `GameLogic.time` clock); brake lights while `dynamics.drive.brake` >
   0.05 (`kBrakeLampMin`), day or night, never in the showroom preview.
   Wear: condition c = wear × tear (the `getConditionNoAttach` product of
