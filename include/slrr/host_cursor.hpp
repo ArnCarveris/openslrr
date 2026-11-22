@@ -22,6 +22,11 @@ char host_cursor_pointer();
 // Garage EC_RDRAGBEGIN/END: temporary "M" over the mode letter.
 void host_cursor_begin_camera_drag();
 void host_cursor_end_camera_drag();
+
+// MouseCursor.visible, the state MouseCursor.enable() sets. Hidden, the
+// client area shows no pointer.
+void host_cursor_set_visible(bool visible);
+bool host_cursor_visible();
 #endif
 
 }  // namespace slrr

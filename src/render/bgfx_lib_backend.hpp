@@ -470,6 +470,9 @@ class LibBgfxBackend final : public IRenderBackend {
   bool raw_mouse_ = false;
   bool camera_cursor_clipped_ = false;
   bool lmb_down_ = false;
+  // HostInput::pointer_epoch when the left/right button went down.
+  uint32_t lmb_epoch_ = 0;
+  uint32_t rmb_epoch_ = 0;
   int32_t slider_drag_index_ = -1;
   Object* inventory_drag_source_ = nullptr;
   bool inventory_dragging_ = false;

@@ -569,31 +569,15 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     const HudElement& item = override.defined ? override : stock[i];
     if (!item.resource || (slot == HudSlot::Handbrake && !hud.handbrake)) continue;
 
-    std::shared_ptr<const ScxGeometry> resource;
-    const ScxGeometry *mesh = nullptr;
-    bool opaque = false;
-    if (hud.preview_directory && override.defined) {
-      // The loose OSDPACK fixture has no RPK entries for its two custom
-      // render IDs. Resolve those from the SCX and PNG beside cfg.txt.
-      const bool font = item.resource == 0x0002baa4 && slot == HudSlot::Rpm;
-      const bool pin = item.resource == 0x0002baa5 && slot == HudSlot::RpmPin;
-      if (font || pin) {
-        opaque = pin; // The loose fixture's fff.PNG has zero alpha everywhere.
-        const std::filesystem::path dir(*hud.preview_directory);
-        const auto path = (dir / "meshes" / (font ? "font.scx" : "osdpin.SCX")).string();
-        auto [entry, fresh] = hud_preview_meshes_.try_emplace(path);
-        if (fresh) {
-          entry->second = load_scx_geometry(path);
-          entry->second.textures = {(dir / "textures" / (font ? "font.png" : "fff.PNG")).string()};
-        }
-        mesh = &entry->second;
-      } else if ((item.resource >> 16) == 2) {
-        resource = scene_instances_geometry(cars_resource(item.resource & 0xffff));
-      }
-    } else {
-      resource = scene_instances_geometry(item.resource);
-    }
-    if (!mesh) mesh = resource.get();
+    // A loose --vehicle-osd cfg has no owning RPK. Car packs list cars.rpk as
+    // dependency slot 2, so qualify those ids exactly as an installed car cfg
+    // would; custom renders then come from the installed (pack) cars.rpk.
+    const uint32_t render = hud.preview_directory && override.defined
+        ? ((item.resource >> 16) == 2 ? cars_resource(item.resource & 0xffff) : 0)
+        : item.resource;
+    if (!render) continue;
+    const std::shared_ptr<const ScxGeometry> resource = scene_instances_geometry(render);
+    const ScxGeometry *mesh = resource.get();
     if (!mesh || !mesh->info.ok) continue;
     if (slot == HudSlot::Damage || slot == HudSlot::Nitro || slot == HudSlot::Turbo) {
       const bool damage = slot == HudSlot::Damage;
@@ -670,8 +654,11 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       }
       continue;
     }
-    if (slot == HudSlot::Rpm || slot == HudSlot::Speed ||
-        slot == HudSlot::Gear || slot == HudSlot::Mileage) {
+    // Only a font render (RSD flags bit 4) spells the readout; any other render
+    // on these slots falls through and is drawn whole like osd_gauge.
+    if ((slot == HudSlot::Rpm || slot == HudSlot::Speed ||
+         slot == HudSlot::Gear || slot == HudSlot::Mileage) &&
+        hud_render_draws_text(rpk_payload_prop(render, "flags"))) {
       char buffer[128]{};
       if (slot == HudSlot::Gear) {
         const std::string labels = item.format.empty() ? "N123456R" : item.format;
@@ -720,7 +707,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     draw(*mesh, 0, count, indices.data(), indices.size(),
          x, y,
          xscale * mesh->position_scale, yscale * mesh->position_scale,
-         angle, 0, 0, item.color, opaque,
+         angle, 0, 0, item.color, false,
          slot == HudSlot::Gauge && !override.defined && !mesh->groups.empty() &&
              mesh->groups.front().material_type == 3u);
   }

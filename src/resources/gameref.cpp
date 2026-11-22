@@ -257,6 +257,14 @@ void gameref_set_matrix(void* key, float px, float py, float pz, float yaw,
   n->ypr[2] = roll;
   std::fill(std::begin(n->vel), std::end(n->vel), 0.f);
   std::fill(std::begin(n->angular_vel), std::end(n->angular_vel), 0.f);
+  // ROCTrack.moveCamera and City.startRace stage the bound follow camera and
+  // keep the binding until the race starts. Put the body there and hold it.
+  if (n->kind == GameRefKind::Camera && n->follow_vehicle && n->cockpit_index < 0 &&
+      !n->camera_free) {
+    std::copy_n(n->pos, 3, n->eye_s);
+    std::fill(std::begin(n->eye_vel), std::end(n->eye_vel), 0.f);
+    n->cam_pose_init = n->follow_hold = true;
+  }
 }
 
 void gameref_set_event_mask(void* key, int32_t mask) {
@@ -506,6 +514,8 @@ bool gameref_scene_command(void* key, const std::string& line) {
     st->look_id = id;
     std::copy(off, off + 3, st->look_off);
     st->aim_look = true;
+    st->angle_gain = st->angle_rate = 0.f;  // native look clears angle
+    st->follow_hold = false;
     refresh_aim(st);
     return false;
   }
@@ -530,6 +540,8 @@ bool gameref_scene_command(void* key, const std::string& line) {
         st->cam_distance = st->script_dist_max;
     }
     st->aim_move = true;
+    st->angle_gain = st->angle_rate = 0.f;  // native move clears angle
+    st->follow_hold = false;
     refresh_aim(st);
     return false;
   }
@@ -581,6 +593,16 @@ bool gameref_scene_command(void* key, const std::string& line) {
   if (std::strcmp(word, "farplane") == 0) {
     std::sscanf(text, "%*s %f", &st->dmax);
     return false;
+  }
+  if (std::strcmp(word, "angle") == 0) {
+    float a[3] = {};
+    std::sscanf(text, "%*s %f %f %f", &a[0], &a[1], &a[2]);
+    st->angle_offset = a[0];
+    st->angle_gain = a[1];
+    st->angle_rate = a[2];
+    // The optional phase time is unused by stock scripts; start from here.
+    st->angle_seed = a[2] != 0.f;
+    return true;
   }
   return std::strcmp(word, "torque") == 0;
 }
@@ -754,6 +776,38 @@ void drive_orbit(GameRefState* cam, const float* hub, float dist, float frame_dt
   }
 }
 
+// Held follow body: it stays where the script put it, looks at the target,
+// keeps inside the dist range and turns toward the `angle` goal. Relative
+// azimuth 0 is behind the target. The native angle is a spring force on the
+// camera body; this is a first-order step toward the same goal.
+static void held_follow_pose(GameRefState& cam, const float* center, float heading,
+                             float dt) {
+  float d[3] = {cam.eye_s[0] - center[0], cam.eye_s[1] - center[1],
+                cam.eye_s[2] - center[2]};
+  if (cam.angle_gain > 0.f && dt > 0.f) {
+    const float rel = std::remainder(std::atan2(d[0], d[2]) - heading, 6.2831853f);
+    float goal = cam.angle_offset;
+    if (cam.angle_rate != 0.f) {
+      if (cam.angle_seed) cam.angle_phase = rel;
+      else cam.angle_phase = std::remainder(cam.angle_phase + cam.angle_rate * dt, 6.2831853f);
+      cam.angle_seed = false;
+      goal = cam.angle_phase;
+    }
+    const float step = std::remainder(goal - rel, 6.2831853f) *
+                       -std::expm1(-dt * cam.angle_gain);
+    const float c = std::cos(step), s = std::sin(step), x = d[0], z = d[2];
+    d[0] = x * c + z * s;
+    d[2] = z * c - x * s;
+  }
+  const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  const float lo = cam.script_dist_min, hi = cam.script_dist_max;
+  const float scale = len < 1e-4f ? 1.f : len > hi ? hi / len : len < lo ? lo / len : 1.f;
+  // The target pulled away or the player took the view: chase again.
+  if (dt > 0.f && cam.angle_gain <= 0.f && (len > hi + .5f || host_input().rmb_down))
+    cam.follow_hold = false;
+  for (int i = 0; i < 3; ++i) cam.eye_s[i] = center[i] + d[i] * scale;
+}
+
 static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
                                 float* up, float dt) {
   using physics::Vec3;
@@ -794,6 +848,14 @@ static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
     return true;
   }
 
+  // The chase look is transient: once the right button is released the view
+  // swings back behind the car. The garage orbit and the free camera above
+  // keep their angle. The rate is not measured against the original game.
+  if (dt > 0.f && !host_input().rmb_down) {
+    const float keep = std::exp(-dt * 3.f);
+    cam.orbit_yaw *= keep;
+    cam.orbit_pitch *= keep;
+  }
   // SLRR_rev FollowCamera keeps the car's actual translation and damps
   // the offset. This avoids camera lag when a render frame has fewer ticks.
   const double azimuth = std::atan2(frame[8], frame[10]) + cam.orbit_yaw +
@@ -814,6 +876,9 @@ static bool driving_camera_pose(GameRefState& cam, float* eye, float* at,
   if (!cam.cam_pose_init) {
     std::copy_n(position, 3, cam.eye_s);
     cam.cam_pose_init = true;
+  } else if (cam.follow_hold || cam.angle_gain > 0.f) {
+    cam.follow_hold = true;
+    held_follow_pose(cam, center, float(std::atan2(frame[8], frame[10])), dt);
   } else {
     const float weight = -std::expm1(-dt * (cam.follow_variant ? 9.f : 5.f));
     for (int i = 0; i < 3; ++i)
@@ -994,8 +1059,8 @@ bool gameref_world_camera_can_drag() {
                  (cam->aim_move && cam->aim_look && cam->move_dist > .25f));
 }
 
-void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
-                                float zoom_axis, float dt) {
+void gameref_orbit_world_camera(float yaw_delta, float pitch_delta, float key_yaw,
+                                float key_pitch, float zoom_axis, float dt) {
   auto& in = host_input();
   float ax = 0.f;
   float ay = 0.f;
@@ -1006,10 +1071,8 @@ void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
     ax = std::max(-1.f, std::min(1.f, ax));
     ay = std::max(-1.f, std::min(1.f, ay));
   }
-  if (in.keys_left) ax += 0.005f;
-  if (in.keys_right) ax -= 0.005f;
-  if (in.keys_up) ay += 0.003f;
-  if (in.keys_down) ay -= 0.003f;
+  ax += key_yaw;
+  ay += key_pitch;
   GameRefState* cam = fullscreen_script_camera();
   if (cam && (cam->camera_free || (cam->follow_vehicle && cam->cockpit_index < 0))) {
     cam->orbit_yaw = std::remainder(cam->orbit_yaw + in.mouse_dx * .003f, 6.2831853f);

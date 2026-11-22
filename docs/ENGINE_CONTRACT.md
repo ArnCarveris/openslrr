@@ -1312,6 +1312,21 @@ the rebind listener, axes, hotkeys, and focus. Do not bypass the mapping with
 a key hardcoded in driving. The listener must allow primary and secondary
 commands and the other control menus.
 
+Pointer gestures have one owner at a time. A loading plate (`LoadingScreen`
+overlay or dialog) takes every click; a section change, a modal or a movie
+takes the 3D-view clicks, including the Mechanic's part clicks. Starting or
+ending a plate or a section change cancels latched clicks and every held
+button (`host_input_cancel_pointer_gestures`): its release clicks nothing, and
+only a fresh press counts. The right button starts a camera drag only when the
+world camera can be dragged (`gameref_world_camera_can_drag`), never in menus.
+Camera look keys are the controller's bindings (stock `CAMTURNSET`), not raw
+arrows, so a script that resets to `DRIVERSET` stops the orbit. The pointer is
+visible while `MouseCursor.visible` (set by `MouseCursor.enable`) is nonzero.
+The driving chase look returns behind the car after the drag. A script
+`setMatrix` on the bound follow camera holds it in place until the car pulls
+the `dist` range taut, and `angle offset gain rate` turns a held follow camera
+around the car (relative azimuth 0 is behind it).
+
 SDL3 owns joystick/gamepad discovery and polling on that same host thread;
 Win32 still owns the window, keyboard scan codes and mouse. Devices 0/1 remain
 `SysKeyboard`/`SysMouse`. Device 2 keeps the saved name `XInput Gamepad` and its

@@ -2470,12 +2470,38 @@ std::string map_texture_key(std::string path) {
       }
       host_cursor_end_camera_drag();
     };
+    const auto cancel_left = [&] {
+      if (!self) return;
+      self->lmb_down_ = false;
+      self->slider_drag_index_ = -1;
+      self->inventory_drag_source_ = nullptr;
+      if (self->inventory_dragging_) host_cursor_set_pointer(self->inventory_drag_cursor_);
+      self->inventory_dragging_ = false;
+    };
+    // A loading plate covers the OSD and the scene under it is going away.
+    // Button messages queued before the last loading/section boundary were
+    // made over the plate, so they count as made under it.
+    const bool loading_covers =
+        osd_loading_dialog() || !osd_loading_overlay().empty() ||
+        ((msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN) &&
+         static_cast<int32_t>(static_cast<uint32_t>(GetMessageTime()) - in.pointer_cancel_ms) < 0);
+    // Gestures held across a loading or section boundary are cancelled; the
+    // button has to go down again (host_input_cancel_pointer_gestures).
+    if (self && self->lmb_down_ && self->lmb_epoch_ != in.pointer_epoch) cancel_left();
+    if (self && in.rmb_down && self->rmb_epoch_ != in.pointer_epoch) {
+      end_camera_drag();
+      in.look_yaw = in.look_pitch = in.mouse_dx = in.mouse_dy = 0.f;
+    }
     if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN) {
       SetCapture(hwnd);
-      if (msg == WM_RBUTTONDOWN) {
+      // Only a draggable world camera takes the right button: not menus,
+      // modals, movies, loading plates or a section change.
+      if (msg == WM_RBUTTONDOWN && self && gameref_world_camera_can_drag() &&
+          !osd_has_modal() && !video_fmv_block_osd() && !loading_covers &&
+          !scene_transition_active()) {
         in.rmb_down = true;
-        if (self && self->raw_mouse_ && gameref_world_camera_can_drag() &&
-            !osd_has_modal() && !video_fmv_block_osd()) {
+        self->rmb_epoch_ = in.pointer_epoch;
+        if (self->raw_mouse_) {
           POINT cursor;
           if (GetCursorPos(&cursor)) {
             const RECT clip{cursor.x, cursor.y, cursor.x + 1, cursor.y + 1};
@@ -2488,6 +2514,13 @@ std::string map_texture_key(std::string path) {
       if (msg == WM_LBUTTONDOWN && self) {
         self->lmb_x_ = static_cast<short>(LOWORD(lp));
         self->lmb_y_ = static_cast<short>(HIWORD(lp));
+        self->lmb_epoch_ = in.pointer_epoch;
+        // A press on a loading plate is no gesture: its release must not
+        // click whatever is shown once the plate closes.
+        if (loading_covers) {
+          cancel_left();
+          return 0;
+        }
         self->lmb_down_ = true;
         float x, y;
         osd_pixel_to_text(self->lmb_x_, self->lmb_y_, self->width_, self->height_, &x, &y);
@@ -2497,7 +2530,7 @@ std::string map_texture_key(std::string path) {
                                           ? nullptr : osd_inventory_drag_source_at(x, y);
         self->inventory_dragging_ = false;
         if (slider_hit < 0 && !self->inventory_drag_source_ && !video_fmv_block_osd() &&
-            !osd_has_modal() && !in.rmb_down) {
+            !osd_has_modal() && !in.rmb_down && !scene_transition_active()) {
           in.world_button = true;
           in.world_press = true;
         }
@@ -2506,7 +2539,9 @@ std::string map_texture_key(std::string path) {
     }
     if (msg == WM_SETCURSOR) {
       if (LOWORD(lp) == HTCLIENT) {
-        SetCursor(reinterpret_cast<HCURSOR>(host_cursor_current()));
+        // MouseCursor.enable(0) hides the pointer (driving, for example).
+        SetCursor(host_cursor_visible()
+                      ? reinterpret_cast<HCURSOR>(host_cursor_current()) : nullptr);
         return TRUE;
       }
       return DefWindowProcA(hwnd, msg, wp, lp);
@@ -2547,11 +2582,12 @@ std::string map_texture_key(std::string path) {
                           self->height_, &ox, &oy);
         const int32_t hit = osd_hit_index(ox, oy);
         const OsdWidget* clicked = hit >= 0 ? osd_widget_at(hit) : nullptr;
-        if (!video_fmv_block_osd() && clicked && !clicked->disabled &&
+        if (!video_fmv_block_osd() && !loading_covers && clicked && !clicked->disabled &&
             host_input_allow_ui(clicked->cmd, true)) {
           host_sfx_play(HostSfx::MenuSelect);
           osd_fire_click_at(ox, oy);
-        } else if (!video_fmv_block_osd() && !clicked && !osd_has_modal()) {
+        } else if (!video_fmv_block_osd() && !loading_covers && !clicked &&
+                   !osd_has_modal() && !scene_transition_active()) {
           in.part_click = true;
           in.part_click_x = self->lmb_x_;
           in.part_click_y = self->lmb_y_;

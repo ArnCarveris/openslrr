@@ -126,6 +126,15 @@ struct GameRefState {
   int follow_variant = 0;
   bool camera_free = false, camera_autozoom = false, camera_attached = false;
   float camera_roll = 0.f;
+  // `angle offset gain rate` (native handler 0x43af6d, update 0x439d3c): goal
+  // azimuth around the target, relative to its heading (0 = behind); a gain
+  // <= 0 is off; a nonzero rate turns the goal from the current azimuth.
+  // look, move and a controller rebind clear it.
+  float angle_offset = 0.f, angle_gain = 0.f, angle_rate = 0.f, angle_phase = 0.f;
+  bool angle_seed = false;
+  // A script setMatrix (or angle) holds the driving follow body where it is
+  // until the target pulls the dist rope taut (ROC and day race staging).
+  bool follow_hold = false;
   float vp_x = 0.f, vp_y = 0.f, vp_w = 1.f, vp_h = 1.f;
   int32_t vp_pri = 0;
   int32_t vp_flags = 0;
@@ -290,8 +299,9 @@ bool gameref_world_camera(float eye[3], float at[3], float* fov, float* znear,
 void gameref_activate_camera(GameRefState& camera, GameRefState& viewport, int priority);
 void gameref_advance_world_camera(float dt);
 bool gameref_world_camera_can_drag();
-void gameref_orbit_world_camera(float yaw_delta, float pitch_delta,
-                                float zoom_axis, float dt);
+// key_yaw / key_pitch: controller look axes (host_input_camera_axis).
+void gameref_orbit_world_camera(float yaw_delta, float pitch_delta, float key_yaw,
+                                float key_pitch, float zoom_axis, float dt);
 std::vector<GameRefState*> gameref_nodes_with_mesh();
 std::vector<GameRefState*> gameref_render_nodes();
 void gameref_register_light(void* key);

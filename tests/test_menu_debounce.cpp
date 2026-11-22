@@ -1,6 +1,8 @@
 #include "save_io_fixture.hpp"
 #include "slrr/script_compiler.hpp"
 #include "slrr/host_input.hpp"
+#include "slrr/scene_presentation.hpp"
+#include <cmath>
 #include <thread>
 using namespace slrr;
 void debounce(){
@@ -33,4 +35,37 @@ void debounce(){
  std::puts("PASS held input, shared MENU/CANCEL/physical Escape debounce, release, driving and independent accept");
 }
 
-int main(){const standalone::Test tests[]={debounce};return standalone::run("menu_debounce",tests);}
+// #295: loading and section boundaries cancel latched and held pointer input.
+void pointer_gestures(){
+ auto& in=host_input();
+ in.part_click=in.world_press=in.world_button=true;in.world_release=false;
+ const uint32_t epoch=in.pointer_epoch;
+ host_input_cancel_pointer_gestures();
+ SLRR_REQUIRE(!in.part_click&&!in.world_press&&!in.world_button&&in.world_release);
+ SLRR_REQUIRE(in.pointer_epoch==epoch+1);
+ in.world_release=false;
+ {
+  SceneTransitionScope outer(true);SLRR_REQUIRE(in.pointer_epoch==epoch+2);
+  in.part_click=true;
+  {SceneTransitionScope inner(true);SceneTransitionScope off(false);}
+  SLRR_REQUIRE(in.pointer_epoch==epoch+2&&in.part_click); // nested scopes are one boundary
+ }
+ SLRR_REQUIRE(in.pointer_epoch==epoch+3&&!in.part_click);
+ std::puts("PASS click latch, world button and held gestures cancelled at loading/section boundaries");
+}
+// #296: arrow-key look is the controller's CAMTURNSET binding, not a raw key.
+void camera_look_axes(){
+ Object controller;controller.input=std::make_unique<ControllerInput>();
+ host_input_clear_keys();host_input_key(0xcb,true);
+ SLRR_REQUIRE(host_input_camera_axis(&controller,7)==0.f); // DRIVERSET: no look binding
+ SLRR_REQUIRE(host_input_camera_axis(nullptr,7)==0.f);
+ controller.input->bindings.push_back({7,0,0xcb,0.f,1.f,0.f,.005f});
+ controller.input->bindings.push_back({7,1,0,-1.f,1.f,-1.f,1.f}); // mouse look: the host drag owns it
+ SLRR_REQUIRE(std::abs(host_input_camera_axis(&controller,7)-.005f)<1e-6f);
+ SLRR_REQUIRE(host_input_camera_axis(&controller,8)==0.f);
+ host_input_clear_keys();
+ SLRR_REQUIRE(host_input_camera_axis(&controller,7)==0.f);
+ std::puts("PASS look keys follow controller bindings");
+}
+
+int main(){const standalone::Test tests[]={debounce,pointer_gestures,camera_look_axes};return standalone::run("menu_debounce",tests);}

@@ -149,5 +149,7 @@ class RpkIndex {
 // so the interpreter can keep the pack instead of a bare local id.
 void rpk_set_active(const RpkIndex* index);
 uint32_t rpk_resolve_resource(const std::string& pack, uint32_t local);
+// First RSD value of `key` for a pack-qualified id in the active index.
+std::string rpk_payload_prop(uint32_t full_id, const char* key);
 
 }  // namespace slrr

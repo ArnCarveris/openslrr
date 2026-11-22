@@ -435,6 +435,15 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
 - `src/render/bgfx_osd.cpp:draw_vehicle_hud` draws the stock instrument
   layout from a hard-coded table, scaled by `stock_scale = 0.5625 / (h/w)`.
   CFG `osd_*` lines (`include/slrr/part_config.hpp:HudSlot`) override it.
+- `osd_rpm/speed/gear/mileage` spell their value only when the render's RSD
+  `flags` has bit 4 (stock lcdfont/osdfont/slider renders: `flags 4.000`);
+  build 606 picks its font batch from that bit (0x0052CF2C). Any other render
+  is drawn whole like `osd_gauge`: Easy Forza OSD puts its gauge plate
+  (`cars:0xBAA4`, `flags 1152.000`, a one-quad SCX) on `osd_rpm`
+  (`include/slrr/vehicle_hud_damage.hpp:hud_render_draws_text`). A loose
+  `--vehicle-osd` cfg qualifies dependency slot 2 against the installed
+  `cars.rpk`, exactly as an installed car cfg does; it has no per-pack file
+  fallback (`src/render/bgfx_osd.cpp:draw_vehicle_hud`).
 - HUD values come from `src/resources/part_runtime.cpp:part_vehicle_hud`:
   RPM, km/h, mileage, nitro, turbo, gear, and the damage gauge's parts.
 - Damage gauge (`osd_damage`, stock font `cars\meshes\osdfont.scx`): glyph
