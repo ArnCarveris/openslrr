@@ -14,9 +14,10 @@
 // The panel is a rigid plate on that hinge: it is latched while closed, a
 // script open/close drives it, a hit can release the latch and swing it, and
 // once free it reacts to gravity, the carrier's acceleration and rotation, and
-// the relative wind, with damped end stops. All constants are an OpenSLRR host
-// design; the original executable's flap solver is not recovered, and SLRR_rev
-// (77b0fb6) has no flap native.
+// the relative wind, with damped end stops. The script open/close spring
+// (gain 60, 95% open target) is build 606's (flap solver 0x0043F850); the
+// other constants are an OpenSLRR host design, and SLRR_rev (77b0fb6) has no
+// flap native.
 namespace slrr::physics {
 
 struct FlapGeometry {
@@ -113,9 +114,11 @@ struct FlapTuning {
   static constexpr double closed_restitution = .3;
   static constexpr double open_restitution = .25;
   static constexpr double friction = .8;         // hinge viscous damping, 1/s
-  static constexpr double drive_frequency = 9;   // script drive, rad/s (critically damped)
+  static constexpr double script_spring = 60;    // script open/close spring, 1/s^2 (build 606)
+  static constexpr double open_fraction = .95;   // script open target, share of the travel (build 606)
+  static constexpr double script_damping = 2.3;  // damping of the open spring, 1/s (host; zeta ~0.15)
   static constexpr double drive_limit = 60;      // rad/s^2
-  static constexpr double hold_margin = .35;     // drive target past the stop, rad
+  static constexpr double hold_margin = .35;     // close target past the closed pose, rad
   static constexpr double hold_detent = .5;      // strut floor (a door check), rad/s^2
   static constexpr double hold_giveway = .35;    // forced this far off the stop, it lets go (rad)
   static constexpr double air_density = 1.225;

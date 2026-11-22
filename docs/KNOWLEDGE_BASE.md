@@ -307,8 +307,8 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    `src/physics/wheel_mount.cpp:pre_contact_velocity`). Without a dyno the car
    has no drive torque; `engine_lost` keeps `collide_chassis` running for it.
 9. A part on a CFG `flap` slot (doors, hood, trunk) is a latched hinged plate
-   (`src/physics/flap_hinge.cpp:flap_step`). `Part.flap`/`flap_toggle` drive
-   it, `damage_chassis` hands each impact to
+   (`src/physics/flap_hinge.cpp:flap_step`). `Part.flap`/`flap_toggle` push
+   it with build 606's spring (#327, below), `damage_chassis` hands each impact to
    `src/resources/part_runtime.cpp:flap_impact`, which can release the latch
    and swing it, and `advance_flaps` integrates it at 240 Hz on frame time
    with gravity, the carrier's velocity change and wind, then re-places it
@@ -850,7 +850,7 @@ Process:
 | Ambient start range | 250 m beyond the CFG radius | `src/resources/scene_ambience.cpp:scene_ambience_audible` |
 | Chassis wall probe | four spheres of 0.18 m | `src/resources/part_runtime.cpp:collide_chassis` |
 | Tyre reference scaling (`8ac2ba9`) | friction / 1.76863, stiffness / 17.6839, sliction / 0.814, each clamped; nominal lateral peak multiplier 1.42 before load/slip factors | `src/physics/tire_model.cpp:tire_forces` |
-| Hinged panel step / latch release / tear-off | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
+| Hinged panel step / latch release / tear-off / script spring | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap / 60 s⁻² toward 95% open (build 606), damping 2.3 s⁻¹ | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
 | Prop cell | 64 m | `src/resources/scene_instances.cpp:kPropCellSize` |
 | Shadow maps | 2048² | `src/render/bgfx_lib_backend.hpp:kShadowResolution` |
 | Pedestrian radius / density scale | 400 m / ×4 | `src/resources/part_runtime.cpp:tick_pedestrians` |
@@ -4171,3 +4171,31 @@ Verified on the PR branch (f422ebb), by reading the code; not run in game.
 - `host_input_cancel_pointer_gestures` turns a held world button into a
   `world_release`, which `dispatch_world_pointer` emits as cursor event 2
   in the frame after the boundary, without a matching press in that scene.
+
+### Doors and hoods open with build 606's spring (#327, from #204)
+
+- Before: a script open/close (`Part.flap`, `flap_toggle`) drove the hinge
+  with a critically damped servo (9 rad/s): the panel glided to its stop like
+  an interpolation. In the original game it visibly shakes.
+- Build 606 (read-only disassembly): `flap_toggle` (0x00474B00, switch on the
+  command) only sets flag 2 (open) or 4 (close) at joint+0x88, bit 1 being
+  the latch (0x0043F280 releases it). The flap solver (0x0043F850; the drive
+  at 0x0044030D) adds `gain * (target - edge) * dt` to the free edge's
+  velocity, with no damping term there: open targets the edge at
+  `0.05 lo + 0.95 hi` of the CFG travel and close the `lo` pose, both with
+  gain 60 (0x42700000); otherwise the gain is a per-joint value at +0x34,
+  used only above 0.1. Gravity acts on the same edge, so a heavy hood sags
+  about 9.81 / 60 m below the target. Not decoded: the term scaled by
+  joint+0x7C at 0x0043FF05 (likely a damping), and the CFG field order of
+  +0x24 / +0x28 / +0x34.
+- OpenSLRR (`src/physics/flap_hinge.cpp:flap_step`, `FlapTuning`): the open
+  hold is `script_spring * (0.95 upper - angle) - script_damping * rate`
+  (60 s⁻², 2.3 s⁻¹, a host damping ratio near 0.15 in place of the undecoded
+  term), the close drive the same spring aimed 0.35 rad through the closed
+  pose. The opening counts as finished once the panel has been free for 1 s
+  and moves under 0.05 rad/s; the weaker door-check limit applies only then.
+- Simulated (Baiern door, 1.134 rad travel): it reaches the stop at 0.25 s,
+  falls back to 0.95, returns to the stop at 0.8 s and rests near 1.05-1.08
+  by about 1.2 s. The Baiern hood rests near 0.66 of its 0.873 travel. A close
+  latches in 0.2 s. Tests: `tests/test_flap_hinge.cpp` (12/12), including the
+  overshoot onto the stop and the fall back below the target.
