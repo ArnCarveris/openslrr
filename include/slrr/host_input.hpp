@@ -27,7 +27,7 @@ struct ControllerInput {
   std::unordered_map<int, float> forced_axes;
 };
 
-// Shared Win32 → script and camera orbit input.
+// Shared Win32 keyboard/mouse and SDL3 peripherals → script and camera orbit input.
 struct HostInput {
   // Instantaneous look axes (consumed / decayed each tick).
   float look_yaw = 0.f;    // AXIS_LOOK_LEFTRIGHT (7)
@@ -66,6 +66,7 @@ struct HostInput {
   float drive_clutch = 0.f, drive_shift = 0.f;
   float free_camera_x = 0.f, free_camera_y = 0.f, free_camera_z = 0.f;
   bool drive_horn = false;
+  float drive_nitro = 0.f;
   bool drive_reverse = false, drive_handbrake = false;
   // --bench-drive: >= 0 replaces throttle, brake and steering.
   float bench_throttle = -1.f;

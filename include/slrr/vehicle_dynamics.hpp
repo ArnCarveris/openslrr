@@ -140,6 +140,9 @@ struct DriveInput {
   // Net open-throttle crank torque (Nm) at the requested rpm, including
   // the shared mechanical friction loss; the solver applies no extra gain.
   std::function<double(double)> torque;
+  // Optional wet dyno bank. Empty/zero leaves the existing dry drive unchanged.
+  std::function<double(double)> nitro_torque;
+  double nitro = 0;
 };
 double suspension_force(double length, double velocity, double rest,
                         double maximum, double spring, double bump,
@@ -183,6 +186,8 @@ public:
   void reset_clock();
   void release_wheels();
   void reset_drive();
+  // Fraction of the upcoming engine step allowed by the existing rev limiter.
+  double engine_limit_fraction() const;
   uint64_t backlog() const;
   void sync_wheels();
 
