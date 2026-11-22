@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -509,7 +511,8 @@ float field_of(const std::unordered_map<std::string, float>& fields, const char*
 
 struct Session {
   Bank state;
-  Curve curve;
+  // Immutable once published: a sampler may keep it after a recalculation.
+  std::shared_ptr<const Curve> curve = std::make_shared<Curve>();
   DynoStats stats;
 };
 
@@ -645,7 +648,7 @@ bool calculate_into(Session* session, const std::unordered_map<std::string, floa
     }
   }
   session->state = s;
-  session->curve = std::move(next);
+  session->curve = std::make_shared<const Curve>(std::move(next));
   session->stats = stats;
   return true;
 }
@@ -701,7 +704,15 @@ bool dyno_calculate(void* key, const std::unordered_map<std::string, float>& fie
 float dyno_sample(void* key, float rpm, float nitro, bool watts) {
   const auto it = g_sessions.find(key);
   if (it == g_sessions.end()) return 0.f;
-  return sample_curve(it->second.curve, rpm, nitro, watts);
+  return sample_curve(*it->second.curve, rpm, nitro, watts);
+}
+
+std::function<double(double)> dyno_torque_function(void* key, float nitro) {
+  const auto it = g_sessions.find(key);
+  if (it == g_sessions.end()) return [](double) { return 0.0; };
+  return [curve = it->second.curve, nitro](double rpm) {
+    return static_cast<double>(sample_curve(*curve, static_cast<float>(rpm), nitro, false));
+  };
 }
 
 float dyno_boost_fraction(void* key, float rpm) {
@@ -728,7 +739,7 @@ bool dyno_self_check(char* msg, std::size_t msg_cap) {
   std::string error;
   if (!calculate_into(&fresh, {{"maxRPM", 7000.f}}, 16.f, &error))
     return fail(error.c_str());
-  const Curve& curve = fresh.curve;
+  const Curve& curve = *fresh.curve;
   if (curve.rpm_step != 437.f || curve.torque.size() != 16 || curve.watts.size() != 16)
     return fail("dyno table shape");
   // Preserve the recovered cycle-work witness, not its legacy non-SI scales.
@@ -748,7 +759,7 @@ bool dyno_self_check(char* msg, std::size_t msg_cap) {
   }
   Session tuned;
   if (!calculate_into(&tuned, {{"maxRPM", 7000.f}}, 28.f, &error)) return fail(error.c_str());
-  const float base = tuned.curve.torque[14];
+  const float base = tuned.curve->torque[14];
   if (!calculate_into(&tuned,
                       {{"maxRPM", 7000.f},
                        {"rpm_turbo_mul", 1.f},
@@ -757,15 +768,15 @@ bool dyno_self_check(char* msg, std::size_t msg_cap) {
                        {"P_turbo_max", 0.8f}},
                       28.f, &error))
     return fail(error.c_str());
-  if (!(tuned.curve.torque[14] > base)) return fail("dyno turbo did not raise torque");
+  if (!(tuned.curve->torque[14] > base)) return fail("dyno turbo did not raise torque");
   if (!calculate_into(&tuned, {{"maxRPM", 7000.f}, {"nitro_H", 1.2f}, {"nitro_cooling", 0.9f}},
                       28.f, &error))
     return fail(error.c_str());
-  if (tuned.curve.nitro_torque.size() <= 14 ||
-      !(tuned.curve.nitro_torque[14] > tuned.curve.torque[14]))
+  if (tuned.curve->nitro_torque.size() <= 14 ||
+      !(tuned.curve->nitro_torque[14] > tuned.curve->torque[14]))
     return fail("dyno nitrous bank");
   if (!calculate_into(&tuned, {{"maxRPM", 7000.f}}, 28.f, &error)) return fail(error.c_str());
-  if (!tuned.curve.nitro_torque.empty() || !tuned.curve.nitro_watts.empty())
+  if (!tuned.curve->nitro_torque.empty() || !tuned.curve->nitro_watts.empty())
     return fail("dyno stale nitrous bank was retained");
   Session bad;
   if (calculate_into(&bad, {{"stroke", 1.f}}, 28.f, &error)) return fail("dyno geometry accepted");

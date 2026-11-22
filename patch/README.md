@@ -1,6 +1,6 @@
 # OpenSLRR Enhanced
 
-Copy the `sl`, `system` and `parts` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class` and the `parts` classes. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. Install the three `parts` port-flow classes together: the block classes call the updated CylinderHead helper. The Java sources of OptionsDialog, Garage, the light classes and the `parts` classes are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
+Copy the `sl`, `system` and `parts` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class` and the `parts` classes. `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. Install the three `parts` port-flow classes together: the block classes call the updated CylinderHead helper. `parts` also replaces `AirFuelDeliverySystem.class` (fuel heat). The Java sources of OptionsDialog, Garage, the light classes and the `parts` classes are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
 
 The **Video Options** menu applies the resolution and the Enhanced settings in game. Exterior scenery range is 3 km. The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
 
@@ -149,3 +149,29 @@ powershell -File scripts/run_save_io_tests.ps1 -Suite port_flow
 The compiler reports one head class and two block classes. The tests execute the
 shipped helper in the VM and cover SI/script-unit agreement, low-lift linearity,
 throat saturation, volume/valve-count/wear/efficiency scaling and zero geometry.
+
+## Fuel heat (#203)
+
+`AirFuelDeliverySystem.class` sets the heat each fuel releases per kg of
+charge to its lower heating value divided by its stoichiometric air:fuel ratio,
+instead of about 1.1 MJ/kg times 1.55:
+
+| Fuel | Lower heating value | Stoichiometric ratio | Heat at the best mixture |
+| --- | --- | --- | --- |
+| 95, 98, 100 octane | 43.4 MJ/kg | 14.7:1 | 2.952 MJ/kg (98 and 100 keep their stock 0.05% and 0.07% more) |
+| Methanol | 19.9 MJ/kg | 6.47:1 | 3.076 MJ/kg |
+| Diesel | 43.4 MJ/kg | 14.5:1 | 2.993 MJ/kg |
+
+The stock mixture-match factor (0.8 to 1 away from a fuel's best ratio) still
+applies. The allowed compression window still follows the stock heat values,
+so no stock engine falls outside it. Engines make about 1.7 times the torque
+of the stock heat value; dyno figures and tuning change. Install it with the
+rest of `parts`; it adds no field and changes no method signature. To rebuild
+it, copy `parts` into a private game copy and run:
+
+```powershell
+.\build\Release\compile_game_sources.exe data\game parts/scripts/enginepart/src
+powershell -File scripts/run_save_io_tests.ps1 -Suite port_flow
+```
+
+The suite runs `updatevariables` in the VM for every fuel at three mixtures.

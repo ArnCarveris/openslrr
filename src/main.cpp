@@ -7,6 +7,7 @@
 #include "slrr/sl2_pacejka.hpp"
 #include "slrr/natives_boot.hpp"
 #include "slrr/gameref.hpp"
+#include "slrr/part_runtime.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,7 +32,7 @@ void usage() {
       "           [--perf-log CSV|-] [--bench-map TRACK] [--bench-drive SECONDS]\n"
       "           [--bench-career SAVE_DIRECTORY] [--bench-realtime]\n"
       "           [--bench-time HOUR] [--bench-shots DIR]\n"
-      "           [--no-vsync] [--debug-overlay]\n"
+      "           [--no-vsync] [--debug-overlay] [--physics-inline]\n"
       "           [PlayerName]\n"
       "\n"
       "Default --game: FMV intros → Init(int) (Soft splash / menu).\n"
@@ -123,6 +124,11 @@ int main(int argc, char** argv) {
     }
     if (std::strcmp(a, "--no-vsync") == 0) {
       opt.vsync = false;
+      continue;
+    }
+    if (std::strcmp(a, "--physics-inline") == 0) {
+      // Step physics on the host thread instead of the physics thread.
+      part_physics_set_threaded(false);
       continue;
     }
     if (std::strcmp(a, "--debug-overlay") == 0) {

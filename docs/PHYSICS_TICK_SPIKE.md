@@ -6,23 +6,23 @@ on `d60b907`, including #205's shared-world collision changes. The
 allows changed stock outputs for physically consistent torque/power. This branch
 corrects those units and the driving loss path; **handling/output changes are
 intentional**. The default clock remains 120 Hz; native APIs are unchanged.
-The included Java head/block patch also corrects port-flow normalization.
-The compile-time rate override and
-[standalone experiment](../tests/test_physics_tick_rate.cpp) support further work.
-These are spike findings and focused engine/port corrections, not a rollout of
-an independently owned physics thread, new default controls or calibrated fuels.
+The included Java patch also corrects port-flow normalization and fuel heat.
+Following the [maintainers' review](https://github.com/EliasFD3S/openslrr/pull/215#issuecomment-7069913565),
+physics now steps on its own thread ([§1](#physics-thread)). The compile-time
+rate override and [standalone experiment](../tests/test_physics_tick_rate.cpp)
+support further work. New default controls are not part of this branch.
 
 ## Findings and remaining work
 
 | Goal | Finding | Remaining |
 | --- | --- | --- |
-| Clock decoupling | Fixed 60 Hz host ticks, 120 Hz shared-world substeps and interpolated drawing already exist on the host thread. Catch-up is bounded, not independent of wall-clock stalls. | Independent scheduling requires world ownership and input/output snapshots. A 1000 Hz constant alone loses 4% of simulation time in the current caller. |
-| CPU cost | Compare 120 and 960 Hz in the same Valo City drive below; the new `interpolation_ms` subzone measures actual pose publication. | Pose-reader/scene-cache overhead is not isolated; no independently owned physics-thread implementation. |
+| Clock decoupling | Fixed 60 Hz host ticks and 120 Hz shared-world substeps now run on a physics thread, in one batch per frame, while the host draws the frame; the host prepares and publishes each batch. Catch-up is bounded, not independent of wall-clock stalls. | The batch overlaps only the frame's drawing, not scripts. A 1000 Hz constant alone loses 4% of simulation time in the current caller. |
+| CPU cost | Compare 120 and 960 Hz in the same Valo City drive below; the new `interpolation_ms` subzone measures actual pose publication. | Pose-reader/scene-cache overhead is not isolated. |
 | Adaptive setting | Only selects render interpolation; it never selects a physics clock. References listed below. | Removing Classic is a separate UI/compatibility decision. |
 | Throttle | A spike-only digital/analog shaping, plate/airflow, hysteresis and latched-BOV prototype runs inside the actual solver's high-frequency test loop, retaining the existing crank/idle/clutch. | It is not enabled in production controls; stock TUFA lacks the named telemetry declarations, and boost fraction is not absolute manifold pressure. |
 | Torque/power | Corrected cycle work to SI net crank torque, derived sampled watts from torque × ω, selected net torque peaks and removed the runtime ×2 gain/duplicate WOT loss. | Stock outputs change with owner authorization. Thermochemistry, friction and stock-car calibration remain empirical. |
 | Port flow | Replaced squared lift-volume normalization with capped valve-curtain area × reference exchange speed × 1 ms / swept volume, shared by Inline and both Vee banks. Compiled script patch is included. | This is a declared nominal-flow normalization, not a full compressible valve solver or measured stock calibration. |
-| Fuel heat | Raw 95-octane H is 1.0995 MJ/kg; effective mixture heat is 1.704225 MJ/kg at the script's optimal AFR 12.5. Heat also sets allowed compression bounds. | A constant-only change can reject stock engines. No Java patch or recalibration here. |
+| Fuel heat | Stock raw 95-octane H was 1.0995 MJ/kg, 1.704225 MJ/kg after a ×1.55 factor at the script's optimal AFR 12.5. The patch uses lower heating value / stoichiometric AFR per kg of charge (gasoline 2.952 MJ/kg) without the factor; the compression window keeps the stock values. | Values are handbook fuel data, not a combustion calibration; dissociation and variable heat capacity are not modelled. |
 | Stability | Neutral idle/limiter/lift and one synthetic launch are sampled at 120–1000 Hz and five inertias. | These fixtures do not establish stability for every car, collision, terrain, input or rendering cadence. |
 
 ## 1. Clock and ownership
@@ -37,8 +37,10 @@ warp, chassis time can lag behind VM/flap time.
 
 | Stage | Current cadence |
 | --- | --- |
-| Wheel/drive configuration, steering and AI sampling | 60 Hz host tick; inputs were filtered once per frame |
-| Suspension, drivetrain, tyres, rigid body, wall sweep, damage, pair contacts, deformation and loose/free bodies | Shared 120 Hz world substeps |
+| Wheel/drive configuration and AI sampling | Once per frame, for the first host tick |
+| Steering filter | 60 Hz host tick, on the physics thread after the first tick |
+| Suspension, drivetrain, tyres, rigid body, wall sweep, pair contacts and loose/free bodies | Shared 120 Hz world substeps, on the physics thread |
+| Damage, crush cages, detaching and prop promotion | Once per frame at the commit, in solver order |
 | Hinged-panel solver | 240 Hz from frame simulation time |
 | Engine audio | Once per frame that advances physics |
 | Render pose publication | Every frame, blended between host-tick poses |
@@ -47,14 +49,29 @@ The host-tick accumulator therefore decouples **integration step size** from
 render cadence within its catch-up budget; it does not supply an independently
 scheduled clock or frame-independent input sampling.
 
-The host owns the VM, GameRefs, physics and bgfx submission by
-[contract §6](ENGINE_CONTRACT.md#host-threads-and-the-worker-pool). The shared
-collision pass mutates live parts, scene state and damage. Moving only
+### Physics thread
+
+The shared collision pass used to mutate live parts, scene state and damage
+from inside the substeps, so moving only
 [`VehicleDynamics::advance`](../src/physics/vehicle_dynamics.cpp) onto a thread
-would not decouple the world. A threaded version needs an input snapshot,
-exclusive shared-world ownership, published render/native snapshots and a policy
-for script mutations/events at boundaries. Cross-car contacts also prevent simply
-running the present tick independently for each car.
+would not have decoupled the world. The tick is therefore split in three
+([contract §6](ENGINE_CONTRACT.md#host-threads-and-the-worker-pool)):
+
+1. `prepare_batch` (host, before `render.flush()`): count the host ticks owed,
+   rebuild scene collision, configure each car for the first tick
+   (`configure_drive`, wheels, body supports, external placement), and copy
+   every car, loose body and free PhysicsRef body with the inputs it needs.
+2. `simulate_batch` (physics thread, during the flush): all ticks and shared
+   substeps, cross-car pairs and movable-body contacts on those copies. Damage,
+   props to wake, loose-body settling and diagnostics are recorded.
+3. `commit_batch` (host, after the flush): copy the bodies back, publish
+   GameRef poses and running gear, then apply the recorded damage in solver
+   order with the chassis as it was when hit, crush cages, loose-body lifetimes,
+   prop promotion and detaching.
+
+Scripts still run only on the host with no batch in flight, so they see the
+ticked state as before. The drawn frame is one frame behind it, as in any
+pipelined physics thread. `--physics-inline` runs the same batch on the host.
 
 ### Rate changes are not just a constant
 
@@ -366,6 +383,31 @@ Raising heat from 1.704 to 3.215 MJ/kg raises minimum allowed compression from
 6.82 to **12.86**, potentially rejecting stock engines. This needs explicit gate
 recalibration/decoupling, not a constant-only patch.
 
+#### Correction, now shipped
+
+The [owner's follow-up](https://github.com/EliasFD3S/openslrr/issues/203#issuecomment-7069947601)
+repeats the 1.09 MJ/kg report. The patched
+[AirFuelDeliverySystem](../patch/parts/scripts/enginepart/src/AirFuelDeliverySystem.java)
+now uses `H = LHV / (A/F)stoich`, per kg of charge, and drops the ×1.55
+factor: `mixture_H = H × (0.8 + 0.2 × match)`. The cycle's charge mass is
+inducted air at ambient density, so heat per kg of air at the stoichiometric
+(or richer, oxygen-limited) mixture is the matching quantity; it lies inside
+the 2.84–3.15 MJ/kg the report quotes.
+
+| Fuel | LHV | (A/F)stoich | H |
+| --- | --- | --- | --- |
+| 95 octane | 43.4 MJ/kg | 14.7 | 2.952381 MJ/kg |
+| 98 / 100 octane | 43.4 MJ/kg | 14.7 | 95 × stock 1100000/1099500 and 1100250/1099500 |
+| Methanol | 19.9 MJ/kg | 6.47 (CH₃OH + 1.5 O₂) | 3.075734 MJ/kg |
+| Diesel | 43.4 MJ/kg | 14.5 | 2.993103 MJ/kg |
+
+The fuel values are handbook figures chosen here, not measured fuels. The
+compression window keeps the stock heat: `minComp`/`maxComp` use
+`stock H × match × 1.55`, as Fuel Revamp 1.2 decoupled them, so every stock
+engine stays dynoable. At 95's best mixture `mixture_H` rises from 1.704225 to
+2.952381 MJ/kg (×1.73). The VM suite `port_flow` runs `updatevariables` for
+every fuel at three mixtures.
+
 The cycle also assumes cv = 712 J/(kg·K), γ = 1.3, and no modeled dissociation.
 Changing heat alone does not establish realistic combustion efficiency. Its
 `kEfficiency` is charge mass / swept mass (volumetric), not thermal; the screenshot's
@@ -465,19 +507,17 @@ newly calibrated stock engine, manifold, fuel or port-flow model.
 The narrow port normalization is now corrected in Java, **before** clipping and
 bank averaging lose the head geometry; it needs no new DynoData schema. A full
 instantaneous pressure-dependent valve solver is a separate extension, not claimed
-by the nominal reference-flow correction. Fuel heat still changes saved AFR/fuel
-behavior and driveability through compression gates, so no blind C++ heat rescale
-is made. Historical [Fuel Revamp 1.2](https://github.com/Gorgoil/slrr-javas/commit/f1d91cf826987f24dd53aa138d57965a43d72b26)
-did decouple heat from compression gates; its numeric fuel calibration is not
-independently validated or copied here.
+by the nominal reference-flow correction. Fuel heat is corrected in the Java fuel
+system with the compression window decoupled, as
+[Fuel Revamp 1.2](https://github.com/Gorgoil/slrr-javas/commit/f1d91cf826987f24dd53aa138d57965a43d72b26)
+did; its numeric fuel calibration is not copied.
 
-Independent-thread ownership likewise needs a coordinated shared-world/VM
-mutation and publication contract; moving the current live-GameRef tick locally
-would be unsafe. The tested throttle experiment and scoped pose-publication timing
-inform that next stage; production raw-input/telemetry publication and full renderer
-interpolation overhead remain future work, not claimed by the prototype. No
-default-rate, Classic-mode or native API change is made here. The three-class Java
-port patch is required for its correction; the larger rollout is not marked complete.
+The physics thread overlaps the frame's drawing only. Scripts, natives and
+callbacks keep running with no batch in flight; overlapping them too would need
+host authority over solver state that scripts change during a frame and
+published snapshots for every native that reads it. Production
+raw-input/telemetry publication and full renderer interpolation overhead remain
+future work. No default-rate, Classic-mode or native API change is made here.
 
 ## Reproduce
 

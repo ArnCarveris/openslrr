@@ -1,6 +1,7 @@
 // Run after installing patch/parts in a private data/game copy:
 // powershell -File scripts/run_save_io_tests.ps1 -Suite port_flow
-// Executes the shipped Java helper in the VM, not a C++ duplicate of it.
+// Executes the shipped Java helper and fuel system in the VM, not C++
+// duplicates of them.
 #include "standalone_test.hpp"
 #include "slrr/jvm.hpp"
 #include <algorithm>
@@ -49,6 +50,36 @@ struct PortVm {
 
 bool near(double a, double b) {
   return std::abs(a - b) <= 2e-6 * std::max({.001, std::abs(a), std::abs(b)});
+}
+
+// The shipped AirFuelDeliverySystem.updatevariables, run in the VM.
+struct FuelHeat {
+  double heat = 0, min_compression = 0, max_compression = 0;
+};
+FuelHeat fuel_heat(PortVm& f, int type, float ratio) {
+  constexpr const char* kFuel = "java.game.parts.enginepart.AirFuelDeliverySystem";
+  SLRR_REQUIRE(f.vm.load_class(kFuel));
+  Object* fuel = f.vm.new_object(kFuel);
+  SLRR_REQUIRE(fuel);
+  fuel->fields["fuel_type"] = Value::make_int(type);
+  fuel->fields["mixture_ratio"] = Value::make_float(ratio);
+  f.vm.clear_unbound();
+  f.vm.invoke(kFuel, "updatevariables", "()V", {Value::make_obj(fuel)}, false);
+  SLRR_REQUIRE(f.vm.unbound_native().empty());
+  const auto number = [&](const char* name) {
+    const auto& value = fuel->fields[name];
+    SLRR_REQUIRE(value.tag == ValueTag::Float && std::isfinite(value.v.f));
+    return static_cast<double>(value.v.f);
+  };
+  return {number("mixture_H"), number("minComp"), number("maxComp")};
+}
+// The stock mixture-match factor 0.8 + 0.2 * match.
+double mixture_match(double ratio, double optimal) {
+  double detuning = ratio < optimal ? ratio / optimal : optimal / ratio;
+  detuning = .45 * detuning + .55;
+  detuning *= detuning;
+  detuning = detuning * detuning * detuning;
+  return .8 + .2 * detuning;
 }
 } // namespace
 
@@ -111,11 +142,39 @@ SLRR_TEST(missing_geometry_or_restriction_closes_only_that_port) {
   SLRR_REQUIRE(near(f.coefficient(restricted), f.coefficient(valid) * .5));
 }
 
+SLRR_TEST(fuel_heat_is_real_mixture_energy_with_the_stock_compression_window) {
+  PortVm f;
+  const auto close = [](double got, double want) { return std::abs(got - want) <= want * 1e-5; };
+  struct Fuel {
+    int type;
+    float optimal;
+    double heat, stock;  // J/kg at the best mixture; the stock heat value
+  };
+  for (const Fuel fuel : {Fuel{0, 12.5f, 43.4e6 / 14.7, 1099500},
+                          Fuel{1, 13.5f, 43.4e6 / 14.7 * 1100000 / 1099500, 1100000},
+                          Fuel{2, 14.f, 43.4e6 / 14.7 * 1100250 / 1099500, 1100250},
+                          Fuel{3, 16.f, 19.9e6 / 6.47, 1400000},
+                          Fuel{4, 11.f, 43.4e6 / 14.5, 1600000}}) {
+    for (float ratio : {fuel.optimal, 9.f, 17.f}) {
+      const double match = mixture_match(ratio, fuel.optimal);
+      const auto got = fuel_heat(f, fuel.type, ratio);
+      SLRR_REQUIRE(close(got.heat, fuel.heat * match));
+      // The compression gates keep the stock x1.55 heat value.
+      SLRR_REQUIRE(close(got.min_compression, fuel.stock * match * 1.55 / 250000));
+      SLRR_REQUIRE(close(got.max_compression, fuel.stock * match * 1.55 / 100000));
+    }
+  }
+  const auto pump = fuel_heat(f, 0, 12.5f);
+  std::printf("[port_flow] 95 octane at 12.5:1: %.0f J/kg, compression %.4f-%.4f\n",
+              pump.heat, pump.min_compression, pump.max_compression);
+}
+
 int main() {
   const slrr::standalone::Test tests[] = {
       curtain_geometry_has_linear_lift_and_a_throat_limit,
       reference_exchange_volume_agrees_in_si_and_script_units,
       missing_geometry_or_restriction_closes_only_that_port,
+      fuel_heat_is_real_mixture_energy_with_the_stock_compression_window,
   };
   return slrr::standalone::run("port_flow", tests);
 }

@@ -241,14 +241,14 @@ struct LoosePanel {
   // parallel to Record::renders.
   std::vector<PartMatrix> render_offsets;
   physics::Vec3 rest_anchor;  // see map_object_quiet_ticks
-  unsigned far_awake_ticks = 0;  // awake beyond car reach; see advance_loose_panels
+  unsigned far_awake_ticks = 0;  // awake beyond car reach; see sim_loose_bodies
   // Ticks left during which a body released from inside the car (the engine)
   // skips the car contacts while it leaves; see leaving_carrier.
   unsigned exit_ticks = 0;
 };
 std::unordered_map<Object *, LoosePanel> loose_panels;
 // Wheel parts whose corner mount failed when a chassis cage settled during
-// the records loop; advance_chassis_tick detaches them after it.
+// a batch commit; commit_batch detaches them after the cages.
 std::vector<Object *> settled_wheel_releases;
 // Script PhysicsRef bodies released by setStatic(0), keyed by their GameRef.
 struct FreeBody {
@@ -1187,17 +1187,41 @@ double chassis_steering_angle(const Record& rec) {
                     -max_steer, max_steer);
 }
 
-double wheel_steering_angle(const Record& rec, size_t corner) {
-  const auto& wheel = rec.wheels[corner];
-  const double factor = wheel.steer_set ? wheel.steer
-      : corner < rec.config->wheel_steering.size() ? rec.config->wheel_steering[corner] : 0;
-  const double angle = chassis_steering_angle(rec);
-  const double length = rec.ackermann != 0 ? rec.ackermann : rec.config->ackermann_length;
+// The steering constants of a chassis, copied so the physics thread can
+// steer between host ticks without reading the record (#203).
+struct SteeringGeometry {
+  float max_steer = 0, ackermann = 0, ackermann_length = 0, help = 0;
+  std::array<double, 4> factor{}, center_x{};
+};
+SteeringGeometry steering_geometry(const Record& rec) {
+  SteeringGeometry out;
+  out.max_steer = rec.config->max_steer;
+  out.ackermann = rec.ackermann;
+  out.ackermann_length = rec.config->ackermann_length;
+  out.help = rec.steering_help;
+  for (size_t corner = 0; corner < 4; ++corner) {
+    const auto& wheel = rec.wheels[corner];
+    out.factor[corner] = wheel.steer_set ? wheel.steer
+        : corner < rec.config->wheel_steering.size() ? rec.config->wheel_steering[corner] : 0;
+    out.center_x[corner] = rec.dynamics.wheels[corner].center.x;
+  }
+  return out;
+}
+double steered_wheel_angle(const SteeringGeometry& geometry, float input, float correction,
+                           size_t corner) {
+  const double max_steer = std::max(0.f, geometry.max_steer);
+  const double angle = std::clamp(input * max_steer + correction, -max_steer, max_steer);
+  const double factor = geometry.factor[corner];
+  const double length = geometry.ackermann != 0 ? geometry.ackermann : geometry.ackermann_length;
   if (std::abs(angle) < 1e-7 || length <= 0) return angle * factor;
   const double radius = length / std::tan(angle);
-  const double x = rec.dynamics.wheels[corner].center.x;
+  const double x = geometry.center_x[corner];
   return (radius <= 0 ? -std::atan2(length, -radius - x)
                       : std::atan2(length, radius + x)) * factor;
+}
+double wheel_steering_angle(const Record& rec, size_t corner) {
+  return steered_wheel_angle(steering_geometry(rec), rec.steering_input,
+                             rec.steering_correction, corner);
 }
 
 // The hinge of a parent slot's CFG `flap` line, in the authored parent frame.
@@ -2197,6 +2221,8 @@ Object *part_render_owner(void *key) {
   return nullptr;
 }
 bool part_destroy(Object *part) {
+  // A running batch may read the shells of installed parts.
+  part_physics_join();
   part = canonical(part);
   auto *rec = record(part);
   if (!rec)
@@ -2913,17 +2939,28 @@ Object *part_field(Object *part, const char *name) {
              ? value->second.v.o : nullptr;
 }
 
-void update_steering(Record &rec, bool controls) {
+// The driver's steering inputs for one host tick.
+struct SteeringInput {
+  float steer = 0;
+  bool analog = false, handbrake = false, controls = false;
+};
+SteeringInput steering_input(bool controls) {
   const auto &in = host_input();
-  const float steer = controls ? std::clamp(in.drive_steer, -1.f, 1.f) : 0.f;
-  rec.steering_request = steer;
-  const float max_steer = std::max(.01f, rec.config->max_steer);
-  const auto &body = rec.dynamics.body;
+  return {in.drive_steer, in.drive_steer_analog, in.drive_handbrake, controls};
+}
+// One host tick of the steering filter on explicit state (update_steering).
+void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
+                     const physics::RigidBody &body, bool grounded, float &steering_input,
+                     float &steering_request, float &steering_correction) {
+  const bool controls = in.controls;
+  const float steer = controls ? std::clamp(in.steer, -1.f, 1.f) : 0.f;
+  steering_request = steer;
+  const float max_steer = std::max(.01f, geometry.max_steer);
   const auto velocity = body.velocity;
   const double speed = std::hypot(velocity.x, velocity.z);
-  const float help = in.drive_steer_analog ? 0.f : rec.steering_help;
+  const float help = in.analog ? 0.f : geometry.help;
   float target = steer;
-  const float wheelbase = rec.ackermann > 0 ? rec.ackermann : rec.config->ackermann_length;
+  const float wheelbase = geometry.ackermann > 0 ? geometry.ackermann : geometry.ackermann_length;
   if (help > 0 && wheelbase > 0 && speed > 0) {
     // For keyboard steering, bound the requested curvature as speed rises.
     // A rate limit alone still asks for full lock after a short button hold.
@@ -2931,21 +2968,20 @@ void update_steering(Record &rec, bool controls) {
     const double limit = std::atan(wheelbase * lateral_acceleration / (speed * speed * help));
     target *= static_cast<float>(std::min(1., limit / max_steer));
   }
-  const bool unwinding = target == 0.f || target * rec.steering_input < 0 ||
-                         std::abs(target) < std::abs(rec.steering_input);
+  const bool unwinding = target == 0.f || target * steering_input < 0 ||
+                         std::abs(target) < std::abs(steering_input);
   const double normalized_speed = speed / 15;
   const float helped_rate = static_cast<float>(
       std::max(.2, 2. / (1 + normalized_speed * normalized_speed)));
   const float rate = std::lerp(2.f, helped_rate, unwinding ? 0.f : help);
   const float max_delta = rate / (max_steer * physics::VehicleDynamics::update_frequency);
-  rec.steering_input += std::clamp(target - rec.steering_input, -max_delta, max_delta);
+  steering_input += std::clamp(target - steering_input, -max_delta, max_delta);
 
   const auto local_velocity = body.orientation.inverse_rotate(velocity);
   const double forward_speed = -local_velocity.z;
-  const bool grounded = rec.dynamics.state[0].contact || rec.dynamics.state[1].contact;
-  if (!controls || rec.steering_help <= 0.f || in.drive_handbrake ||
+  if (!controls || geometry.help <= 0.f || in.handbrake ||
       !grounded || forward_speed <= 0.) {
-    rec.steering_correction = 0.f;
+    steering_correction = 0.f;
     return;
   }
   // Positive steer points towards local -X. Align the tyres slightly with
@@ -2954,16 +2990,32 @@ void update_steering(Record &rec, bool controls) {
   const double blend = std::clamp((forward_speed - 5.) / 10., 0., 1.);
   const double excess_slip = std::max(0., std::abs(slip) - .07);
   const double limit = std::min(.12, excess_slip * .55);
-  const double requested = rec.steering_input * max_steer;
+  const double requested = steering_input * max_steer;
   const double already_correcting = std::max(0., std::copysign(1., slip) * requested);
-  const float correction = static_cast<float>(rec.steering_help * blend *
+  const float correction = static_cast<float>(geometry.help * blend *
       std::copysign(std::max(0., limit - already_correcting), slip));
   constexpr float response = 12.f;
   const float alpha = 1.f - std::exp(-response / physics::VehicleDynamics::update_frequency);
-  rec.steering_correction = std::lerp(rec.steering_correction, correction, alpha);
+  steering_correction = std::lerp(steering_correction, correction, alpha);
+}
+bool steering_grounded(const physics::VehicleDynamics &dynamics) {
+  return dynamics.state[0].contact || dynamics.state[1].contact;
+}
+void update_steering(Record &rec, bool controls) {
+  steering_filter(steering_geometry(rec), steering_input(controls), rec.dynamics.body,
+                  steering_grounded(rec.dynamics), rec.steering_input, rec.steering_request,
+                  rec.steering_correction);
 }
 
-void configure_drive(Object *chassis, Record &rec, bool controlled) {
+// What configure_drive leaves for the later host ticks of a physics batch:
+// everything else it sets holds for the whole frame (#203).
+struct DriveRefresh {
+  enum class Mode : uint8_t { Parked, Steering, Engine, EngineLost } mode = Mode::Parked;
+  bool autonomous = false, controls = false;
+  float ai_steer = 0;
+};
+DriveRefresh configure_drive(Object *chassis, Record &rec, bool controlled) {
+  DriveRefresh refresh;
   auto &drive = rec.dynamics.drive;
   drive.torque = {};
   drive.nitro_torque = {};
@@ -2984,11 +3036,15 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
       for (size_t i = 0; i < drive.wheels.size(); ++i)
         drive.wheels[i].steer = wheel_steering_angle(rec, i);
     }
-    return;
+    return refresh;
   }
+  refresh.mode = DriveRefresh::Mode::Steering;
+  refresh.autonomous = autonomous;
+  refresh.ai_steer = ai.steer;
   if (rec.driving_options_revision != host_driving_options_revision())
     apply_driving_options(rec);
   const bool controls = autonomous || !osd_has_modal();
+  refresh.controls = controls;
   if (autonomous) {
     rec.steering_input = rec.steering_request = ai.steer;
     rec.steering_correction = 0;
@@ -3005,7 +3061,7 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
     drive.brake = autonomous ? ai.brake
                   : controls ? host_input().drive_brake
                              : 1;
-    return;
+    return refresh;
   }
   auto *ratios = part_field(chassis, "ratio");
   Object *dyno = nullptr;
@@ -3017,7 +3073,8 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
                       field_int(chassis, "gears") >= 1 && dyno && comp(chassis, "maxRPM") > 0;
   // A car whose engine was torn off still rolls on its tyres and brakes;
   // without a drive it would get the parked-tyre friction that stops it.
-  if (!engine && !rec.engine_lost) return;
+  if (!engine && !rec.engine_lost) return refresh;
+  refresh.mode = engine ? DriveRefresh::Mode::Engine : DriveRefresh::Mode::EngineLost;
   const auto &in = host_input();
   drive.throttle = autonomous ? ai.throttle : controls ? in.drive_throttle : 0.f;
   drive.brake = autonomous ? ai.brake : controls ? in.drive_brake : 0.f;
@@ -3030,8 +3087,10 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
   drive.limit = std::max(drive.idle + 100.0, double(comp(chassis, "RPM_limit")));
   drive.inertia = .28 + .01 * std::max(0.f, comp(chassis, "engine_inertia"));
   if (engine) {
-    drive.torque = [dyno](double rpm) { return dyno_sample(dyno, float(rpm), 0, false); };
-    drive.nitro_torque = [dyno](double rpm) { return dyno_sample(dyno, float(rpm), 1, false); };
+    // Immutable curve copies: the physics thread samples them while scripts
+    // may recalculate or release the dyno session.
+    drive.torque = dyno_torque_function(dyno, 0);
+    drive.nitro_torque = dyno_torque_function(dyno, 1);
     rec.nitro_input = std::isfinite(in.drive_nitro) ? std::clamp(in.drive_nitro, 0.f, 1.f) : 0.f;
     rec.nitro_requested = controlled && controls && rec.nitro_input > .1f && rec.physics_released;
   } else {
@@ -3095,6 +3154,7 @@ void configure_drive(Object *chassis, Record &rec, bool controlled) {
       out.rolling_resistance = .04;
     }
   }
+  return refresh;
 }
 
 void update_engine_audio(Record &rec, bool active) {
@@ -3145,9 +3205,25 @@ void update_engine_audio(Record &rec, bool active) {
   }
 }
 
-physics::VehicleDynamics::Impact collide_chassis(Record& rec, physics::Vec3 before) {
+// The corner probe points of collide_chassis in the chassis frame, before the
+// crush cage moves them.
+std::array<physics::Vec3, 4> chassis_probe_points(const physics::RigidBody& body, double radius) {
+  std::array<physics::Vec3, 4> points;
+  size_t i = 0;
+  for (double x : {body.minimum.x + radius, body.maximum.x - radius})
+    for (double z : {body.minimum.z + radius, body.maximum.z - radius})
+      points[i++] = {x, std::lerp(body.minimum.y, body.maximum.y, .35), z};
+  return points;
+}
+using WakeBox = std::array<float, 6>;  // lower and upper world corners
+// `probe_shift` is the crush cage's displacement of each probe point, taken
+// when the batch was prepared. Props to wake are queued for the host, with a
+// reach that covers `ticks` host ticks of travel before it can promote them.
+physics::VehicleDynamics::Impact collide_chassis(physics::RigidBody& body,
+                                                 const std::array<physics::Vec3, 4>& probe_shift,
+                                                 physics::Vec3 before, unsigned ticks,
+                                                 std::vector<WakeBox>& wake) {
   using physics::Vec3;
-  auto& body = rec.dynamics.body;
   const Vec3 delta = body.position - before;
   const float movement[] = {float(delta.x), float(delta.y), float(delta.z)};
   constexpr float radius = .18f;
@@ -3159,22 +3235,21 @@ physics::VehicleDynamics::Impact collide_chassis(Record& rec, physics::Vec3 befo
   size_t contact_count = 0;
   SceneSphereHit closest;
   Vec3 closest_arm;
-  for (double x : {body.minimum.x + radius, body.maximum.x - radius})
-    for (double z : {body.minimum.z + radius, body.maximum.z - radius}) {
-      Vec3 point{x, std::lerp(body.minimum.y, body.maximum.y, .35), z};
-      if (rec.deformation) point += rec.deformation->displacement(point);
-      const Vec3 offset = body.orientation.rotate(point - body.center);
-      const Vec3 position = before + offset;
-      const float start[] = {float(position.x), float(position.y), float(position.z)};
-      SceneSphereHit hit;
-      if (scene_instances_sweep_sphere(start, movement, radius, hit, .65f)) {
-        contacts[contact_count++] = {hit, offset};
-        if (hit.fraction < closest.fraction) {
-          closest = hit;
-          closest_arm = offset;
-        }
+  const auto probes = chassis_probe_points(body, radius);
+  for (size_t probe = 0; probe < probes.size(); ++probe) {
+    const Vec3 point = probes[probe] + probe_shift[probe];
+    const Vec3 offset = body.orientation.rotate(point - body.center);
+    const Vec3 position = before + offset;
+    const float start[] = {float(position.x), float(position.y), float(position.z)};
+    SceneSphereHit hit;
+    if (scene_instances_sweep_sphere(start, movement, radius, hit, .65f)) {
+      contacts[contact_count++] = {hit, offset};
+      if (hit.fraction < closest.fraction) {
+        closest = hit;
+        closest_arm = offset;
       }
     }
+  }
   // Evaluate primitive contacts independently: a triangle hit elsewhere must
   // not hide an earlier native box/sphere impact or a thin trunk between probes.
   PartMatrix frame = body.frame();
@@ -3191,12 +3266,10 @@ physics::VehicleDynamics::Impact collide_chassis(Record& rec, physics::Vec3 befo
     // Props that are still plain scenery become loose bodies before the car
     // reaches them; the margin covers the next tick of travel.
     const float reach = std::sqrt(half[0] * half[0] + half[1] * half[1] + half[2] * half[2]) +
-                        3.f + static_cast<float>(delta.length()) * 2.f;
-    const float lower[3] = {float(world_center.x) - reach, float(world_center.y) - reach,
-                            float(world_center.z) - reach};
-    const float upper[3] = {float(world_center.x) + reach, float(world_center.y) + reach,
-                            float(world_center.z) + reach};
-    scene_instances_wake_dynamics(lower, upper);
+                        3.f + static_cast<float>(delta.length()) * 2.f * std::max(1u, ticks);
+    wake.push_back({float(world_center.x) - reach, float(world_center.y) - reach,
+                    float(world_center.z) - reach, float(world_center.x) + reach,
+                    float(world_center.y) + reach, float(world_center.z) + reach});
   }
   const int samples = static_cast<int>(
       std::clamp(std::ceil(delta.length() / .2), 1.0, 8.0));
@@ -3563,13 +3636,14 @@ PanelContact panel_contact(Record& rec, physics::Vec3 impact) {
 // SLRR_rev, does not load the mounts. The hardpoint-travel half waits for the
 // chassis cage to settle (settle_wheel_mounts): right after impact() the cage
 // shows the transient crush peak, including the elastic part.
-void damage_wheel_mounts(Record& rec, const physics::VehicleDynamics::Impact& hit,
+void damage_wheel_mounts(Record& rec, const physics::RigidBody& body,
+                         const physics::VehicleDynamics::Impact& hit,
                          physics::Vec3 local_hit, double internal,
                          std::vector<Object*>& released) {
   const double energy = internal > 0 && (hit.normal.y <= .65 || hit.speed >= 8)
       ? (hit.normal_impulse >= 0
-             ? hit.normal_impulse * hit.normal_impulse / (2 * rec.dynamics.body.mass)
-             : physics::contact_impulse_energy(rec.dynamics.body, hit.point, hit.normal, hit.speed)) * internal
+             ? hit.normal_impulse * hit.normal_impulse / (2 * body.mass)
+             : physics::contact_impulse_energy(body, hit.point, hit.normal, hit.speed)) * internal
       : 0.0;
   if (!(energy > 0)) return;
   for (size_t corner = 0; corner < 4 && corner < rec.config->wheels.size(); ++corner) {
@@ -3649,11 +3723,10 @@ bool flap_geometry_for(Object *part, Record &rec, physics::FlapGeometry *out) {
 // latch and swings it (flap_hit). Called from the impact path with the same
 // world-frame impact damage_chassis receives; it is independent of the
 // damage options, which scale deformation, not latches.
-void flap_impact(Object *chassis, Record &rec,
+void flap_impact(Object *chassis, Record &rec, const physics::RigidBody &body,
                  const physics::VehicleDynamics::Impact &hit) {
   using physics::Vec3;
   if (!(hit.speed >= 2)) return;
-  const auto &body = rec.dynamics.body;
   const Vec3 local_hit = body.center + body.orientation.inverse_rotate(hit.point - body.position);
   const Vec3 normal = body.orientation.inverse_rotate(hit.normal);
   const auto inverse = part_matrix_inverse_rigid(world_matrix(chassis));
@@ -3694,13 +3767,13 @@ void flap_impact(Object *chassis, Record &rec,
 // SLRR_rev tuning, not stock behaviour. As there, the engine leaves with the
 // velocity it had before the contact, so it carries on out of the car. Floor
 // contacts below 8 m/s do not count.
-void damage_engine_mount(Object* chassis, Record& rec, const physics::VehicleDynamics::Impact& hit,
+void damage_engine_mount(Object* chassis, Record& rec, const physics::RigidBody& body,
+                         const physics::VehicleDynamics::Impact& hit,
                          physics::Vec3 local_hit, double internal,
                          std::vector<Object*>& released) {
   Object* engine = chassis_engine(rec);
   if (!engine || rec.engine_release == engine || !(internal > 0) ||
       (hit.normal.y > .65 && hit.speed < 8)) return;
-  const auto& body = rec.dynamics.body;
   const double energy = (hit.normal_impulse >= 0
       ? hit.normal_impulse * hit.normal_impulse / (2 * body.mass)
       : physics::contact_impulse_energy(body, hit.point, hit.normal, hit.speed)) * internal;
@@ -3719,10 +3792,12 @@ void damage_engine_mount(Object* chassis, Record& rec, const physics::VehicleDyn
   released.push_back(engine);
 }
 
-void damage_chassis(Object* chassis, Record& rec, const physics::VehicleDynamics::Impact& hit,
+// `body` is the chassis when it was hit; the batch may have moved it since.
+void damage_chassis(Object* chassis, Record& rec, const physics::RigidBody& body,
+                    const physics::VehicleDynamics::Impact& hit,
                     bool player, std::vector<Object*>& released) {
   using physics::Vec3;
-  flap_impact(chassis, rec, hit);
+  flap_impact(chassis, rec, body, hit);
   if (hit.speed < 2) return;
   const auto& options = host_game_options();
   const double multiplier = rec.damage_multiplier >= 0 ? rec.damage_multiplier
@@ -3730,7 +3805,6 @@ void damage_chassis(Object* chassis, Record& rec, const physics::VehicleDynamics
   if (multiplier <= 0) return;
   const double deformation = multiplier * options.deformation / 1.6;
   const double internal = multiplier * options.internal_damage;
-  const auto& body = rec.dynamics.body;
   const Vec3 local_hit = body.center + body.orientation.inverse_rotate(hit.point - body.position);
   const Vec3 normal = body.orientation.inverse_rotate(hit.normal);
   if (deformation > 0) {
@@ -3787,8 +3861,8 @@ void damage_chassis(Object* chassis, Record& rec, const physics::VehicleDynamics
     part->deformation->impact(contact.point, {normal.dot(x), normal.dot(y), normal.dot(z)},
                               speed * deformation, .65);
   }
-  damage_wheel_mounts(rec, hit, local_hit, internal, released);
-  damage_engine_mount(chassis, rec, hit, local_hit, internal, released);
+  damage_wheel_mounts(rec, body, hit, local_hit, internal, released);
+  damage_engine_mount(chassis, rec, body, hit, local_hit, internal, released);
 }
 
 // Bounds of the visible shells of `root`'s installed subtree, in root's frame.
@@ -3906,61 +3980,6 @@ void detach_panel(Object* part, Record& rec, Object* chassis, Record& vehicle) {
   node->matrix_override = true;
   relink_assembly(chassis);
   refresh_chassis(chassis);
-}
-
-physics::VehicleDynamics::Impact body_pair_impact(
-    const physics::RigidBody&, const physics::RigidBody&, physics::Vec3,
-    physics::Vec3, double, double);
-// SLRR_rev triangle-surface.ts. Sweep in the carrier's moving frame so a
-// stationary fragment can also be hit by the car.
-bool collide_loose_with_car(physics::RigidBody& body,
-                            const std::array<physics::Vec3, 8>& previous,
-                            physics::Vec3 before, Object* chassis, Record& vehicle,
-                            const PartMatrix& previous_carrier,
-                             physics::VehicleDynamics::Impact& car_hit) {
-  using physics::Vec3;
-  constexpr double radius = .035;
-  const auto transform = [](const PartMatrix& frame, Vec3 p, double w) {
-    return Vec3{frame[0] * p.x + frame[4] * p.y + frame[8] * p.z + frame[12] * w,
-                frame[1] * p.x + frame[5] * p.y + frame[9] * p.z + frame[13] * w,
-                frame[2] * p.x + frame[6] * p.y + frame[10] * p.z + frame[14] * w};
-  };
-  auto& carrier = vehicle.dynamics.body;
-  const auto carrier_frame = carrier.frame();
-  const auto inverse_carrier = part_matrix_inverse_rigid(carrier_frame);
-  const auto inverse_previous = part_matrix_inverse_rigid(previous_carrier);
-  const auto inverse_script = part_matrix_inverse_rigid(world_matrix(chassis));
-  const auto corners = body.corners();
-  SceneSphereHit hit;
-  Vec3 point, normal;
-  for (const auto& installed : part_installed_tree(chassis)) {
-    auto* part = record(installed.object);
-    if (part != &vehicle && part->config->category != 2) continue;
-    const auto& mesh = part_collision_mesh(*part);
-    if (mesh.indices.empty()) continue;
-    const auto relative = part_matrix_multiply(inverse_script, world_matrix(installed.object));
-    const auto inverse_relative = part_matrix_inverse_rigid(relative);
-    const auto frame = part_matrix_multiply(carrier_frame, relative);
-    const auto from_frame = part_matrix_multiply(inverse_relative, inverse_previous);
-    const auto to_frame = part_matrix_multiply(inverse_relative, inverse_carrier);
-    for (size_t i = 0; i < corners.size(); ++i) {
-      const auto start = transform(from_frame, previous[i], 1);
-      const auto travel = transform(to_frame, corners[i], 1) - start;
-      if (!scene_mesh_sweep_sphere(mesh, start, travel, radius, hit)) continue;
-      normal = transform(frame, {hit.normal[0], hit.normal[1], hit.normal[2]}, 0);
-      point = transform(frame, start + travel * hit.fraction, 1) -
-              normal * (radius - hit.penetration);
-    }
-  }
-  if (hit.fraction >= 1) return false;
-  body.position = before + (body.position - before) * hit.fraction +
-                  normal * (hit.penetration + .002);
-  const auto carrier_before = carrier;
-  const double closing = std::max(0.0, -(body.point_velocity(point) -
-                                        carrier.point_velocity(point)).dot(normal));
-  const double impulse = body.contact(point, normal, .08, .55, &carrier);
-  car_hit = body_pair_impact(carrier_before, carrier, point, -normal, impulse, closing);
-  return true;
 }
 
 // Static scene response of a loose body after integration: one sphere sweep of
@@ -4148,16 +4167,16 @@ bool leaving_carrier(const physics::RigidBody& body, const physics::RigidBody& c
   return false;
 }
 
-// Host-owned snapshot for one shared 120 Hz contact substep. No VM calls or
-// registry mutation occurs while these pointers are consumed. Incarnations and
-// the full parent visibility chain exclude recycled/hidden/other-world cars.
-struct ContactVehicle {
-  Object* chassis;
-  Record* rec;
-  uint64_t incarnation;
-  physics::RigidBody previous;
-  PartMatrix parent;
-};
+// ---- Physics thread (#203) ------------------------------------------------
+// part_physics_begin prepares one batch with the host ticks owed for the
+// frame and hands it to the physics thread, which integrates it while the
+// host renders; part_physics_end joins it and commits the results. A batch
+// owns a copy of every body it integrates and of the inputs they need, taken
+// while the host owns everything. On the physics thread it reads only those
+// copies and the scene collision prepared for it: never the VM, GameRef,
+// records, audio or bgfx. GameRef publication, damage, scene changes and
+// loose-body lifetimes wait for the commit, which applies them in solver order.
+
 bool contact_visible(Object* chassis) {
   unsigned depth = 0;
   for (void* key = chassis; key && ++depth <= 128;) {
@@ -4169,39 +4188,145 @@ bool contact_visible(Object* chassis) {
   }
   return false;
 }
-bool contact_live(const ContactVehicle& vehicle) {
-  const auto* node = gameref_get(vehicle.chassis);
-  return node && node->incarnation == vehicle.incarnation &&
-         record(vehicle.chassis) == vehicle.rec && vehicle.rec->physics_ready &&
-         !vehicle.rec->physics_fault_reported && contact_visible(vehicle.chassis);
+
+// A car shell for loose and free body contacts (collide_loose_with_car).
+struct SimShell {
+  const ScxGeometry* mesh = nullptr;
+  PartMatrix relative{};  // the part in its chassis's script frame
+};
+
+struct SimCar {
+  Object* chassis = nullptr;
+  Record* rec = nullptr;  // for the host only, before and after the batch
+  uint64_t incarnation = 0;
+  int32_t live_id = 0;
+  uint32_t resource = 0;
+  bool controlled = false;
+  bool configured = false;  // configure_drive ran for the first tick
+  PartMatrix parent{}, world{}, local{};  // `local`/`world`: last publication
+  physics::VehicleDynamics dynamics;
+  // The record fields the solver changes; the commit copies them back.
+  bool ready = false, released = false, suspended = false, pending = false;
+  bool fault_reported = false, engine_running = false, render_blend = false;
+  unsigned quiet_ticks = 0;
+  physics::Vec3 render_from_position;
+  physics::Quaternion render_from_orientation;
+  double nitro_remaining = 0, nitro_capacity = 0, nitro_rate = 0;
+  float nitro_input = 0;
+  bool nitro_requested = false, nitro_active = false, nitro_flame = false;
+  uint32_t nitro_random = 1;
+  float steering_input = 0, steering_request = 0, steering_correction = 0;
+  physics::Vec3 cockpit_offset;
+  float head_steer = 0, head_acceleration = 0, head_velocity = 0;
+  DriveRefresh drive;
+  SteeringGeometry steering;
+  SteeringInput steer;
+  std::array<physics::Vec3, 4> probe_shift{};
+  std::vector<SimShell> shells;
+  // This substep's contact list entry.
+  bool listed = false;
+  physics::RigidBody previous;
+  float mileage = 0;
+  // Results.
+  unsigned steps = 0;  // solver steps, for the crush cage
+  int publish = 0;     // 1: chassis frame, 2: with the running gear (dynamics_sync)
+  bool fault = false, fault_was_ready = false;  // stepping failed
+  PartMatrix fault_local{};
+  bool contact_fault = false;
+  std::string message;
+};
+
+struct SimImpact {
+  size_t car = 0;
+  physics::VehicleDynamics::Impact hit;
+  physics::RigidBody body;  // the chassis when it was hit
+};
+
+struct SimLoose {
+  Object* part = nullptr;
+  uint32_t resource = 0;
+  bool native_dynamic = false;
+  PartMatrix parent_frame{};
+  physics::RigidBody body;
+  int32_t vehicle = 0;
+  unsigned quiet_ticks = 0, far_awake_ticks = 0, exit_ticks = 0;
+  physics::Vec3 rest_anchor;
+  // The car a released engine is leaving: a batch car, or its prepared body.
+  int carrier = -1;
+  bool carrier_fixed = false;
+  physics::RigidBody carrier_body;
+  enum class End : uint8_t { None, Settle, Lost, Fault } end = End::None;
+  bool published = false;
+  PartMatrix local{}, end_frame{};
+  std::string message;
+};
+
+struct SimFree {
+  void* key = nullptr;
+  int32_t live_id = 0;
+  PhysicsShape shape = PhysicsShape::None;
+  PartMatrix parent_frame{};
+  physics::RigidBody body;
+  unsigned quiet_ticks = 0;
+  physics::Vec3 rest_anchor;
+  std::array<float, 3> pos{}, ypr{};  // last publication
+  std::array<float, 6> motion{};
+  bool published = false, disabled = false;
+  std::string message;
+};
+
+struct SimBatch {
+  unsigned ticks = 0;
+  std::vector<SimCar> cars;
+  std::vector<SimLoose> loose;
+  std::vector<SimFree> free;
+  std::vector<SimImpact> impacts;
+  std::vector<WakeBox> wake;
+  std::vector<size_t> loose_ended;  // loose bodies that left the batch, in order
+  int64_t thread_ticks = 0;         // physics-thread time for the frame profiler
+};
+
+bool sim_live(const SimCar& car) { return car.ready && !car.fault_reported; }
+
+std::string phys_message(const char* what, uint32_t resource, const char* reason) {
+  char line[512];
+  std::snprintf(line, sizeof(line), "[phys] %s type=0x%x: %s\n", what, resource, reason);
+  return line;
 }
-void suspend_contact_vehicle(const ContactVehicle& vehicle, const char* reason) {
-  auto& rec = *vehicle.rec;
-  if (!rec.physics_fault_reported)
-    std::fprintf(stderr, "[phys] suspended contact chassis type=0x%x: %s\n",
-                 rec.state.resource, reason);
-  rec.physics_fault_reported = true;
-  rec.physics_suspended = true;
-  rec.physics_pending_placement = rec.physics_ready = false;
-  rec.engine_running = rec.render_blend = false;
-  rec.dynamics.body.velocity = rec.dynamics.body.momentum = {};
-  rec.dynamics.reset_clock();
-  rec.dynamics.reset_drive();
-  if (auto* node = gameref_get(vehicle.chassis)) {
-    node->render_pose = false;
-    std::fill(std::begin(node->vel), std::end(node->vel), 0.f);
-    std::fill(std::begin(node->angular_vel), std::end(node->angular_vel), 0.f);
-  }
+
+void sim_suspend_contact(SimCar& car, const char* reason) {
+  if (!car.fault_reported)
+    car.message += phys_message("suspended contact chassis", car.resource, reason);
+  car.fault_reported = true;
+  car.suspended = true;
+  car.pending = car.ready = false;
+  car.engine_running = car.render_blend = false;
+  car.dynamics.body.velocity = car.dynamics.body.momentum = {};
+  car.dynamics.reset_clock();
+  car.dynamics.reset_drive();
+  car.contact_fault = true;
 }
-bool contact_near(const physics::RigidBody& body, const ContactVehicle& vehicle,
-                  double padding = 0) {
-  const auto& car = vehicle.rec->dynamics.body;
+
+bool sim_near(const physics::RigidBody& body, const SimCar& vehicle, double padding = 0) {
+  const auto& car = vehicle.dynamics.body;
   const auto gap = body.position - car.position;
   const double reach = ((car.maximum - car.minimum).length() +
                          (body.maximum - body.minimum).length()) * .5 + 1 + padding +
       (car.velocity.length() + body.velocity.length()) * physics::VehicleDynamics::timestep * 2;
   return gap.dot(gap) < reach * reach;
 }
+
+// What dynamics_sync publishes, checked as it checks it.
+void sim_publish(SimCar& car, bool running_gear) {
+  const auto world = car.dynamics.body.frame();
+  const auto local = part_matrix_multiply(part_matrix_inverse_rigid(car.parent), world);
+  if (!finite_frame(local)) throw std::runtime_error("non-finite chassis publication frame");
+  script_motion(car.dynamics.body, car.parent);
+  car.local = local;
+  car.world = world;
+  car.publish = std::max(car.publish, running_gear ? 2 : 1);
+}
+
 physics::VehicleDynamics::Impact body_pair_impact(
     const physics::RigidBody& before, const physics::RigidBody& after,
     physics::Vec3 point, physics::Vec3 normal, double impulse, double closing) {
@@ -4218,157 +4343,177 @@ physics::VehicleDynamics::Impact body_pair_impact(
   hit.has_pre_motion = true;
   return hit;
 }
-void validate_contact_exchange(
-    const physics::RigidBody& body,
-    const std::vector<std::pair<Record*, physics::RigidBody>>& carriers,
-    const std::vector<std::pair<const ContactVehicle*, physics::VehicleDynamics::Impact>>& impacts) {
+
+// Damage for the host; impacts below 2 m/s change nothing there.
+void sim_impact(SimBatch& batch, size_t car, const physics::VehicleDynamics::Impact& hit) {
+  if (!(hit.speed < 2)) batch.impacts.push_back({car, hit, batch.cars[car].dynamics.body});
+}
+
+// SLRR_rev triangle-surface.ts. Sweep in the carrier's moving frame so a
+// stationary fragment can also be hit by the car.
+bool collide_loose_with_car(physics::RigidBody& body,
+                            const std::array<physics::Vec3, 8>& previous,
+                            physics::Vec3 before, SimCar& vehicle,
+                            const PartMatrix& previous_carrier,
+                            physics::VehicleDynamics::Impact& car_hit) {
+  using physics::Vec3;
+  constexpr double radius = .035;
+  const auto transform = [](const PartMatrix& frame, Vec3 p, double w) {
+    return Vec3{frame[0] * p.x + frame[4] * p.y + frame[8] * p.z + frame[12] * w,
+                frame[1] * p.x + frame[5] * p.y + frame[9] * p.z + frame[13] * w,
+                frame[2] * p.x + frame[6] * p.y + frame[10] * p.z + frame[14] * w};
+  };
+  auto& carrier = vehicle.dynamics.body;
+  const auto carrier_frame = carrier.frame();
+  const auto inverse_carrier = part_matrix_inverse_rigid(carrier_frame);
+  const auto inverse_previous = part_matrix_inverse_rigid(previous_carrier);
+  const auto corners = body.corners();
+  SceneSphereHit hit;
+  Vec3 point, normal;
+  for (const auto& shell : vehicle.shells) {
+    const auto& mesh = *shell.mesh;
+    const auto& relative = shell.relative;
+    const auto inverse_relative = part_matrix_inverse_rigid(relative);
+    const auto frame = part_matrix_multiply(carrier_frame, relative);
+    const auto from_frame = part_matrix_multiply(inverse_relative, inverse_previous);
+    const auto to_frame = part_matrix_multiply(inverse_relative, inverse_carrier);
+    for (size_t i = 0; i < corners.size(); ++i) {
+      const auto start = transform(from_frame, previous[i], 1);
+      const auto travel = transform(to_frame, corners[i], 1) - start;
+      if (!scene_mesh_sweep_sphere(mesh, start, travel, radius, hit)) continue;
+      normal = transform(frame, {hit.normal[0], hit.normal[1], hit.normal[2]}, 0);
+      point = transform(frame, start + travel * hit.fraction, 1) -
+              normal * (radius - hit.penetration);
+    }
+  }
+  if (hit.fraction >= 1) return false;
+  body.position = before + (body.position - before) * hit.fraction +
+                  normal * (hit.penetration + .002);
+  const auto carrier_before = carrier;
+  const double closing = std::max(0.0, -(body.point_velocity(point) -
+                                        carrier.point_velocity(point)).dot(normal));
+  const double impulse = body.contact(point, normal, .08, .55, &carrier);
+  car_hit = body_pair_impact(carrier_before, carrier, point, -normal, impulse, closing);
+  return true;
+}
+
+using SimCarriers = std::vector<std::pair<SimCar*, physics::RigidBody>>;
+using SimContacts = std::vector<std::pair<size_t, physics::VehicleDynamics::Impact>>;
+
+void sim_validate_exchange(SimBatch& batch, const physics::RigidBody& body,
+                           const SimCarriers& carriers, const SimContacts& impacts) {
   physics::validate_vehicle_contact_body(body);
   for (const auto& carrier : carriers)
     physics::validate_vehicle_contact_body(carrier.first->dynamics.body);
-  for (const auto& event : impacts) {
-    const auto& hit = event.second;
-    script_motion(event.first->rec->dynamics.body, event.first->parent);
+  for (const auto& [index, hit] : impacts) {
+    const auto& car = batch.cars[index];
+    script_motion(car.dynamics.body, car.parent);
     if (!hit.point.finite() || !hit.normal.finite() || !std::isfinite(hit.speed) ||
         hit.speed < 0 || !std::isfinite(hit.normal_impulse) || hit.normal_impulse < 0 ||
         !hit.pre_velocity.finite() || !hit.pre_omega.finite())
       throw std::runtime_error("non-finite dynamic contact impact");
   }
 }
-void commit_vehicle_impacts(
-    const std::vector<std::pair<const ContactVehicle*, physics::VehicleDynamics::Impact>>& impacts,
-    std::vector<Object*>& released) {
-  for (const auto& [vehicle, hit] : impacts) if (contact_live(*vehicle)) {
+
+void sim_commit_impacts(SimBatch& batch, const SimContacts& impacts) {
+  for (const auto& [index, hit] : impacts) {
+    auto& car = batch.cars[index];
+    if (!sim_live(car)) continue;
     if (hit.normal_impulse > 1) {
-      vehicle->rec->physics_released = true;
-      vehicle->rec->physics_suspended = false;
-      vehicle->rec->physics_pending_placement = false;
+      car.released = true;
+      car.suspended = false;
+      car.pending = false;
     }
-    damage_chassis(vehicle->chassis, *vehicle->rec, hit,
-                   vehicle->chassis == part_controlled_chassis(), released);
+    sim_impact(batch, index, hit);
   }
 }
-void advance_loose_panels(const std::vector<ContactVehicle>& vehicles,
-                          std::vector<Object*>& released) {
+
+void sim_loose_bodies(SimBatch& batch, const std::vector<size_t>& vehicles) {
   using physics::Vec3;
-  std::vector<std::pair<Object*, bool>> settled;  // keep the current pose?
-  for (auto it = loose_panels.begin(); it != loose_panels.end();) {
-    auto current = it++;
-    auto* part = current->first;
-    auto& loose = current->second;
-    auto* node = gameref_get(part);
-    auto* rec = record(part);
-    const bool native_dynamic = rec && rec->config->native_kind == "native_dynamic";
-    std::vector<std::pair<Record*, physics::RigidBody>> carrier_backups;
-    std::vector<std::pair<const ContactVehicle*, physics::VehicleDynamics::Impact>> impacts;
+  std::vector<std::pair<size_t, bool>> settled;  // keep the current pose?
+  for (size_t index = 0; index < batch.loose.size(); ++index) {
+    auto& loose = batch.loose[index];
+    if (loose.end != SimLoose::End::None) continue;
+    SimCarriers carrier_backups;
+    SimContacts impacts;
     bool completed = false;
     try {
-    PartMatrix parent_frame;
-    if (!node || !node->parent) {
-      loose_panels.erase(current);
-      part_destroy(part);
-      continue;
-    }
-    if (!scene_instances_script_matrix(node->parent, parent_frame.data()) ||
-        (native_dynamic && !scene_instances_ground_frame(node->parent, parent_frame.data()))) {
-      // Its world is no longer the active one (the garage, or a new visit to
-      // the city with a new GroundRef). A map prop becomes scenery again where
-      // it last was, so the instances it replaced are not left hidden.
-      if (native_dynamic && rec->physics_ready) {
-        const auto frame = loose.body.frame();
-        scene_instances_settle_dynamic(part, frame.data());
+      constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
+      const bool sleeping = loose.quiet_ticks >= rest_ticks;
+      auto& body = loose.body;
+      bool near = false, far = true;
+      for (size_t vehicle : vehicles) {
+        const auto& car = batch.cars[vehicle];
+        if (!sim_live(car)) continue;
+        near |= sim_near(body, car);
+        far &= !sim_near(body, car, kSettleDistance);
       }
-      loose_panels.erase(current);
-      part_destroy(part);
-      continue;
-    }
-    if (native_dynamic && !rec->physics_ready) {
-      // Placement ownership is the map, not whichever car was controlled when
-      // the prop woke. The first tick resolves its ground-shell transform.
-      loose.body.set_frame(part_matrix_multiply(parent_frame, rec->published_frame));
-      rec->physics_ready = true;
-    }
-    constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
-    const bool sleeping = loose.quiet_ticks >= rest_ticks;
-    auto& body = loose.body;
-    bool near = false, far = true;
-    for (const auto& vehicle : vehicles) if (contact_live(vehicle)) {
-      near |= contact_near(body, vehicle);
-      far &= !contact_near(body, vehicle, kSettleDistance);
-    }
-    if (native_dynamic) {
-      loose.far_awake_ticks = far && !sleeping ? loose.far_awake_ticks + 1 : 0;
-      if (far && sleeping) {
-        settled.push_back({part, true});
-        continue;
-      }
-      if (loose.far_awake_ticks > kLostTicks || body.position.y < kLostHeight) {
-        settled.push_back({part, false});
-        continue;
-      }
-    }
-    if (sleeping && !near) continue;
-    const Vec3 before = body.position;
-    const auto previous = body.corners();
-    if (!sleeping) body.integrate(physics::VehicleDynamics::timestep);
-    if (loose.exit_ticks) {
-      const auto* owner = gameref_find_live(loose.vehicle);
-      const auto* carrier = owner ? record(static_cast<Object*>(owner->key)) : nullptr;
-      if (!carrier || !leaving_carrier(body, carrier->dynamics.body)) loose.exit_ticks = 0;
-      else --loose.exit_ticks;
-    }
-    bool carrier_contact = false;
-    for (const auto& vehicle : vehicles) {
-      if (!contact_live(vehicle) || !contact_near(body, vehicle)) continue;
-      const auto* state = gameref_get(vehicle.chassis);
-      if (loose.exit_ticks && state->live_id == loose.vehicle) continue;
-      carrier_backups.emplace_back(vehicle.rec, vehicle.rec->dynamics.body);
-      physics::VehicleDynamics::Impact hit;
-      if (collide_loose_with_car(body, previous, before, vehicle.chassis,
-                                *vehicle.rec, vehicle.previous.frame(), hit)) {
-        carrier_contact = true;
-        impacts.emplace_back(&vehicle, hit);
-      }
-    }
-    if (sleeping && !carrier_contact) continue;
-    const auto support = collide_loose_with_scene(body, before, part);
-    if (native_dynamic) {
-      loose.quiet_ticks = map_object_quiet_ticks(body, !carrier_contact && support.touching,
-                                                 loose.quiet_ticks, loose.rest_anchor);
-    } else {
-      const bool quiet = !carrier_contact && support.penetrating &&
-          body.velocity.dot(body.velocity) < .0025 && body.omega().dot(body.omega()) < .01;
-      loose.quiet_ticks = quiet ? loose.quiet_ticks + 1 : 0;
-    }
-    if (loose.quiet_ticks >= rest_ticks) body.velocity = body.momentum = {};
-    validate_contact_exchange(body, carrier_backups, impacts);
-    const auto local = part_matrix_multiply(part_matrix_inverse_rigid(parent_frame), body.frame());
-    if (!finite_frame(local)) throw std::runtime_error("non-finite loose-body frame");
-    if (native_dynamic) {
-      for (size_t i = 0; i < rec->renders.size() && i < loose.render_offsets.size(); ++i)
-        if (auto* state = gameref_get(rec->renders[i])) {
-          const auto slot = part_matrix_multiply(local, loose.render_offsets[i]);
-          std::copy(slot.begin(), slot.end(), state->local_matrix);
+      if (loose.native_dynamic) {
+        loose.far_awake_ticks = far && !sleeping ? loose.far_awake_ticks + 1 : 0;
+        if (far && sleeping) {
+          settled.push_back({index, true});
+          continue;
         }
-    } else {
-      std::copy(local.begin(), local.end(), node->local_matrix);
-    }
-    completed = true;
+        if (loose.far_awake_ticks > kLostTicks || body.position.y < kLostHeight) {
+          settled.push_back({index, false});
+          continue;
+        }
+      }
+      if (sleeping && !near) continue;
+      const Vec3 before = body.position;
+      const auto previous = body.corners();
+      if (!sleeping) body.integrate(physics::VehicleDynamics::timestep);
+      if (loose.exit_ticks) {
+        const physics::RigidBody* carrier =
+            loose.carrier >= 0 ? &batch.cars[static_cast<size_t>(loose.carrier)].dynamics.body
+            : loose.carrier_fixed ? &loose.carrier_body
+                                  : nullptr;
+        if (!carrier || !leaving_carrier(body, *carrier)) loose.exit_ticks = 0;
+        else --loose.exit_ticks;
+      }
+      bool carrier_contact = false;
+      for (size_t vehicle : vehicles) {
+        auto& car = batch.cars[vehicle];
+        if (!sim_live(car) || !sim_near(body, car)) continue;
+        if (loose.exit_ticks && car.live_id == loose.vehicle) continue;
+        carrier_backups.emplace_back(&car, car.dynamics.body);
+        physics::VehicleDynamics::Impact hit;
+        if (collide_loose_with_car(body, previous, before, car, car.previous.frame(), hit)) {
+          carrier_contact = true;
+          impacts.emplace_back(vehicle, hit);
+        }
+      }
+      if (sleeping && !carrier_contact) continue;
+      const auto support = collide_loose_with_scene(body, before, loose.part);
+      if (loose.native_dynamic) {
+        loose.quiet_ticks = map_object_quiet_ticks(body, !carrier_contact && support.touching,
+                                                   loose.quiet_ticks, loose.rest_anchor);
+      } else {
+        const bool quiet = !carrier_contact && support.penetrating &&
+            body.velocity.dot(body.velocity) < .0025 && body.omega().dot(body.omega()) < .01;
+        loose.quiet_ticks = quiet ? loose.quiet_ticks + 1 : 0;
+      }
+      if (loose.quiet_ticks >= rest_ticks) body.velocity = body.momentum = {};
+      sim_validate_exchange(batch, body, carrier_backups, impacts);
+      const auto local =
+          part_matrix_multiply(part_matrix_inverse_rigid(loose.parent_frame), body.frame());
+      if (!finite_frame(local)) throw std::runtime_error("non-finite loose-body frame");
+      loose.local = local;
+      loose.published = true;
+      completed = true;
     } catch (const std::exception& error) {
-      for (const auto& [vehicle, before] : carrier_backups) vehicle->dynamics.body = before;
-      std::fprintf(stderr,"[phys] removed loose body type=0x%x: %s\n",rec?rec->state.resource:0,error.what());
-      if (native_dynamic) scene_instances_settle_dynamic(part,nullptr);
-      loose_panels.erase(part);
-      part_destroy(part);
+      for (const auto& [car, before] : carrier_backups) car->dynamics.body = before;
+      loose.message = phys_message("removed loose body", loose.resource, error.what());
+      loose.end = SimLoose::End::Fault;
+      batch.loose_ended.push_back(index);
     }
-    if (completed) commit_vehicle_impacts(impacts, released);
+    if (completed) sim_commit_impacts(batch, impacts);
   }
-  for (const auto& [part, keep_pose] : settled) {
-    const auto found = loose_panels.find(part);
-    if (found == loose_panels.end()) continue;
-    const auto frame = found->second.body.frame();
-    scene_instances_settle_dynamic(part, keep_pose ? frame.data() : nullptr);
-    loose_panels.erase(found);
-    part_destroy(part);
+  for (const auto& [index, keep_pose] : settled) {
+    auto& loose = batch.loose[index];
+    loose.end = keep_pose ? SimLoose::End::Settle : SimLoose::End::Lost;
+    loose.end_frame = loose.body.frame();
+    batch.loose_ended.push_back(index);
   }
 }
 
@@ -4435,34 +4580,660 @@ bool configure_free_body(const GameRefState& state, physics::RigidBody& body) {
   return true;
 }
 
-void publish_free_body(GameRefState& state, FreeBody& free, const PartMatrix& parent_frame) {
-  const auto local = part_matrix_multiply(part_matrix_inverse_rigid(parent_frame),
-                                          free.body.frame());
+// The GameRef pose and script velocities of a free body; throws for a pose a
+// GameRef cannot hold.
+void free_body_pose(const physics::RigidBody& body, const PartMatrix& parent_frame,
+                    std::array<float, 3>& pos, std::array<float, 3>& ypr,
+                    std::array<float, 6>& motion) {
+  const auto local = part_matrix_multiply(part_matrix_inverse_rigid(parent_frame), body.frame());
   if (!finite_frame(local)) throw std::runtime_error("non-finite PhysicsRef publication frame");
-  const auto motion = script_motion(free.body, parent_frame);
-  state.matrix_override = false;
-  std::copy(local.begin() + 12, local.begin() + 15, state.pos);
+  motion = script_motion(body, parent_frame);
+  std::copy(local.begin() + 12, local.begin() + 15, pos.begin());
   // The inverse of local_matrix(): yaw about Y, then pitch, then roll.
   const double pitch = std::asin(std::clamp(-double(local[9]), -1.0, 1.0));
-  state.ypr[1] = static_cast<float>(pitch);
+  ypr[1] = static_cast<float>(pitch);
   if (std::fabs(std::cos(pitch)) > 1e-6) {
-    state.ypr[0] = std::atan2(local[8], local[10]);
-    state.ypr[2] = std::atan2(local[1], local[5]);
+    ypr[0] = std::atan2(local[8], local[10]);
+    ypr[2] = std::atan2(local[1], local[5]);
   } else {
-    state.ypr[0] = std::atan2(-local[2], local[0]);
-    state.ypr[2] = 0;
+    ypr[0] = std::atan2(-local[2], local[0]);
+    ypr[2] = 0;
   }
-  std::copy(motion.begin(), motion.begin() + 3, state.vel);
-  std::copy(motion.begin() + 3, motion.end(), state.angular_vel);
-  std::copy(state.pos, state.pos + 3, free.pos);
-  std::copy(state.ypr, state.ypr + 3, free.ypr);
 }
+
+void disable_free_body(GameRefState& state, void* key, const std::array<float, 3>& pos,
+                       const std::array<float, 3>& ypr, const char* reason) {
+  std::fprintf(stderr, "[phys] disabled PhysicsRef id=%d: %s\n", state.live_id, reason);
+  state.matrix_override = false;
+  const auto finite = [](float v) { return std::isfinite(v); };
+  if (!std::all_of(pos.begin(), pos.end(), finite) || !std::all_of(ypr.begin(), ypr.end(), finite))
+    state.empty = true;  // No finite pose exists to render; never publish NaNs.
+  std::copy(pos.begin(), pos.end(), state.pos);
+  std::copy(ypr.begin(), ypr.end(), state.ypr);
+  std::fill(std::begin(state.vel), std::end(state.vel), 0.f);
+  std::fill(std::begin(state.angular_vel), std::end(state.angular_vel), 0.f);
+  gameref_set_physics_simulated(key, false);
+  free_bodies.erase(key);
+}
+}  // namespace
 
 // Free PhysicsRef bodies share contacts with every active physical car.
 // Bodies outside the active world wait; control handoff changes no ownership.
-void advance_free_bodies(const std::vector<ContactVehicle>& vehicles,
-                         std::vector<Object*>& released) {
+void sim_free_bodies(SimBatch& batch, const std::vector<size_t>& vehicles) {
   using physics::Vec3;
+  for (auto& free : batch.free) {
+    if (free.disabled) continue;
+    SimCarriers carrier_backups;
+    SimContacts impacts;
+    bool completed = false;
+    try {
+      constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
+      const bool sleeping = free.quiet_ticks >= rest_ticks;
+      auto& body = free.body;
+      bool near = false;
+      for (size_t vehicle : vehicles)
+        if (sim_live(batch.cars[vehicle]) && sim_near(body, batch.cars[vehicle])) near = true;
+      if (sleeping && !near) continue;
+      const Vec3 before = body.position;
+      const auto previous_body = body;
+      const auto previous = body.corners();
+      if (!sleeping) body.integrate(physics::VehicleDynamics::timestep);
+      bool carrier_contact = false;
+      for (size_t vehicle : vehicles) {
+        auto& car = batch.cars[vehicle];
+        if (!sim_live(car) || !sim_near(body, car)) continue;
+        auto& car_body = car.dynamics.body;
+        const auto car_before = car_body;
+        carrier_backups.emplace_back(&car, car_before);
+        physics::VehicleDynamics::Impact hit;
+        bool contact = false;
+        if (free.shape == PhysicsShape::Box || free.shape == PhysicsShape::Sphere) {
+          // SLRR_rev v221 vehicle-3d.ts freeContactsCore: unshaped bodies use
+          // the chassis OBB. Corner-only mesh probes miss a box whose upper and
+          // lower corners straddle the whole car shell.
+          if (const auto pair = physics::resolve_swept_vehicle_contact(body, car_body, previous_body,
+                                                                       car.previous)) {
+            hit = body_pair_impact(car_before, car_body, pair->point, -pair->normal,
+                                   pair->normal_impulse, pair->speed);
+            contact = true;
+          }
+        } else {
+          contact = collide_loose_with_car(body, previous, before, car, car.previous.frame(), hit);
+        }
+        if (contact) {
+          carrier_contact = true;
+          impacts.emplace_back(vehicle, hit);
+        }
+      }
+      if (sleeping && !carrier_contact) continue;
+      const auto support = collide_loose_with_scene(body, before, free.key);
+      free.quiet_ticks = map_object_quiet_ticks(body, !carrier_contact && support.touching,
+                                                free.quiet_ticks, free.rest_anchor);
+      if (free.quiet_ticks >= rest_ticks) body.velocity = body.momentum = {};
+      const auto frame = body.frame();
+      if (!std::all_of(frame.begin(),frame.end(),[](float v){return std::isfinite(v);}))
+        throw std::runtime_error("non-finite free-body frame");
+      sim_validate_exchange(batch, body, carrier_backups, impacts);
+      auto pos = free.pos, ypr = free.ypr;
+      auto motion = free.motion;
+      free_body_pose(body, free.parent_frame, pos, ypr, motion);
+      free.pos = pos;
+      free.ypr = ypr;
+      free.motion = motion;
+      free.published = true;
+      completed = true;
+    } catch (const std::exception& error) {
+      for (const auto& [car, before] : carrier_backups) car->dynamics.body = before;
+      free.message = error.what();
+      free.disabled = true;
+    }
+    if (completed) sim_commit_impacts(batch, impacts);
+  }
+}
+
+void sim_clamp_nitro(SimCar& car) {
+  car.nitro_remaining = std::clamp(car.nitro_remaining, 0., car.nitro_capacity);
+  if (!(car.nitro_remaining > 0 && std::isfinite(car.nitro_rate) && car.nitro_rate > 0))
+    car.nitro_active = car.nitro_flame = false;
+}
+
+// The part of configure_drive that changes between the host ticks of one
+// batch; it ran in full on the host for the first tick. A parked car woken
+// during a batch keeps its drive until the next frame configures it.
+void sim_refresh_drive(SimCar& car) {
+  using Mode = DriveRefresh::Mode;
+  auto& drive = car.dynamics.drive;
+  drive.nitro = 0;
+  car.nitro_requested = false;
+  sim_clamp_nitro(car);
+  const auto steer_wheels = [&] {
+    for (size_t i = 0; i < drive.wheels.size(); ++i)
+      drive.wheels[i].steer = steered_wheel_angle(car.steering, car.steering_input,
+                                                  car.steering_correction, i);
+  };
+  if (car.drive.mode == Mode::Parked) {
+    if (car.steering_correction != 0.f) {
+      car.steering_correction = 0.f;
+      steer_wheels();
+    }
+    return;
+  }
+  if (car.drive.autonomous) {
+    car.steering_input = car.steering_request = car.drive.ai_steer;
+    car.steering_correction = 0;
+  } else {
+    steering_filter(car.steering, car.steer, car.dynamics.body, steering_grounded(car.dynamics),
+                    car.steering_input, car.steering_request, car.steering_correction);
+  }
+  steer_wheels();
+  if (car.drive.mode == Mode::Steering) return;
+  if (car.drive.mode == Mode::EngineLost) {
+    car.dynamics.engine_running = false;
+    car.dynamics.engine_omega = 0;
+  } else {
+    car.nitro_requested =
+        car.controlled && car.drive.controls && car.nitro_input > .1f && car.released;
+  }
+  drive.engaged = car.released;
+}
+
+// One shared substep of a stepping car (the records loop of the former
+// single-threaded tick). A car that fails restores its pose before the
+// substep and is suspended, as before.
+void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep,
+                  std::vector<size_t>& vehicles) {
+  auto& car = batch.cars[index];
+  const auto saved_body = car.dynamics.body;
+  const auto saved_local = car.local;
+  const bool was_ready = car.ready;
+  try {
+    // An unreleased chassis (catalog, before start) may drop onto a floor.
+    // With no floor the step only applies gravity, and the car leaves the shot.
+    if (!car.released && car.pending) {
+      SceneFloorHit probe;
+      if (!scene_instances_sample_floor(car.world[12], car.world[14], car.world[13] + 4.f,
+                                        car.chassis, probe))
+        return;
+    }
+    const auto terrain = [&](double x, double z, double ceiling, physics::GroundHit &ground) {
+      SceneFloorHit hit;
+      if (!scene_instances_sample_floor(static_cast<float>(x), static_cast<float>(z),
+                                        static_cast<float>(ceiling), car.chassis, hit))
+        return false;
+      ground.height = hit.height;
+      ground.normal = {hit.normal[0], hit.normal[1], hit.normal[2]};
+      return true;
+    };
+    // One shared solver substep; controls remain on their 60 Hz host tick.
+    const auto before_body = car.dynamics.body;
+    const auto before = before_body.position;
+    const auto orientation_before = car.dynamics.body.orientation;
+    const auto velocity_before = car.dynamics.body.velocity;
+    sim_clamp_nitro(car);
+    const double nitro_rpm = car.dynamics.engine_omega * 9.54929658551372;
+    const double nitro_limiter = car.dynamics.engine_limit_fraction();
+    car.nitro_active = car.nitro_requested && car.dynamics.engine_running &&
+        car.nitro_remaining > 0 && std::isfinite(car.nitro_rate) && car.nitro_rate > 0;
+    car.dynamics.drive.nitro = car.nitro_active ? car.nitro_input : 0.;
+    const auto steps = car.dynamics.advance(physics::VehicleDynamics::timestep, terrain);
+    // MWM 454A42: RPM * .0002 * input * limiter * dt * script rate.
+    // Consume once per solver step, never from sampling a curve or collecting
+    // a camera/reflection. Empty tanks return to the dry bank next step.
+    if (car.nitro_active && steps)
+      car.nitro_remaining = std::max(0., car.nitro_remaining -
+          nitro_rpm * .0002 * car.nitro_input * nitro_limiter * car.nitro_rate *
+          steps * physics::VehicleDynamics::timestep);
+    if (substep == 0) {
+      // Original flag-256 children flicker with a 30% MSVC-rand gate per
+      // render update. Sample once per 60-Hz simulation tick instead: all
+      // nozzles/cameras agree, and pause freezes both fuel and presentation.
+      car.nitro_random = car.nitro_random * 214013u + 2531011u;
+      car.nitro_flame = car.nitro_active && nitro_rpm > 1000 &&
+          car.dynamics.drive.throttle > .01 &&
+          ((car.nitro_random >> 16) & 32767u) < 9830u;
+    }
+    if (!car.nitro_active || car.nitro_remaining <= 0)
+      car.nitro_flame = false;
+    // Collision belongs to the released body, not its engine/controller. A
+    // coasting car still hits the world after its driver leaves or is removed.
+    if (car.released) {
+      const auto wall = collide_chassis(car.dynamics.body, car.probe_shift, before,
+                                        batch.ticks - tick, batch.wake);
+      const auto& ground = car.dynamics.ground_impact;
+      sim_impact(batch, index, wall.speed >= ground.speed ? wall : ground);
+      if (car.controlled && steps) {
+        const auto& body = car.dynamics.body;
+        const auto local_acceleration = body.orientation.inverse_rotate(
+            (body.velocity - velocity_before) / (steps * physics::VehicleDynamics::timestep));
+        const physics::Vec3 lean{
+            std::clamp(car.steering_input * .045 * car.head_steer -
+                           local_acceleration.x * .003 * car.head_acceleration, -.15, .15),
+            0,
+            std::clamp(body.velocity.length() * .0015 * car.head_velocity -
+                           local_acceleration.z * .004 * car.head_acceleration, -.15, .15)};
+        car.cockpit_offset += (lean - car.cockpit_offset) *
+            -std::expm1(-physics::VehicleDynamics::timestep / .14);
+      }
+      const auto delta = car.dynamics.body.position - before;
+      car.mileage += static_cast<float>(std::hypot(delta.x, delta.z) * .1);
+    }
+    car.engine_running = car.dynamics.drive.native_traffic
+                             ? car.released
+                             : car.dynamics.drive.torque && car.dynamics.engine_running;
+    if (!finite_frame(car.dynamics.body.frame()))
+      throw std::runtime_error("non-finite chassis output");
+    if (steps) {
+      sim_publish(car, false);
+      if (substep == 0 || !car.render_blend) {
+        // A passive car can first wake in the second substep. Its first drawn
+        // interval must start here, never from an uninitialized world origin.
+        car.render_from_position = before;
+        car.render_from_orientation = orientation_before;
+      }
+      car.render_blend = true;
+    }
+    car.steps += steps;
+    if (steps && car.pending) {
+      if (!car.suspended)
+        car.pending = false;
+      else {
+        bool supported = true;
+        double force = 0;
+        for (size_t i = 0; i < 4; ++i) {
+          if (car.dynamics.wheels[i].enabled)
+            supported = supported && car.dynamics.state[i].contact;
+          force += car.dynamics.state[i].force;
+        }
+        const bool quiet = supported &&
+                           car.dynamics.body.velocity.length() < .02 &&
+                           car.dynamics.body.omega().length() < .02 &&
+                           std::fabs(force - car.dynamics.body.mass * 9.81) <
+                               car.dynamics.body.mass * 9.81 * .02;
+        car.quiet_ticks = quiet ? car.quiet_ticks + steps : 0;
+        // Keep the quarter-second settling window across solver frequencies.
+        if (car.quiet_ticks >= physics::VehicleDynamics::frequency / 4) {
+          car.pending = false;
+          car.dynamics.body.velocity = {};
+          car.dynamics.body.momentum = {};
+        }
+      }
+    }
+    car.previous = before_body;
+    car.listed = true;
+    vehicles.push_back(index);
+  } catch (const std::exception& error) {
+    if (!car.fault_reported) {
+      car.message += phys_message("suspended chassis", car.resource, error.what());
+      car.fault_reported = true;
+    }
+    car.dynamics.body = saved_body;
+    car.dynamics.body.velocity = car.dynamics.body.momentum = {};
+    car.dynamics.reset_clock();
+    car.dynamics.reset_drive();
+    car.dynamics.release_wheels();
+    car.ready = false;
+    car.suspended = true;
+    car.pending = false;
+    car.engine_running = car.render_blend = false;
+    car.nitro_requested = car.nitro_active = car.nitro_flame = false;
+    car.nitro_input = 0;
+    car.dynamics.drive.nitro = 0;
+    car.fault = true;
+    car.fault_local = saved_local;
+    car.fault_was_ready = was_ready;
+  }
+}
+
+// The physics thread's part of a frame: every host tick of the batch, each
+// as shared solver substeps over all its bodies.
+void simulate_batch(SimBatch& batch) {
+  const auto started = perf::now_ticks();
+  constexpr unsigned substeps =
+      physics::VehicleDynamics::frequency / physics::VehicleDynamics::update_frequency;
+  std::vector<size_t> vehicles;
+  vehicles.reserve(batch.cars.size());
+  for (unsigned tick = 0; tick < batch.ticks; ++tick)
+    for (unsigned substep = 0; substep < substeps; ++substep) {
+      // SLRR_rev v221 7441a697 vehicle-physics-world.ts: all bodies share
+      // substeps and each unordered pair is resolved once.
+      vehicles.clear();
+      for (size_t i = 0; i < batch.cars.size(); ++i) {
+        auto& car = batch.cars[i];
+        car.listed = false;
+        if (substep == 0) {
+          car.engine_running = false;
+          car.nitro_active = car.nitro_flame = false;
+          car.dynamics.drive.nitro = 0;
+          car.render_blend = false;
+        }
+        if (car.suspended && !car.pending) continue;
+        if (substep == 0 && tick > 0 && car.configured) sim_refresh_drive(car);
+        sim_step_car(batch, i, tick, substep, vehicles);
+      }
+      // Settled parked cars are passive participants. Two parked showroom cars
+      // do not collide, but a released car can wake one without inventing a driver.
+      for (size_t i = 0; i < batch.cars.size(); ++i) {
+        auto& car = batch.cars[i];
+        if (car.listed || car.fault_reported || (!car.ready && car.pending)) continue;
+        car.previous = car.dynamics.body;
+        try { physics::validate_vehicle_contact_body(car.dynamics.body); }
+        catch (const std::exception& error) { sim_suspend_contact(car, error.what()); continue; }
+        car.listed = true;
+        vehicles.push_back(i);
+      }
+      std::sort(vehicles.begin(), vehicles.end(), [&](size_t a, size_t b) {
+        return batch.cars[a].live_id < batch.cars[b].live_id;
+      });
+      for (size_t i = 0; i < vehicles.size(); ++i) {
+        auto& a = batch.cars[vehicles[i]];
+        if (!sim_live(a)) continue;
+        for (size_t j = i + 1; j < vehicles.size(); ++j) {
+          if (!sim_live(a)) break;
+          auto& b = batch.cars[vehicles[j]];
+          if (!sim_live(b) || (!a.released && !b.released)) continue;
+          auto& body_a = a.dynamics.body;
+          auto& body_b = b.dynamics.body;
+          const auto before_a = body_a, before_b = body_b;
+          std::optional<physics::VehicleContact> hit;
+          try {
+            hit = physics::resolve_swept_vehicle_contact(body_a, body_b, a.previous, b.previous);
+            if (hit) {
+              script_motion(body_a, a.parent);
+              script_motion(body_b, b.parent);
+              if (!finite_frame(body_a.frame()) || !finite_frame(body_b.frame()))
+                throw std::runtime_error("unrepresentable vehicle contact frame");
+            }
+          } catch (const std::exception& error) {
+            body_a = before_a;
+            body_b = before_b;
+            bool bad_a = false, bad_b = false;
+            try { physics::validate_vehicle_contact_body(body_a); } catch (...) { bad_a = true; }
+            try { physics::validate_vehicle_contact_body(body_b); } catch (...) { bad_b = true; }
+            // The kernel is transactional. Isolate a malformed passive car, not
+            // its healthy peer. Finite-body arithmetic failure belongs to this
+            // pair only; unrelated cars and the host/native pump continue.
+            if (bad_a || !bad_b) sim_suspend_contact(a, error.what());
+            if (bad_b || !bad_a) sim_suspend_contact(b, error.what());
+            continue;
+          }
+          if (!hit) continue;
+          if (hit->normal_impulse > 1) {
+            for (auto* car : {&a, &b}) {
+              car->released = true;
+              car->suspended = false;
+              car->pending = false;
+            }
+            sim_publish(a, false);
+            sim_publish(b, false);
+            sim_impact(batch, vehicles[i],
+                       body_pair_impact(before_a, body_a, hit->point, hit->normal,
+                                        hit->normal_impulse, hit->speed));
+            sim_impact(batch, vehicles[j],
+                       body_pair_impact(before_b, body_b, hit->point, -hit->normal,
+                                        hit->normal_impulse, hit->speed));
+          }
+        }
+      }
+      sim_loose_bodies(batch, vehicles);
+      sim_free_bodies(batch, vehicles);
+      for (size_t index : vehicles) {
+        auto& car = batch.cars[index];
+        if (!sim_live(car)) continue;
+        try {
+          physics::validate_vehicle_contact_body(car.dynamics.body);
+          car.dynamics.sync_wheels();
+          sim_publish(car, substep + 1 == substeps);
+        } catch (const std::exception& error) {
+          sim_suspend_contact(car, error.what());
+        }
+      }
+    }
+  batch.thread_ticks = perf::now_ticks() - started;
+}
+
+// The pose a failed chassis keeps: the one published before the failure, or
+// none when it never had a finite one.
+void restore_chassis_pose(GameRefState& node, const Record& rec, const PartMatrix& saved_local,
+                          bool was_ready) {
+  const auto& safe = finite_frame(saved_local) ? saved_local : rec.published_frame;
+  if (finite_frame(saved_local) || (was_ready && finite_frame(safe))) {
+    std::copy(safe.begin(),safe.end(),node.local_matrix);
+    std::copy(safe.begin()+12,safe.begin()+15,node.pos);
+    const double pitch = std::asin(std::clamp(-double(safe[9]),-1.0,1.0));
+    node.ypr[1] = static_cast<float>(pitch);
+    if (std::fabs(std::cos(pitch)) > 1e-6) {
+      node.ypr[0] = std::atan2(safe[8],safe[10]);
+      node.ypr[2] = std::atan2(safe[1],safe[5]);
+    } else {
+      node.ypr[0] = std::atan2(-safe[2],safe[0]);
+      node.ypr[2] = 0;
+    }
+    node.matrix_override = true;
+  } else {
+    node.empty = true; // No valid pose has ever been published for this body.
+  }
+  node.render_pose = false;
+  std::fill(std::begin(node.vel),std::end(node.vel),0.f);
+  std::fill(std::begin(node.angular_vel),std::end(node.angular_vel),0.f);
+}
+
+// A chassis that cannot be prepared (non-finite frame or drive) is suspended
+// on the host, as a failing solver step is.
+void suspend_chassis(Object* chassis, Record& rec, GameRefState& node,
+                     const physics::RigidBody& saved_body, const PartMatrix& saved_local,
+                     bool was_ready, const char* reason) {
+  if (!rec.physics_fault_reported) {
+    std::fprintf(stderr,"[phys] suspended chassis type=0x%x: %s\n",rec.state.resource,reason);
+    rec.physics_fault_reported = true;
+  }
+  rec.dynamics.body = saved_body;
+  rec.dynamics.body.velocity = rec.dynamics.body.momentum = {};
+  rec.dynamics.reset_clock();
+  rec.dynamics.reset_drive();
+  rec.dynamics.release_wheels();
+  rec.physics_ready = false;
+  rec.physics_suspended = true;
+  rec.physics_pending_placement = false;
+  rec.engine_running = rec.render_blend = false;
+  stop_nitro(rec);
+  (void)chassis;
+  restore_chassis_pose(node, rec, saved_local, was_ready);
+}
+
+// The host's part before the physics thread runs a batch: everything that
+// reads GameRef, scripts, input or options, with the configuration the
+// former tick did at its first substep.
+SimBatch prepare_batch(unsigned ticks) {
+  SimBatch batch;
+  batch.ticks = ticks;
+  const auto* target = gameref_find_live(controlled_vehicle);
+  Object* controlled = target ? as_part(static_cast<Object*>(target->key)) : nullptr;
+  const auto& options = host_game_options();
+  std::vector<size_t> stepping, parked;
+  for (auto& [chassis, rec] : records) {
+    const auto ineligible = [&rec = rec] {
+      // The per-tick reset every record not in the batch gets.
+      rec.engine_running = false;
+      rec.nitro_active = rec.nitro_flame = false;
+      rec.dynamics.drive.nitro = 0;
+      rec.render_blend = false;
+    };
+    if (rec.external_motion || rec.config->native_kind != "car" || rec.state.parent) {
+      ineligible();
+      continue;
+    }
+    auto* node = gameref_get(chassis);
+    if (!node || !contact_visible(chassis)) {
+      ineligible();
+      continue;
+    }
+    SimCar car;
+    const bool active = !(rec.physics_suspended && !rec.physics_pending_placement);
+    PartMatrix frame, parent = eye_matrix();
+    if (active) {
+      const auto saved_body = rec.dynamics.body;
+      const auto saved_local = node_local(chassis);
+      const bool was_ready = rec.physics_ready;
+      try {
+        if (!scene_instances_script_matrix(chassis, frame.data()) ||
+            (node->parent && !scene_instances_script_matrix(node->parent, parent.data()))) {
+          ineligible();
+          continue;
+        }
+        const auto local = node_local(chassis);
+        if (!finite_frame(frame) || !finite_frame(parent) || !finite_frame(local))
+          throw std::runtime_error("non-finite chassis frame");
+        bool external = node->parent != rec.physics_parent;
+        for (size_t i = 0; i < 16; ++i)
+          external = external || std::fabs(local[i] - rec.published_frame[i]) > 1e-5f;
+        if (external) rec.physics_ready = false;
+        if ((!rec.physics_ready || rec.physics_dirty) && !dynamics_configure(chassis, rec, frame)) {
+          ineligible();
+          continue;
+        }
+        dynamics_wheels(rec);
+        car.drive = configure_drive(chassis, rec, chassis == controlled);
+        car.configured = true;
+        if (rec.body_support_dirty) rebuild_body_support(chassis, rec);
+        car.local = local;
+      } catch (const std::exception& error) {
+        suspend_chassis(chassis, rec, *node, saved_body, saved_local, was_ready, error.what());
+        ineligible();
+        continue;
+      }
+    } else {
+      if (rec.physics_fault_reported || (!rec.physics_ready && rec.physics_pending_placement)) {
+        ineligible();
+        continue;
+      }
+      if ((node->parent && !scene_instances_script_matrix(node->parent, parent.data())) ||
+          !scene_instances_script_matrix(chassis, frame.data())) {
+        ineligible();
+        continue;
+      }
+      const auto local = node_local(chassis);
+      const bool external = node->parent != rec.physics_parent || local != rec.published_frame;
+      // setMatrix/park has authority over an asleep car too. Never publish a
+      // stale solver body back over a new scripted placement.
+      if (external || !rec.physics_ready || rec.physics_dirty) {
+        if (!dynamics_configure(chassis, rec, frame, true)) {
+          ineligible();
+          continue;
+        }
+        rec.dynamics.body.velocity = rec.dynamics.body.momentum = {};
+        rec.published_frame = local;
+      }
+      car.local = local;
+    }
+    car.chassis = chassis;
+    car.rec = &rec;
+    car.incarnation = node->incarnation;
+    car.resource = rec.state.resource;
+    car.controlled = chassis == controlled;
+    car.parent = parent;
+    car.world = frame;
+    car.dynamics = rec.dynamics;
+    car.ready = rec.physics_ready;
+    car.released = rec.physics_released;
+    car.suspended = rec.physics_suspended;
+    car.pending = rec.physics_pending_placement;
+    car.fault_reported = rec.physics_fault_reported;
+    car.quiet_ticks = rec.physics_quiet_ticks;
+    car.engine_running = rec.engine_running;
+    car.render_blend = rec.render_blend;
+    car.render_from_position = rec.render_from_position;
+    car.render_from_orientation = rec.render_from_orientation;
+    car.nitro_remaining = rec.nitro_remaining;
+    car.nitro_capacity = nitro_capacity(chassis);
+    car.nitro_rate = comp(chassis, "consumption_nitro");
+    car.nitro_input = rec.nitro_input;
+    car.nitro_requested = rec.nitro_requested;
+    car.nitro_active = rec.nitro_active;
+    car.nitro_flame = rec.nitro_flame;
+    car.nitro_random = rec.nitro_random;
+    car.steering_input = rec.steering_input;
+    car.steering_request = rec.steering_request;
+    car.steering_correction = rec.steering_correction;
+    car.cockpit_offset = rec.cockpit_offset;
+    car.mileage = rec.mileage;
+    car.head_steer = options.head_steer;
+    car.head_acceleration = options.head_acceleration;
+    car.head_velocity = options.head_velocity;
+    car.steering = steering_geometry(rec);
+    car.steer = steering_input(car.drive.controls);
+    if (rec.deformation) {
+      const auto probes = chassis_probe_points(rec.dynamics.body, .18);
+      for (size_t i = 0; i < probes.size(); ++i)
+        car.probe_shift[i] = rec.deformation->displacement(probes[i]);
+    }
+    (active ? stepping : parked).push_back(batch.cars.size());
+    batch.cars.push_back(std::move(car));
+  }
+  // Live ids order the pair contacts; give them in the former order: stepping
+  // cars first, then parked ones.
+  for (auto* order : {&stepping, &parked})
+    for (size_t index : *order) {
+      auto& car = batch.cars[index];
+      gameref_make_live(car.chassis);
+      car.live_id = gameref_get(car.chassis)->live_id;
+    }
+
+  for (auto it = loose_panels.begin(); it != loose_panels.end();) {
+    auto current = it++;
+    auto* part = current->first;
+    auto& loose = current->second;
+    auto* node = gameref_get(part);
+    auto* rec = record(part);
+    const bool native_dynamic = rec && rec->config->native_kind == "native_dynamic";
+    PartMatrix parent_frame;
+    if (!node || !node->parent) {
+      loose_panels.erase(current);
+      part_destroy(part);
+      continue;
+    }
+    if (!scene_instances_script_matrix(node->parent, parent_frame.data()) ||
+        (native_dynamic && !scene_instances_ground_frame(node->parent, parent_frame.data()))) {
+      // Its world is no longer the active one (the garage, or a new visit to
+      // the city with a new GroundRef). A map prop becomes scenery again where
+      // it last was, so the instances it replaced are not left hidden.
+      if (native_dynamic && rec->physics_ready) {
+        const auto frame = loose.body.frame();
+        scene_instances_settle_dynamic(part, frame.data());
+      }
+      loose_panels.erase(current);
+      part_destroy(part);
+      continue;
+    }
+    if (native_dynamic && !rec->physics_ready) {
+      // Placement ownership is the map, not whichever car was controlled when
+      // the prop woke. The first tick resolves its ground-shell transform.
+      loose.body.set_frame(part_matrix_multiply(parent_frame, rec->published_frame));
+      rec->physics_ready = true;
+    }
+    SimLoose sim;
+    sim.part = part;
+    sim.resource = rec ? rec->state.resource : 0;
+    sim.native_dynamic = native_dynamic;
+    sim.parent_frame = parent_frame;
+    sim.body = loose.body;
+    sim.vehicle = loose.vehicle;
+    sim.quiet_ticks = loose.quiet_ticks;
+    sim.far_awake_ticks = loose.far_awake_ticks;
+    sim.exit_ticks = loose.exit_ticks;
+    sim.rest_anchor = loose.rest_anchor;
+    if (loose.exit_ticks)
+      if (const auto* owner = gameref_find_live(loose.vehicle))
+        if (const auto* carrier = record(static_cast<Object*>(owner->key))) {
+          for (size_t i = 0; i < batch.cars.size() && sim.carrier < 0; ++i)
+            if (batch.cars[i].rec == carrier) sim.carrier = static_cast<int>(i);
+          if (sim.carrier < 0) {
+            sim.carrier_fixed = true;
+            sim.carrier_body = carrier->dynamics.body;
+          }
+        }
+    batch.loose.push_back(std::move(sim));
+  }
+
   std::unordered_set<void*> live;
   for (auto* state : gameref_simulated_bodies()) {
     void* key = state->key;
@@ -4472,431 +5243,247 @@ void advance_free_bodies(const std::vector<ContactVehicle>& vehicles,
     live.insert(key);
     auto& free = free_bodies[key];
     // Keep the published pose until the complete step has succeeded.
-    const auto saved_pos = free.configured
+    const std::array<float, 3> saved_pos = free.configured
         ? std::array{free.pos[0],free.pos[1],free.pos[2]}
         : std::array{state->pos[0],state->pos[1],state->pos[2]};
-    const auto saved_ypr = free.configured
+    const std::array<float, 3> saved_ypr = free.configured
         ? std::array{free.ypr[0],free.ypr[1],free.ypr[2]}
         : std::array{state->ypr[0],state->ypr[1],state->ypr[2]};
-    std::vector<std::pair<Record*, physics::RigidBody>> carrier_backups;
-    std::vector<std::pair<const ContactVehicle*, physics::VehicleDynamics::Impact>> impacts;
-    bool completed = false;
     try {
-    const bool moved = !std::equal(free.pos, free.pos + 3, state->pos) ||
-                       !std::equal(free.ypr, free.ypr + 3, state->ypr);
-    if (!free.configured || free.live_id != state->live_id || moved) {
-      // New body, reused key or setMatrix: start at rest at the script pose.
-      if (!free.configured || free.live_id != state->live_id) {
-        free = FreeBody{};
-        free.live_id = state->live_id;
-        if (!configure_free_body(*state, free.body)) {
-          gameref_set_physics_simulated(key, false);
-          continue;
+      const bool moved = !std::equal(free.pos, free.pos + 3, state->pos) ||
+                         !std::equal(free.ypr, free.ypr + 3, state->ypr);
+      if (!free.configured || free.live_id != state->live_id || moved) {
+        // New body, reused key or setMatrix: start at rest at the script pose.
+        if (!free.configured || free.live_id != state->live_id) {
+          free = FreeBody{};
+          free.live_id = state->live_id;
+          if (!configure_free_body(*state, free.body)) {
+            gameref_set_physics_simulated(key, false);
+            continue;
+          }
+          free.configured = true;
         }
-        free.configured = true;
+        float local[16];
+        PartMatrix script_local;
+        scene_instances_local_matrix(*state, local);
+        std::copy(local, local + 16, script_local.begin());
+        free.body.set_frame(part_matrix_multiply(parent_frame, script_local));
+        free.body.velocity = free.body.momentum = {};
+        free.quiet_ticks = 0;
+        std::copy(state->pos, state->pos + 3, free.pos);
+        std::copy(state->ypr, state->ypr + 3, free.ypr);
       }
-      float local[16];
-      PartMatrix script_local;
-      scene_instances_local_matrix(*state, local);
-      std::copy(local, local + 16, script_local.begin());
-      free.body.set_frame(part_matrix_multiply(parent_frame, script_local));
-      free.body.velocity = free.body.momentum = {};
-      free.quiet_ticks = 0;
-      std::copy(state->pos, state->pos + 3, free.pos);
-      std::copy(state->ypr, state->ypr + 3, free.ypr);
-    }
-    constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
-    const bool sleeping = free.quiet_ticks >= rest_ticks;
-    auto& body = free.body;
-    bool near = false;
-    for (const auto& vehicle : vehicles)
-      if (contact_live(vehicle) && contact_near(body, vehicle)) near = true;
-    if (sleeping && !near) continue;
-    const Vec3 before = body.position;
-    const auto previous_body = body;
-    const auto previous = body.corners();
-    if (!sleeping) body.integrate(physics::VehicleDynamics::timestep);
-    bool carrier_contact = false;
-    for (const auto& vehicle : vehicles) {
-      if (!contact_live(vehicle) || !contact_near(body, vehicle)) continue;
-      auto& car = vehicle.rec->dynamics.body;
-      const auto car_before = car;
-      carrier_backups.emplace_back(vehicle.rec, car_before);
-      physics::VehicleDynamics::Impact hit;
-      bool contact = false;
-      if (state->physics_shape == PhysicsShape::Box || state->physics_shape == PhysicsShape::Sphere) {
-        // SLRR_rev v221 vehicle-3d.ts freeContactsCore: unshaped bodies use
-        // the chassis OBB. Corner-only mesh probes miss a box whose upper and
-        // lower corners straddle the whole car shell.
-        if (const auto pair = physics::resolve_swept_vehicle_contact(body, car, previous_body, vehicle.previous)) {
-          hit = body_pair_impact(car_before, car, pair->point, -pair->normal,
-                                 pair->normal_impulse, pair->speed);
-          contact = true;
-        }
-      } else {
-        contact = collide_loose_with_car(body, previous, before, vehicle.chassis,
-                                        *vehicle.rec, vehicle.previous.frame(), hit);
-      }
-      if (contact) {
-        carrier_contact = true;
-        impacts.emplace_back(&vehicle, hit);
-      }
-    }
-    if (sleeping && !carrier_contact) continue;
-    const auto support = collide_loose_with_scene(body, before, key);
-    free.quiet_ticks = map_object_quiet_ticks(body, !carrier_contact && support.touching,
-                                              free.quiet_ticks, free.rest_anchor);
-    if (free.quiet_ticks >= rest_ticks) body.velocity = body.momentum = {};
-    const auto frame = body.frame();
-    if (!std::all_of(frame.begin(),frame.end(),[](float v){return std::isfinite(v);}))
-      throw std::runtime_error("non-finite free-body frame");
-    validate_contact_exchange(body, carrier_backups, impacts);
-    publish_free_body(*state, free, parent_frame);
-    completed = true;
     } catch (const std::exception& error) {
-      for (const auto& [vehicle, before] : carrier_backups) vehicle->dynamics.body = before;
-      std::fprintf(stderr,"[phys] disabled PhysicsRef id=%d: %s\n",state->live_id,error.what());
-      state->matrix_override = false;
-      if (!std::all_of(saved_pos.begin(),saved_pos.end(),[](float v){return std::isfinite(v);}) ||
-          !std::all_of(saved_ypr.begin(),saved_ypr.end(),[](float v){return std::isfinite(v);}))
-        state->empty = true; // No finite pose exists to render; never publish NaNs.
-      std::copy(saved_pos.begin(),saved_pos.end(),state->pos);
-      std::copy(saved_ypr.begin(),saved_ypr.end(),state->ypr);
-      std::fill(std::begin(state->vel),std::end(state->vel),0.f);
-      std::fill(std::begin(state->angular_vel),std::end(state->angular_vel),0.f);
-      gameref_set_physics_simulated(key,false);
-      free_bodies.erase(key);
+      disable_free_body(*state, key, saved_pos, saved_ypr, error.what());
+      live.erase(key);
+      continue;
     }
-    if (completed) commit_vehicle_impacts(impacts, released);
+    SimFree sim;
+    sim.key = key;
+    sim.live_id = state->live_id;
+    sim.shape = state->physics_shape;
+    sim.parent_frame = parent_frame;
+    sim.body = free.body;
+    sim.quiet_ticks = free.quiet_ticks;
+    sim.rest_anchor = free.rest_anchor;
+    std::copy(free.pos, free.pos + 3, sim.pos.begin());
+    std::copy(free.ypr, free.ypr + 3, sim.ypr.begin());
+    batch.free.push_back(std::move(sim));
   }
   std::erase_if(free_bodies, [&](const auto& entry) { return !live.contains(entry.first); });
-}
-}  // namespace
 
-void advance_chassis_tick() {
+  // Car shells for loose and free bodies; parts keep their place on the
+  // chassis during a batch. Only a car that can reach such a body within the
+  // batch needs them: the contact test (sim_near) with this batch's travel and
+  // a margin for acceleration.
+  const double batch_seconds = ticks / double(physics::VehicleDynamics::update_frequency);
+  const auto may_meet = [&](const physics::RigidBody& car, const physics::RigidBody& body) {
+    const auto gap = body.position - car.position;
+    const double reach = ((car.maximum - car.minimum).length() +
+                          (body.maximum - body.minimum).length()) * .5 + 3 +
+        (car.velocity.length() + body.velocity.length()) * (batch_seconds + .1) * 2;
+    return gap.dot(gap) < reach * reach;
+  };
+  if (!batch.loose.empty() || !batch.free.empty())
+    for (auto& car : batch.cars) {
+      const auto& body = car.dynamics.body;
+      if (std::none_of(batch.loose.begin(), batch.loose.end(),
+                       [&](const SimLoose& loose) { return may_meet(body, loose.body); }) &&
+          std::none_of(batch.free.begin(), batch.free.end(),
+                       [&](const SimFree& free) { return may_meet(body, free.body); }))
+        continue;
+      const auto inverse_script = part_matrix_inverse_rigid(world_matrix(car.chassis));
+      for (const auto& installed : part_installed_tree(car.chassis)) {
+        auto* part = record(installed.object);
+        if (part != car.rec && part->config->category != 2) continue;
+        const auto& mesh = part_collision_mesh(*part);
+        if (mesh.indices.empty()) continue;
+        car.shells.push_back(
+            {&mesh, part_matrix_multiply(inverse_script, world_matrix(installed.object))});
+      }
+    }
+  return batch;
+}
+
+// The host's part after a batch: write the bodies back, then publish them and
+// apply damage, crush cages, loose-body lifetimes and scene changes in solver
+// order.
+void commit_batch(SimBatch& batch) {
   std::vector<Object*> released;
-  const auto* target = gameref_find_live(controlled_vehicle);
-  Object* controlled = target ? as_part(static_cast<Object*>(target->key)) : nullptr;
-  // SLRR_rev v221 7441a697 vehicle-physics-world.ts: all bodies share
-  // substeps, each unordered pair is resolved once, then every changed body is
-  // published before scripts/rendering can observe the tick.
-  for (unsigned substep = 0; substep < physics::VehicleDynamics::frequency /
-                                         physics::VehicleDynamics::update_frequency; ++substep) {
-  std::vector<ContactVehicle> vehicles;
-  vehicles.reserve(100);
-  for (auto &entry : records) {
-    Object *chassis = entry.first;
-    auto &rec = entry.second;
-    if (rec.config->native_kind != "car" && rec.deformation && rec.deformation->active()) {
-      if (advance_deformation(chassis, rec, 1)) {
-        if (++rec.deformation_upload_ticks >= 3 || !rec.deformation->active()) {
-          publish_deformation(chassis, rec);
-          rec.deformation_upload_ticks = 0;
+  const auto current = [](const SimCar& car) -> GameRefState* {
+    if (record(car.chassis) != car.rec) return nullptr;
+    auto* node = gameref_get(car.chassis);
+    return node && node->incarnation == car.incarnation ? node : nullptr;
+  };
+  for (auto& car : batch.cars) {
+    auto* node = current(car);
+    if (!node) continue;
+    auto& rec = *car.rec;
+    rec.dynamics = car.dynamics;
+    rec.physics_ready = car.ready;
+    rec.physics_released = car.released;
+    rec.physics_suspended = car.suspended;
+    rec.physics_pending_placement = car.pending;
+    rec.physics_fault_reported = car.fault_reported;
+    rec.physics_quiet_ticks = car.quiet_ticks;
+    rec.engine_running = car.engine_running;
+    rec.render_blend = car.render_blend;
+    rec.render_from_position = car.render_from_position;
+    rec.render_from_orientation = car.render_from_orientation;
+    if (car.render_blend) rec.render_parent = car.parent;
+    rec.nitro_remaining = car.nitro_remaining;
+    rec.nitro_input = car.nitro_input;
+    rec.nitro_requested = car.nitro_requested;
+    rec.nitro_active = car.nitro_active;
+    rec.nitro_flame = car.nitro_flame;
+    rec.nitro_random = car.nitro_random;
+    rec.steering_input = car.steering_input;
+    rec.steering_request = car.steering_request;
+    rec.steering_correction = car.steering_correction;
+    rec.cockpit_offset = car.cockpit_offset;
+    rec.mileage = car.mileage;
+    if (!car.message.empty()) std::fputs(car.message.c_str(), stderr);
+    if (car.fault) {
+      if (car.publish) rec.published_frame = car.local;
+      stop_nitro(rec);
+      restore_chassis_pose(*node, rec, car.fault_local, car.fault_was_ready);
+    } else if (car.contact_fault) {
+      if (car.publish) {
+        // The pose it published before the failure, without its motion.
+        const auto& local = car.local;
+        std::copy(local.begin(), local.end(), node->local_matrix);
+        node->matrix_override = true;
+        std::copy(local.begin() + 12, local.begin() + 15, node->pos);
+        const double pitch = std::asin(std::clamp(-double(local[9]), -1.0, 1.0));
+        node->ypr[1] = static_cast<float>(pitch);
+        if (std::fabs(std::cos(pitch)) > 1e-6) {
+          node->ypr[0] = std::atan2(local[8], local[10]);
+          node->ypr[2] = std::atan2(local[1], local[5]);
+        } else {
+          node->ypr[0] = std::atan2(-local[2], local[0]);
+          node->ypr[2] = 0;
         }
-        rec.state.tear = std::min(rec.state.tear, rec.deformation->condition());
-        chassis->fields["tear"] = Value::make_float(rec.state.tear);
-        if (rec.state.parent && rec.deformation->released()) released.push_back(chassis);
+        rec.published_frame = local;
       }
+      node->render_pose = false;
+      std::fill(std::begin(node->vel), std::end(node->vel), 0.f);
+      std::fill(std::begin(node->angular_vel), std::end(node->angular_vel), 0.f);
+    } else if (car.publish) {
+      dynamics_sync(car.chassis, rec, car.parent, car.publish > 1);
     }
-    if (substep == 0) {
-      rec.engine_running = false;
-      rec.nitro_active = rec.nitro_flame = false;
-      rec.dynamics.drive.nitro = 0;
-      rec.render_blend = false;
-    }
-    if (rec.external_motion || rec.config->native_kind != "car" || rec.state.parent ||
-        (rec.physics_suspended && !rec.physics_pending_placement))
+  }
+  for (const auto& impact : batch.impacts) {
+    const auto& car = batch.cars[impact.car];
+    if (current(car))
+      damage_chassis(car.chassis, *car.rec, impact.body, impact.hit, car.controlled, released);
+  }
+  // Crush cages advance by the substeps the batch ran: other parts' cages as
+  // the records loop advanced them, each car's by its own solver steps.
+  const unsigned substeps = batch.ticks * (physics::VehicleDynamics::frequency /
+                                           physics::VehicleDynamics::update_frequency);
+  for (auto& [part, rec] : records) {
+    if (rec.config->native_kind == "car" || !rec.deformation || !rec.deformation->active() ||
+        !advance_deformation(part, rec, substeps))
       continue;
-    auto *node = gameref_get(chassis);
-    if (!node || !contact_visible(chassis))
-      continue;
-    const auto saved_body = rec.dynamics.body;
-    const auto saved_local = node_local(chassis);
-    const bool was_ready = rec.physics_ready;
-    try {
-    PartMatrix frame, parent = eye_matrix();
-    if (!scene_instances_script_matrix(chassis, frame.data()))
-      continue;
-    if (node->parent &&
-        !scene_instances_script_matrix(node->parent, parent.data()))
-      continue;
-    const auto local = node_local(chassis);
-    if (!finite_frame(frame) || !finite_frame(parent) || !finite_frame(local))
-      throw std::runtime_error("non-finite chassis frame");
-    bool external = node->parent != rec.physics_parent;
-    for (size_t i = 0; i < 16; ++i)
-      external =
-          external || std::fabs(local[i] - rec.published_frame[i]) > 1e-5f;
-    if (external)
-      rec.physics_ready = false;
-    if (!rec.physics_ready || rec.physics_dirty)
-      if (!dynamics_configure(chassis, rec, frame))
-        continue;
-    if (substep == 0) {
-      dynamics_wheels(rec);
-      configure_drive(chassis, rec, chassis == controlled);
+    rec.deformation_upload_ticks += substeps;
+    if (rec.deformation_upload_ticks >= 3 || !rec.deformation->active()) {
+      publish_deformation(part, rec);
+      rec.deformation_upload_ticks = 0;
     }
-    if (rec.body_support_dirty) rebuild_body_support(chassis, rec);
-    // An unreleased chassis (catalog, before start) may drop onto a floor.
-    // With no floor the step only applies gravity, and the car leaves the shot.
-    if (!rec.physics_released && rec.physics_pending_placement) {
-      SceneFloorHit probe;
-      if (!scene_instances_sample_floor(frame[12], frame[14], frame[13] + 4.f,
-                                        chassis, probe))
-        continue;
-    }
-    const auto terrain = [&](double x, double z, double ceiling,
-                             physics::GroundHit &ground) {
-      SceneFloorHit hit;
-      if (!scene_instances_sample_floor(
-              static_cast<float>(x), static_cast<float>(z),
-              static_cast<float>(ceiling), chassis, hit))
-        return false;
-      ground.height = hit.height;
-      ground.normal = {hit.normal[0], hit.normal[1], hit.normal[2]};
-      return true;
-    };
-    // One shared 120 Hz substep; controls remain on their existing 60 Hz tick.
-    const auto before_body = rec.dynamics.body;
-    const auto before = before_body.position;
-    const auto orientation_before = rec.dynamics.body.orientation;
-    const auto velocity_before = rec.dynamics.body.velocity;
-    clamp_nitro(chassis, rec);
-    const double nitro_rate = comp(chassis, "consumption_nitro");
-    const double nitro_rpm = rec.dynamics.engine_omega * 9.54929658551372;
-    const double nitro_limiter = rec.dynamics.engine_limit_fraction();
-    rec.nitro_active = rec.nitro_requested && rec.dynamics.engine_running &&
-        rec.nitro_remaining > 0 && std::isfinite(nitro_rate) && nitro_rate > 0;
-    rec.dynamics.drive.nitro = rec.nitro_active ? rec.nitro_input : 0.;
-    const auto steps = rec.dynamics.advance(physics::VehicleDynamics::timestep, terrain);
-    // MWM 454A42: RPM * .0002 * input * limiter * dt * script rate.
-    // Consume once per solver step, never from sampling a curve or collecting
-    // a camera/reflection. Empty tanks return to the dry bank next step.
-    if (rec.nitro_active && steps)
-      rec.nitro_remaining = std::max(0., rec.nitro_remaining -
-          nitro_rpm * .0002 * rec.nitro_input * nitro_limiter * nitro_rate *
-          steps * physics::VehicleDynamics::timestep);
-    if (substep == 0) {
-      // Original flag-256 children flicker with a 30% MSVC-rand gate per
-      // render update. Sample once per 60-Hz simulation tick instead: all
-      // nozzles/cameras agree, and pause freezes both fuel and presentation.
-      rec.nitro_random = rec.nitro_random * 214013u + 2531011u;
-      rec.nitro_flame = rec.nitro_active && nitro_rpm > 1000 &&
-          rec.dynamics.drive.throttle > .01 &&
-          ((rec.nitro_random >> 16) & 32767u) < 9830u;
-    }
-    if (!rec.nitro_active || rec.nitro_remaining <= 0)
-      rec.nitro_flame = false;
-    // Collision belongs to the released body, not its engine/controller. A
-    // coasting car still hits the world after its driver leaves or is removed.
-    if (rec.physics_released) {
-      const auto wall = collide_chassis(rec, before);
-      const auto& ground = rec.dynamics.ground_impact;
-      damage_chassis(chassis, rec, wall.speed >= ground.speed ? wall : ground,
-                     chassis == controlled, released);
-      if (chassis == controlled && steps) {
-        const auto& options = host_game_options();
-        const auto& body = rec.dynamics.body;
-        const auto local_acceleration = body.orientation.inverse_rotate(
-            (body.velocity - velocity_before) / (steps * physics::VehicleDynamics::timestep));
-        const physics::Vec3 lean{
-            std::clamp(rec.steering_input * .045 * options.head_steer -
-                           local_acceleration.x * .003 * options.head_acceleration, -.15, .15),
-            0,
-            std::clamp(body.velocity.length() * .0015 * options.head_velocity -
-                           local_acceleration.z * .004 * options.head_acceleration, -.15, .15)};
-        rec.cockpit_offset += (lean - rec.cockpit_offset) *
-            -std::expm1(-physics::VehicleDynamics::timestep / .14);
-      }
-      const auto delta = rec.dynamics.body.position - before;
-      rec.mileage += static_cast<float>(std::hypot(delta.x, delta.z) * .1);
-    }
-    rec.engine_running =
-        rec.dynamics.drive.native_traffic
-            ? rec.physics_released
-            : rec.dynamics.drive.torque && rec.dynamics.engine_running;
-    if (!finite_frame(rec.dynamics.body.frame()))
-      throw std::runtime_error("non-finite chassis output");
-    if (steps) {
-      dynamics_sync(chassis, rec, parent, false);
-      if (substep == 0 || !rec.render_blend) {
-        // A passive car can first wake in the second substep. Its first drawn
-        // interval must start here, never from an uninitialized world origin.
-        rec.render_from_position = before;
-        rec.render_from_orientation = orientation_before;
-      }
-      rec.render_blend = true;
-      rec.render_parent = parent;
-    } else {
-      rec.published_frame = local;
-    }
-    if (rec.deformation && rec.deformation->active() && advance_deformation(chassis, rec, steps)) {
-      rec.deformation_upload_ticks += steps;
+    rec.state.tear = std::min(rec.state.tear, rec.deformation->condition());
+    part->fields["tear"] = Value::make_float(rec.state.tear);
+    if (rec.state.parent && rec.deformation->released()) released.push_back(part);
+  }
+  for (auto& car : batch.cars) {
+    if (!car.steps || !current(car)) continue;
+    auto& rec = *car.rec;
+    if (rec.deformation && rec.deformation->active() &&
+        advance_deformation(car.chassis, rec, car.steps)) {
+      rec.deformation_upload_ticks += car.steps;
       if (rec.deformation_upload_ticks >= physics::VehicleDynamics::frequency / 20 ||
           !rec.deformation->active()) {
-        publish_deformation(chassis, rec);
-        chassis->fields["tear"] = Value::make_float(rec.state.tear);
+        publish_deformation(car.chassis, rec);
+        car.chassis->fields["tear"] = Value::make_float(rec.state.tear);
         rec.deformation_upload_ticks = 0;
       }
     }
-    if (steps && rec.physics_pending_placement) {
-      if (!rec.physics_suspended)
-        rec.physics_pending_placement = false;
-      else {
-        bool supported = true;
-        double force = 0;
-        for (size_t i = 0; i < 4; ++i) {
-          if (rec.dynamics.wheels[i].enabled)
-            supported = supported && rec.dynamics.state[i].contact;
-          force += rec.dynamics.state[i].force;
+  }
+  for (const auto& loose : batch.loose) {
+    const auto found = loose_panels.find(loose.part);
+    if (found == loose_panels.end()) continue;
+    auto& panel = found->second;
+    panel.body = loose.body;
+    panel.quiet_ticks = loose.quiet_ticks;
+    panel.far_awake_ticks = loose.far_awake_ticks;
+    panel.exit_ticks = loose.exit_ticks;
+    panel.rest_anchor = loose.rest_anchor;
+    if (!loose.published || loose.end == SimLoose::End::Fault) continue;
+    auto* rec = record(loose.part);
+    if (loose.native_dynamic && rec) {
+      for (size_t i = 0; i < rec->renders.size() && i < panel.render_offsets.size(); ++i)
+        if (auto* state = gameref_get(rec->renders[i])) {
+          const auto slot = part_matrix_multiply(loose.local, panel.render_offsets[i]);
+          std::copy(slot.begin(), slot.end(), state->local_matrix);
         }
-        const bool quiet = supported &&
-                           rec.dynamics.body.velocity.length() < .02 &&
-                           rec.dynamics.body.omega().length() < .02 &&
-                           std::fabs(force - rec.dynamics.body.mass * 9.81) <
-                               rec.dynamics.body.mass * 9.81 * .02;
-        rec.physics_quiet_ticks = quiet ? rec.physics_quiet_ticks + steps : 0;
-        // Keep the quarter-second settling window across solver frequencies.
-        if (rec.physics_quiet_ticks >= physics::VehicleDynamics::frequency / 4) {
-          rec.physics_pending_placement = false;
-          rec.dynamics.body.velocity = {};
-          rec.dynamics.body.momentum = {};
-        }
-      }
-    }
-    vehicles.push_back({chassis, &rec, node->incarnation, before_body, parent});
-    } catch (const std::exception& error) {
-      if (!rec.physics_fault_reported) {
-        std::fprintf(stderr,"[phys] suspended chassis type=0x%x: %s\n",rec.state.resource,error.what());
-        rec.physics_fault_reported = true;
-      }
-      rec.dynamics.body = saved_body;
-      rec.dynamics.body.velocity = rec.dynamics.body.momentum = {};
-      rec.dynamics.reset_clock();
-      rec.dynamics.reset_drive();
-      rec.dynamics.release_wheels();
-      rec.physics_ready = false;
-      rec.physics_suspended = true;
-      rec.physics_pending_placement = false;
-      rec.engine_running = rec.render_blend = false;
-      stop_nitro(rec);
-      const auto& safe = finite_frame(saved_local) ? saved_local : rec.published_frame;
-      if (finite_frame(saved_local) || (was_ready && finite_frame(safe))) {
-        std::copy(safe.begin(),safe.end(),node->local_matrix);
-        std::copy(safe.begin()+12,safe.begin()+15,node->pos);
-        const double pitch = std::asin(std::clamp(-double(safe[9]),-1.0,1.0));
-        node->ypr[1] = static_cast<float>(pitch);
-        if (std::fabs(std::cos(pitch)) > 1e-6) {
-          node->ypr[0] = std::atan2(safe[8],safe[10]);
-          node->ypr[2] = std::atan2(safe[1],safe[5]);
-        } else {
-          node->ypr[0] = std::atan2(-safe[2],safe[0]);
-          node->ypr[2] = 0;
-        }
-        node->matrix_override = true;
-      } else {
-        node->empty = true; // No valid pose has ever been published for this body.
-      }
-      node->render_pose = false;
-      std::fill(std::begin(node->vel),std::end(node->vel),0.f);
-      std::fill(std::begin(node->angular_vel),std::end(node->angular_vel),0.f);
+    } else if (auto* node = gameref_get(loose.part)) {
+      std::copy(loose.local.begin(), loose.local.end(), node->local_matrix);
     }
   }
-  // Settled parked cars are passive participants. Two parked showroom cars do
-  // not collide, but a released car can wake one without inventing a driver.
-  for (auto& [chassis, rec] : records) {
-    if (rec.config->native_kind != "car" || rec.state.parent || rec.external_motion ||
-        rec.physics_fault_reported || !contact_visible(chassis) ||
-        (!rec.physics_ready && rec.physics_pending_placement)) continue;
-    if (std::any_of(vehicles.begin(), vehicles.end(), [&](const auto& v) { return v.chassis == chassis; })) continue;
-    auto* node = gameref_get(chassis);
-    PartMatrix parent = eye_matrix(), frame;
-    if (node->parent && !scene_instances_script_matrix(node->parent, parent.data())) continue;
-    if (!scene_instances_script_matrix(chassis, frame.data())) continue;
-    const auto local = node_local(chassis);
-    const bool external = node->parent != rec.physics_parent || local != rec.published_frame;
-    // setMatrix/park has authority over an asleep car too. Never publish a
-    // stale solver body back over a new scripted placement.
-    if (external || !rec.physics_ready || rec.physics_dirty) {
-      if (!dynamics_configure(chassis, rec, frame, true)) continue;
-      rec.dynamics.body.velocity = rec.dynamics.body.momentum = {};
-      rec.published_frame = local;
+  for (size_t index : batch.loose_ended) {
+    const auto& loose = batch.loose[index];
+    if (!loose_panels.contains(loose.part)) continue;
+    if (loose.end == SimLoose::End::Fault) {
+      std::fputs(loose.message.c_str(), stderr);
+      if (loose.native_dynamic) scene_instances_settle_dynamic(loose.part, nullptr);
+    } else {
+      scene_instances_settle_dynamic(
+          loose.part, loose.end == SimLoose::End::Settle ? loose.end_frame.data() : nullptr);
     }
-    ContactVehicle passive{chassis, &rec, node->incarnation, rec.dynamics.body, parent};
-    try { physics::validate_vehicle_contact_body(rec.dynamics.body); }
-    catch (const std::exception& error) { suspend_contact_vehicle(passive, error.what()); continue; }
-    vehicles.push_back(passive);
+    loose_panels.erase(loose.part);
+    part_destroy(loose.part);
   }
-  for (const auto& vehicle : vehicles) gameref_make_live(vehicle.chassis);
-  std::sort(vehicles.begin(), vehicles.end(), [](const auto& a, const auto& b) {
-    return gameref_get(a.chassis)->live_id < gameref_get(b.chassis)->live_id;
-  });
-  for (size_t i = 0; i < vehicles.size(); ++i) {
-    auto& a = vehicles[i];
-    if (!contact_live(a)) continue;
-    for (size_t j = i + 1; j < vehicles.size(); ++j) {
-      if (!contact_live(a)) break;
-      auto& b = vehicles[j];
-      if (!contact_live(b) || (!a.rec->physics_released && !b.rec->physics_released)) continue;
-      auto& body_a = a.rec->dynamics.body;
-      auto& body_b = b.rec->dynamics.body;
-      const auto before_a = body_a, before_b = body_b;
-      std::optional<physics::VehicleContact> hit;
-      try {
-        hit = physics::resolve_swept_vehicle_contact(body_a, body_b, a.previous, b.previous);
-        if (hit) {
-          script_motion(body_a, a.parent);
-          script_motion(body_b, b.parent);
-          if (!finite_frame(body_a.frame()) || !finite_frame(body_b.frame()))
-            throw std::runtime_error("unrepresentable vehicle contact frame");
-        }
-      } catch (const std::exception& error) {
-        body_a = before_a;
-        body_b = before_b;
-        bool bad_a = false, bad_b = false;
-        try { physics::validate_vehicle_contact_body(body_a); } catch (...) { bad_a = true; }
-        try { physics::validate_vehicle_contact_body(body_b); } catch (...) { bad_b = true; }
-        // The kernel is transactional. Isolate a malformed passive car, not
-        // its healthy peer. Finite-body arithmetic failure belongs to this
-        // pair only; unrelated cars and the host/native pump continue.
-        if (bad_a || !bad_b) suspend_contact_vehicle(a, error.what());
-        if (bad_b || !bad_a) suspend_contact_vehicle(b, error.what());
-        continue;
-      }
-      if (!hit) continue;
-      if (hit->normal_impulse > 1) {
-        for (auto* vehicle : {&a, &b}) {
-          vehicle->rec->physics_released = true;
-          vehicle->rec->physics_suspended = false;
-          vehicle->rec->physics_pending_placement = false;
-        }
-        // Publish both corrected carrier frames before evaluating installed
-        // damage geometry; scripts/render callbacks cannot run in this pass.
-        dynamics_sync(a.chassis, *a.rec, a.parent, false);
-        dynamics_sync(b.chassis, *b.rec, b.parent, false);
-        damage_chassis(a.chassis, *a.rec,
-            body_pair_impact(before_a, body_a, hit->point, hit->normal,
-                             hit->normal_impulse, hit->speed), a.chassis == controlled, released);
-        damage_chassis(b.chassis, *b.rec,
-            body_pair_impact(before_b, body_b, hit->point, -hit->normal,
-                             hit->normal_impulse, hit->speed), b.chassis == controlled, released);
-      }
+  for (const auto& free : batch.free) {
+    auto* state = gameref_get(free.key);
+    const auto found = free_bodies.find(free.key);
+    if (!state || state->live_id != free.live_id || found == free_bodies.end()) continue;
+    if (free.disabled) {
+      disable_free_body(*state, free.key, free.pos, free.ypr, free.message.c_str());
+      continue;
     }
+    auto& body = found->second;
+    body.body = free.body;
+    body.quiet_ticks = free.quiet_ticks;
+    body.rest_anchor = free.rest_anchor;
+    if (!free.published) continue;
+    state->matrix_override = false;
+    std::copy(free.pos.begin(), free.pos.end(), state->pos);
+    std::copy(free.ypr.begin(), free.ypr.end(), state->ypr);
+    std::copy(free.motion.begin(), free.motion.begin() + 3, state->vel);
+    std::copy(free.motion.begin() + 3, free.motion.end(), state->angular_vel);
+    std::copy(free.pos.begin(), free.pos.end(), body.pos);
+    std::copy(free.ypr.begin(), free.ypr.end(), body.ypr);
   }
-  advance_loose_panels(vehicles, released);
-  advance_free_bodies(vehicles, released);
-  for (const auto& vehicle : vehicles) if (contact_live(vehicle)) {
-    try {
-      physics::validate_vehicle_contact_body(vehicle.rec->dynamics.body);
-      vehicle.rec->dynamics.sync_wheels();
-      dynamics_sync(vehicle.chassis, *vehicle.rec, vehicle.parent,
-                    substep + 1 == physics::VehicleDynamics::frequency /
-                                       physics::VehicleDynamics::update_frequency);
-    } catch (const std::exception& error) {
-      suspend_contact_vehicle(vehicle, error.what());
-    }
-  }
-  } // shared substeps
+  for (const auto& box : batch.wake) scene_instances_wake_dynamics(box.data(), box.data() + 3);
   // After all contact iteration: creating a loose body inserts into `records`.
   scene_instances_promote_dynamics();
   // Wheels whose mounts failed when a chassis cage settled (advance_deformation).
@@ -5891,7 +6478,86 @@ void part_pause_engine_audio(bool paused) {
       if (item.voice) host_sfx_pause_loop(item.voice, paused);
 }
 
-void part_physics_advance(double seconds) {
+namespace {
+// The physics thread (#203). It runs one batch at a time; the host waits for
+// it only in part_physics_end, part_physics_join and part_physics_begin.
+class PhysicsWorker {
+public:
+  void start(SimBatch &batch) {
+    std::lock_guard lock(mutex_);
+    batch_ = &batch;
+    done_ = false;
+    error_ = {};
+    work_.notify_one();
+  }
+  void wait() {
+    std::exception_ptr error;
+    {
+      std::unique_lock lock(mutex_);
+      finished_.wait(lock, [&] { return done_; });
+      std::swap(error, error_);
+    }
+    if (error) std::rethrow_exception(error);
+  }
+  bool on_thread() const { return std::this_thread::get_id() == thread_.get_id(); }
+
+private:
+  void run(std::stop_token stop) {
+    // Frame profiler zones belong to the host thread; the host adds this
+    // thread's batch time itself.
+    perf::worker_thread() = true;
+    std::unique_lock lock(mutex_);
+    while (true) {
+      work_.wait(lock, stop, [&] { return batch_ != nullptr; });
+      if (stop.stop_requested()) return;
+      SimBatch *batch = batch_;
+      lock.unlock();
+      std::exception_ptr error;
+      try {
+        simulate_batch(*batch);
+      } catch (...) {
+        error = std::current_exception();
+      }
+      lock.lock();
+      batch_ = nullptr;
+      error_ = error;
+      done_ = true;
+      finished_.notify_all();
+    }
+  }
+  std::mutex mutex_;
+  std::condition_variable_any work_;
+  std::condition_variable finished_;
+  SimBatch *batch_ = nullptr;
+  bool done_ = true;
+  std::exception_ptr error_;
+  std::jthread thread_{[this](std::stop_token stop) { run(stop); }};
+};
+PhysicsWorker &physics_worker() {
+  static PhysicsWorker worker;
+  return worker;
+}
+bool physics_threaded = true;
+SimBatch physics_batch;
+bool physics_batch_running = false, physics_batch_pending = false;
+double physics_frame_seconds = 0;
+unsigned physics_frame_ticks = 0;
+} // namespace
+
+void part_physics_set_threaded(bool threaded) {
+  part_physics_join();
+  physics_threaded = threaded;
+}
+
+void part_physics_join() {
+  if (!physics_batch_running || physics_worker().on_thread()) return;
+  physics_batch_running = false;
+  physics_worker().wait();
+}
+
+void part_physics_begin(double seconds) {
+  // A frame that never reached part_physics_end still commits its batch first.
+  if (physics_batch_pending) part_physics_end();
   if (!std::isfinite(seconds) || seconds < 0)
     throw std::invalid_argument("invalid vehicle elapsed time");
   if (!repair_relink_pending.empty()) {
@@ -5904,24 +6570,53 @@ void part_physics_advance(double seconds) {
   // Ignore excess time after a long stall so the next frame can still render.
   physics_elapsed += std::min(seconds, kPhysicsTick * kMaxPhysicsTicksPerFrame);
   constexpr double tolerance = kPhysicsTick * 1e-10;
-  if (physics_elapsed + tolerance >= kPhysicsTick) {
-    {perf::Scope scope(perf::Zone::Collision);scene_instances_prepare_physics();}
-    while (physics_elapsed + tolerance >= kPhysicsTick) {
-      {perf::Scope scope(perf::Zone::Vehicles);advance_chassis_tick();}
-      physics_elapsed = std::max(0.0, physics_elapsed - kPhysicsTick);
-    }
+  unsigned ticks = 0;
+  while (physics_elapsed + tolerance >= kPhysicsTick) {
+    ++ticks;
+    physics_elapsed = std::max(0.0, physics_elapsed - kPhysicsTick);
+  }
+  physics_frame_seconds = seconds;
+  physics_frame_ticks = ticks;
+  physics_batch_pending = true;
+  if (!ticks) return;
+  {perf::Scope scope(perf::Zone::Collision);scene_instances_prepare_physics();}
+  physics_batch = prepare_batch(ticks);
+  if (physics_threaded) {
+    physics_batch_running = true;
+    physics_worker().start(physics_batch);
+  } else {
+    simulate_batch(physics_batch);
+  }
+}
+
+void part_physics_end() {
+  if (!physics_batch_pending) return;
+  physics_batch_pending = false;
+  if (physics_frame_ticks) {
+    // Clear the batch even when the physics thread failed.
+    struct Clear {
+      ~Clear() { physics_batch = {}; }
+    } clear;
+    part_physics_join();
+    if (perf::enabled()) perf::add(perf::Zone::Vehicles, physics_batch.thread_ticks);
+    commit_batch(physics_batch);
     for (auto &[key, rec] : records) {
       if (rec.config->native_kind == "car")
         update_engine_audio(rec, rec.engine_running);
     }
   }
-  // After the chassis ticks, so the hinges see this frame's carrier motion.
-  advance_flaps(seconds);
+  // After the batch, so the hinges see this frame's carrier motion.
+  advance_flaps(physics_frame_seconds);
   publish_render_poses(physics_elapsed / kPhysicsTick);
   // After the solver, so a flap or a wheel placement cannot put the column back.
   pose_steering_wheels();
   pose_driver();
-  {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(seconds);}
+  {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(physics_frame_seconds);}
+}
+
+void part_physics_advance(double seconds) {
+  part_physics_begin(seconds);
+  part_physics_end();
 }
 
 void part_set_pedestrian_density(void* ground, float density) {
@@ -6356,6 +7051,10 @@ Object *vehicle_spawn_stock(Jvm &jvm, RpkIndex &resources, Object *parent,
 }
 
 void register_part_natives(Jvm &jvm, RpkIndex &resources) {
+  // A new world drops the old one's batch unpublished.
+  part_physics_join();
+  physics_batch = {};
+  physics_batch_pending = false;
   runtime = &jvm;
   for (auto &[key, rec] : records) release_side(rec);
   records.clear();

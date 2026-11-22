@@ -829,6 +829,7 @@ void scene_instances_preload(const std::vector<uint32_t>& resources) {
 }
 
 void scene_instances_set_resources(const RpkIndex *resources) {
+  part_physics_join();  // the collision caches below are read by a running batch
   character_forget_all();
   g_resources = resources;
   g_world = g_sky = nullptr;
@@ -892,6 +893,7 @@ std::string scene_instances_envmap() {
 }
 void scene_instances_select(void *world, void *skydome, bool preview_lamps,
                             SceneEnvironment environment) {
+  part_physics_join();
   if (g_world != world) ++g_floor_revision;
   g_world = world;
   g_sky = skydome;
@@ -1319,6 +1321,7 @@ bool scene_instances_floor(float x, float z, float below, void *ignore,
   return true;
 }
 void scene_instances_prepare_physics() {
+  part_physics_join();
   gameref_process_collision_requests();
   g_script_collision_shapes.clear();
   std::unordered_set<void *> active;
@@ -2741,10 +2744,12 @@ void scene_instances_override_mesh(uint32_t id,
     g_overrides[id] = std::move(geo);
 }
 void scene_instances_enable_static_floor(bool enabled) {
+  part_physics_join();
   if (g_static_enabled != enabled) ++g_floor_revision;
   g_static_enabled = enabled;
 }
 void scene_instances_add_static_mesh(const ScxGeometry &geo) {
+  part_physics_join();
   if (!geo.info.ok || geo.indices.size() < 3 || geo.positions.size() < 9)
     return;
   StaticMesh mesh;
@@ -2758,6 +2763,7 @@ void scene_instances_add_static_mesh(const ScxGeometry &geo) {
 
 void scene_instances_override_collision(uint32_t id,
                                         std::shared_ptr<const ScxGeometry> geo) {
+  part_physics_join();
   if (id && geo) g_collision_overrides[id] = std::move(geo);
 }
 
@@ -3069,6 +3075,7 @@ SceneryLightList scene_instances_ground_lights(uint32_t render_id) {
 void scene_instances_add_ground_props(const GroundMapData& map) {
   if (!g_resources || map.placements.empty() || g_ground_props.contains(map.render_id))
     return;
+  part_physics_join();
   auto& props_map = g_ground_props[map.render_id];
   auto& cells = props_map.cells;
   std::unordered_map<uint32_t, PartConfig> object_types;

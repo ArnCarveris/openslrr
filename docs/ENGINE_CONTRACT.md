@@ -219,10 +219,33 @@ because the caller is a fiber.
 
 ### Host threads and the worker pool
 
-The host thread runs the VM, the frame pump, physics, scene collection and
-bgfx submission. bgfx presents from its own render thread, pedestrians step
-on their own worker (`PedSim` in `part_runtime.cpp`), and audio and video
+The host thread runs the VM, the frame pump, scene collection and bgfx
+submission. Physics steps on its own thread (#203, `PhysicsWorker` in
+`part_runtime.cpp`). bgfx presents from its own render thread, pedestrians
+step on their own worker (`PedSim` in `part_runtime.cpp`), and audio and video
 decoders keep their library threads.
+
+The physics thread runs one batch per frame: the 60 Hz host ticks the frame
+owes, each as shared solver substeps over every car, loose body and free
+PhysicsRef body. `part_physics_begin` prepares the batch on the host just
+before `render.flush()` and starts it; `part_physics_end`, after the flush,
+waits for it and publishes it. The host owns everything outside that window,
+so scripts, natives and callbacks never run concurrently with a batch, and
+they see the ticked state as before; the frame drawn during a batch shows the
+state before its ticks.
+
+A batch works on copies taken while the host owns everything: bodies, drive
+and steering inputs, options, nitrous capacity, crush-cage probe shifts, car
+shells and immutable dyno curves. On the physics thread it reads only those
+and the scene collision prepared for it. It must not call the VM, GameRef,
+`records`, audio, bgfx or anything with a lazily filled cache; it records
+impacts, props to wake, loose bodies to settle and diagnostics for the commit,
+which applies them in solver order with the chassis as it was when hit. Host
+code that may run while a batch is in flight and changes what a batch reads
+calls `part_physics_join()` first: the scene collision mutators,
+`part_destroy` and the debug overlay's tyre tuning do. `--physics-inline`
+runs the same batch on the host thread and gives the same states in the
+fixed-step benchmark.
 
 Loading work that only reads files goes to the shared worker pool in
 `src/platform/job_system.cpp`: one worker per logical processor besides
@@ -798,6 +821,13 @@ continue supplying the same disk-area/lift proxy, and Vee averaging is unchanged
 Efficiency now restricts minimum as well as maximum flow multiplicatively, so
 authored nonzero closed lifts can change leakage. No DynoData field/schema or
 native signature changes. See [patch installation/reproduction](../patch/README.md#port-flow-normalization-203).
+
+The #203 fuel patch (`AirFuelDeliverySystem`) sets `mixture_H` to the heat per
+kg of charge at a fuel's best mixture, lower heating value / stoichiometric
+air:fuel ratio (95 octane 2.952 MJ/kg), times the stock mixture-match factor,
+without the old ×1.55. `minComp`/`maxComp` still follow the stock heat values,
+so the compression window of every stock engine is unchanged. The native dyno
+consumes `mixture_H` as before. See [patch](../patch/README.md#fuel-heat-203).
 
 ### Nitrous driving and exhaust (#303, #304)
 

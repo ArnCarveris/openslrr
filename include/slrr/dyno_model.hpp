@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <numbers>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,11 @@ struct DynoStats {
 bool dyno_calculate(void* key, const std::unordered_map<std::string, float>& fields,
                     float table_size, DynoStats* stats);
 float dyno_sample(void* key, float rpm, float nitro, bool watts);
+// Net torque (Nm) against rpm from the session's current curves. The function
+// keeps its own immutable copy: it stays valid, unchanged, after a
+// recalculation or release, so another thread may call it (#203). A missing
+// session gives zero torque.
+std::function<double(double)> dyno_torque_function(void* key, float nitro);
 float dyno_boost_fraction(void* key, float rpm);
 void dyno_forget(void* key);
 void dyno_clear_sessions();
