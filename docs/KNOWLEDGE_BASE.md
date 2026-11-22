@@ -2936,7 +2936,8 @@ inventing new Java classes.
     ceiling up to 8.80 m). Exactly the 12-fixture budget.
   - ROC (`misc/garage/g4`, ground 0x2f, stuff 0x51): an open-air scene
     (sand ground, tents, containers, stands); no ceiling fittings and no
-    emissive lamp group. No lights are created there.
+    emissive lamp group. No lights are created there; since #330 the sun
+    lights it (see "ROC garage: tent canvas and sunlight").
   - Dark tubes in g2/g3 (user test at `bc2f8aa`): only
     `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` turns tube faces
     into `self_illuminated` groups, and it matched only g1's `garazs1.dds`
@@ -4199,3 +4200,51 @@ Verified on the PR branch (f422ebb), by reading the code; not run in game.
   by about 1.2 s. The Baiern hood rests near 0.66 of its 0.873 travel. A close
   latches in 0.2 s. Tests: `tests/test_flap_hinge.cpp` (12/12), including the
   overshoot onto the stop and the fall back below the target.
+
+### ROC garage: tent canvas and sunlight (#330)
+
+- Canvas. The ROC stuff mesh (`misc/garage/g4/roc_g_egyeb.SCX`, stuff 0x51)
+  is a script `RenderRef`, so `instance.cull_backfaces` is false and the map
+  rules for authored SCX4 coverage do not apply. That path cut every SCX4
+  section at half alpha. The canvas section `satorteto` is ColorMixTex with
+  specular (type 7, flags 0, diffuse 0.70/0.06/0.06); its
+  `maps/textures/satortetoanyag.dds` (DXT5) has alpha 0.13-0.33 on the canvas
+  and 255 on the letters, so only the letters stayed. Now
+  `include/slrr/scx_mesh.hpp:scx_legacy_cutout` keeps the half-alpha cutout
+  for plain Tex sections and drops it for ColorMixTex families
+  (`scx_color_mix_function`, the ten kinds the vehicle path already treated as
+  colour mix) unless the alpha-test flag 0x20000000 is set. The canvas is
+  drawn opaque with its texture colour, like the map object
+  `objects/meshes/sator/sator.scx` (same section, flags 0x80000000).
+- Why not authored coverage for all script RenderRefs: a runtime log of the
+  SCX4 sections drawn by script RenderRefs with neither coverage flag (G1,
+  G2 club garage, ROC, city) found 38 sections; only two have texels under
+  half alpha: the canvas, and a plain Tex brace in the ROC (`1 - Default`,
+  `tabmatte1_alphas.dds`, 70 % transparent, a diagonal strip) that needs the
+  cutout. ColorMixTex colour mixing (diffuse red under the canvas alpha) is
+  not applied to script RenderRefs or to type 7 map sections; the stock look of
+  that red is unverified.
+- Sunlight. Stock `Garage` sets `internalScene = 1` in its constructor, so
+  `Scene.addSceneElements` creates no sun, and it instances the
+  `misc.garage:0x001D` neon, which the host turns into a point light 3.3 m above
+  the map origin (`update_local_light`). In the open-air ROC that lit almost
+  nothing. Worse, a valid neon point record puts `draw_instance` in point-light
+  mode (`u_sunDir.w = -1`), so a sun alone would not have lit it either. The
+  patched `Garage.enter` sets `internalScene = 0` when `roc` is set (1
+  otherwise) before `addSceneElements`, and creates no neon in the ROC
+  (`exit` destroys it only if present). `exit` and the one-second `refresh`
+  reuse the value set by `enter`. Effects in the ROC: the day-cycle sun,
+  procedural sky, sun shadows and the time-of-day fog and envmap of
+  `Scene.addSceneElements` (the envmap replaces `garageEnvMaps[3]` at the first
+  refresh). At night it is as dark as an outdoor map, with no lamp.
+- Validation: `map_alpha` 5/5 (new `roc_tent_canvas_is_not_cut`),
+  `inventory_transition` 6/6 and `script_lights` 5/5 with the shipped class.
+  In game (`--bench-career ... --auto-cmd 128`, a temporary env hook setting
+  the hour and taking renderer screenshots, removed): canvas and valance
+  visible, sunlit sand and shadows at 13:00; club garage unchanged;
+  `osdCommand(CMD_ROCINFO)` leaves the ROC garage without error. At 20:00 the
+  lower car body looks lit from below; not investigated, it may be the general
+  dusk sun or reflection rather than this change.
+- Rebuild of the shipped class: `build/issue315-compile-root` (a game copy)
+  reproduced the previous `patch/sl/Scripts/game/Garage.class` byte for byte
+  before the edit; see SCRIPT_COMPILER.md "Shipped patch classes (#235)".

@@ -227,6 +227,13 @@ public class Garage extends Scene implements GameState
 		lockCar();
 
 		//---------------------------------time of day dependent stuff:
+		// OpenSLRR #330: the ROC garage is open-air, so it gets the outdoor
+		// sun of Scene.addSceneElements; the club garages stay interiors.
+		// exit() and refresh() use the value set here.
+		if( roc )
+			internalScene = 0;
+		else
+			internalScene = 1;
 		addSceneElements( GameLogic.getTime() );
 		GfxEngine.setGlobalEnvmap( garageEnvMaps[garageIndex] );
 		//-----------------------------------------------------------------------
@@ -257,10 +264,15 @@ public class Garage extends Scene implements GameState
 			mechanic.flags&=~Mechanic.MF_FREE_REPAIRS;
 		}
 
-		lighttype = new RenderRef();
-		lighttype.duplicate( new RenderRef(misc.garage:0x001Dr) );
-		//lighttype.setLight( 0x00DC6464, 0x00646464, 0x00C8C8C8);
-		light = new RenderRef( map, lighttype, "neon" );
+		// OpenSLRR #330: no ceiling neon in the open-air ROC garage; the sun
+		// lights it (internalScene = 0 above).
+		if( !roc )
+		{
+			lighttype = new RenderRef();
+			lighttype.duplicate( new RenderRef(misc.garage:0x001Dr) );
+			//lighttype.setLight( 0x00DC6464, 0x00646464, 0x00C8C8C8);
+			light = new RenderRef( map, lighttype, "neon" );
+		}
 		// OpenSLRR #235: explicit lights for the ceiling fittings.
 		createFixtures( garageIndex );
 
@@ -508,8 +520,13 @@ public class Garage extends Scene implements GameState
 
 		//leotjuk a villanyt
 		destroyFixtures();	// OpenSLRR #235
-		light.destroy();
-		lighttype.destroy();
+		if( light )	// OpenSLRR #330: the ROC garage has none
+		{
+			light.destroy();
+			lighttype.destroy();
+			light = null;
+			lighttype = null;
+		}
 
 		//----------------------------------------
 		remSceneElements();
