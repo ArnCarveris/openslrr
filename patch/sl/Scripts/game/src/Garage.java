@@ -1609,8 +1609,13 @@ public class Garage extends Scene implements GameState
 		else
 		if( cmd == CMD_CARLOT )
 		{
-			GameLogic.changeActiveSection( player.carlot );
+			// OpenSLRR #315: MWM order, save before entering the lot. Saving
+			// after CarLot.enter parked the car let GameLogic.save hand it back
+			// to the player and empty its slot. Flush the mechanic strip first
+			// so the save holds the parts bought here (Garage.exit flushes too).
+			mechanic.flushInventory();
 			GameLogic.autoSaveQuiet(); // Save Game
+			GameLogic.changeActiveSection( player.carlot );
 		}
 		else
 		if( cmd == CMD_BUYCARS || cmd == CMD_BUYCARSUSED )

@@ -2068,6 +2068,49 @@ Mechanic.flushInventory and Garage.osdCommand/exit with isolated presentation
 callbacks. The original records zero transferred items at save and three after
 exit; the patched handler records all three before save, with one exit/enter.
 This verifies call ordering, not a complete career file round-trip or gameplay.
+
+## Car Lot save ordering (#315)
+
+MWM saves before entering the Car Lot: in the installed `Garage.class`,
+`GameLogic.autoSaveQuiet()` is at source line 1520 and
+`changeActiveSection(player.carlot)` at line 1521. The decompiled `sources/` Garage
+has them the other way round, and since #235 the shipped class is compiled from
+that order. The save then ran after `CarLot.enter` had parked the current car.
+`GameLogic.save` brackets its car save with `carlot.lockPlayerCar()` and
+`releasePlayerCar()`. The lock found no `player.car` and did nothing, and the
+release handed the parked car back to the player (`setParent(player)`, outside
+the lot's world) and cleared `carSlots[curcar]`. The lot drew every other car,
+and the header still named the current one. Choosing another car then ran
+`saveCar(old_curcar)` on a slot marked empty, which deletes
+`save/temp/PlayerCar<n>` without writing it.
+
+The fix restores the MWM order for this command only, and first flushes the
+mechanic strip (`mechanic.flushInventory()`), so the save still holds what the
+#59/#235 order protects. `Garage.exit` flushes again and finds nothing. This is
+a script fix. The host's `setParent` keeps its meaning: a car parented to a
+`Player` belongs to no world and is not drawn.
+
+Lessons:
+
+- A decompiled `sources/` class is not proof of stock call order. Before
+  reordering or relying on statement order in a patched class, read the
+  installed class's TREE. The source line of each node gives the order
+  (`scripts/patch_garage_save_order.py` shows the TREE layout). MWM saves
+  before the transition for the main menu, Choose Track, both dealers and Car Lot.
+- A blank Car Lot slot whose header still names a car means the car left the
+  lot's world after `CarLot.enter`. Look for a `releasePlayerCar` between enter
+  and the first frame, not for a load failure.
+- It was not caused by the JSON saves (#291): it reproduces at `5b002e4` with an
+  SDAT career, and the stock MWM `Garage.class` shows the car on the current host.
+
+Validation: `shipped_carlot_save_order` in `tests/test_inventory_transition.cpp`
+runs the shipped `osdCommand(CMD_CARLOT)` with the real `GameLogic` transition
+and `Mechanic.flushInventory`: three items are moved before the save, with one
+exit and one enter. The recording probe expects `flush,save,change`. In game
+(OpenSLRR host, scripted `--bench-career ... --auto-cmd 111`, not interactive):
+a one-car JSON career and a four-car SDAT career both show the current car in
+its slot. Before/after captures are in `assets/validation/carlot-current-car/`.
+Picking another car in the lot afterwards was not played through.
 The suite also checks generic interface dispatch; no class-specific VM workaround
 is needed. In-game validation must buy parts, leave via Main Menu, reload and
 check the inventory, then repeat with normal Exit Game saving.
@@ -2842,7 +2885,9 @@ inventing new Java classes.
   dealer closed). The shipped #59 class does not save there; it saves before the
   transition when they are accepted (`save,change`). The patch saves inside the
   success branch after `changeActiveSection` (`change,save`), so a refused
-  command never saves a garage whose mechanic strip was not flushed. With a local
+  command never saves a garage whose mechanic strip was not flushed. Car Lot
+  is the exception since #315: it flushes the strip, saves, then changes
+  section (`flush,save,change`), see "Car Lot save ordering (#315)". With a local
   `build/garage-59.class` (`git cat-file blob 6171aa2:patch/sl/Scripts/game/Garage.class`) the test also compares all 43 `CMD_*` commands: none
   differs from the #59 class in whether it saves.
   Validated in game by the user in the g1 garage at `df7117f` (20 November
