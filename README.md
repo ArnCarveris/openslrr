@@ -241,7 +241,8 @@ Physics steps on its own thread while the frame is drawn: the physics total is
 the host's share (preparing the batch, waiting for it, publishing it), and the
 vehicle time is the physics thread's batch, not part of that total. Add
 `--physics-inline` to step physics on the host thread instead, for debugging or
-comparison; the fixed-step drive gives the same car states either way. Values
+comparison; from the same starting state the fixed-step drive gives the same
+car states either way. Values
 are from the last completed measurement window, alongside bgfx's delayed render
 and GPU counters. A large GPU reading alone does not identify the whole frame's
 bottleneck.

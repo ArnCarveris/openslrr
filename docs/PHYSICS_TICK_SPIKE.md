@@ -73,6 +73,25 @@ Scripts still run only on the host with no batch in flight, so they see the
 ticked state as before. The drawn frame is one frame behind it, as in any
 pipelined physics thread. `--physics-inline` runs the same batch on the host.
 
+Measured on the shared desktop, Windows x64 MSVC Release, private game copy
+reset before each run, Baiern `0x6`, Valo City, hour 13, 640×480 window, no
+VSync, fixed 1/60 s benchmark (`--bench-drive`), per-second car state printed
+by a local, uncommitted probe:
+
+- With the PR patch of the merge (stock fuel), threaded and `--physics-inline`
+  runs gave bit-identical positions and velocities every second for 20 s,
+  through a crash at about 8 s. Against the single-threaded build of the same
+  merge they were identical until the crash and within 3 cm after it: damage
+  and crush cages now apply at the end of each frame's batch. Two runs of the
+  single-threaded build already differed by about 0.3 mm from the first
+  second, from the wall-clock frames before the benchmark starts.
+- 30 s drive with the shipped patch, mean of 29 one-second windows: frame
+  28.7 ms threaded, 39.0 ms inline, 38.2 ms for the single-threaded build.
+  The host's physics share fell from 25.8 ms (inline) to 15.5 ms. The physics
+  thread's batch took 21.1 ms against an 11.9 ms flush, so the host still
+  waits about 9 ms per frame here. Main `786e5b4` spent 23–38 ms per frame in
+  physics in the same scene; this heavy scene is not addressed here.
+
 ### Rate changes are not just a constant
 
 `advance_chassis_tick` in [the runtime](../src/resources/part_runtime.cpp) executes
@@ -407,6 +426,10 @@ compression window keeps the stock heat: `minComp`/`maxComp` use
 engine stays dynoable. At 95's best mixture `mixture_H` rises from 1.704225 to
 2.952381 MJ/kg (×1.73). The VM suite `port_flow` runs `updatevariables` for
 every fuel at three mixtures.
+
+Same benchmark, horizontal speed at 2/3/4/5 s of full throttle: main `786e5b4`
+32.4/52.4/62.7/75.1 km/h (it still has the ×2 driving gain), this branch before
+the fuel fix 8.3/16.4/24.4/31.5 km/h, with it 16.4/29.4/41.2/54.3 km/h.
 
 The cycle also assumes cv = 712 J/(kg·K), γ = 1.3, and no modeled dissociation.
 Changing heat alone does not establish realistic combustion efficiency. Its

@@ -244,8 +244,8 @@ which applies them in solver order with the chassis as it was when hit. Host
 code that may run while a batch is in flight and changes what a batch reads
 calls `part_physics_join()` first: the scene collision mutators,
 `part_destroy` and the debug overlay's tyre tuning do. `--physics-inline`
-runs the same batch on the host thread and gives the same states in the
-fixed-step benchmark.
+runs the same batch on the host thread; from the same starting state the
+fixed-step benchmark gives the same states either way.
 
 Loading work that only reads files goes to the shared worker pool in
 `src/platform/job_system.cpp`: one worker per logical processor besides

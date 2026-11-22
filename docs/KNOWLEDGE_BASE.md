@@ -550,8 +550,10 @@ Rules for host code:
 - `part_physics_join()` is a no-op on the physics thread and without a batch.
 - A batch is committed before the next one starts, before a new world
   (`register_part_natives`) and in `part_physics_advance`.
-- `--physics-inline` runs the same batch on the host thread. With the
-  fixed-step benchmark both modes produce the same states.
+- `--physics-inline` runs the same batch on the host thread. From the same
+  starting state the fixed-step benchmark gives the same states in both
+  modes. The start itself can differ by a fraction of a millimetre between
+  runs: the frames before the benchmark starts use wall-clock time.
 
 What changed against the single-threaded tick: the drawn frame shows the state
 before this frame's ticks (one frame of display latency); damage, crush cages,
