@@ -67,12 +67,39 @@ struct SwaybarFixture : Fixture {
   std::vector<Vehicle> cars;
   std::vector<Object *> parts;
 
-  // `patched` overlays the shipped patch classes (patch/**/*.class) over the
-  // stock ones, as a player installing the Enhanced patch would.
+  // `patched` installs the shipped patch (classes and CFGs) over a private
+  // hard-linked view of the game, as a player installing it would. Patched
+  // files replace their link, so the installed game is never written.
   bool patched = false;
-  explicit SwaybarFixture(bool with_patch = false) : patched(with_patch) {
+  fs::path overlay;
+  static fs::path installed_game() {
     const auto game = fs::absolute(fs::is_directory("game") ? "game" : "data/game");
     SLRR_REQUIRE(fs::is_directory(game));
+    return game;
+  }
+  fs::path patched_game() {
+    const auto game = installed_game(), patch = fs::absolute("patch");
+    SLRR_REQUIRE(fs::is_directory(patch));
+    overlay = root.parent_path() / (root.filename().string() + "-game");
+    for (const auto &entry : fs::recursive_directory_iterator(game))
+      if (entry.is_regular_file()) {
+        const auto out = overlay / fs::relative(entry.path(), game);
+        fs::create_directories(out.parent_path());
+        std::error_code error;
+        fs::create_hard_link(entry.path(), out, error);
+        if (error) fs::copy_file(entry.path(), out);
+      }
+    for (const auto &entry : fs::recursive_directory_iterator(patch))
+      if (entry.is_regular_file() && entry.path().parent_path().filename() != "src") {
+        const auto out = overlay / fs::relative(entry.path(), patch);
+        fs::create_directories(out.parent_path());
+        fs::remove(out); // unlink first: never write through to the game
+        fs::copy_file(entry.path(), out);
+      }
+    return overlay;
+  }
+  explicit SwaybarFixture(bool with_patch = false) : patched(with_patch) {
+    const auto game = patched ? patched_game() : installed_game();
     // Same stock bootstrap as test_nitrous: native file writes still use the
     // temporary VM root; RPK/CFG/SCX reads use the private installed game.
     for (const auto &entry : fs::recursive_directory_iterator(game))
@@ -81,28 +108,10 @@ struct SwaybarFixture : Fixture {
         fs::create_directories(out.parent_path());
         fs::copy_file(entry.path(), out);
       }
-    if (patched) {
-      const auto patch = fs::absolute("patch");
-      SLRR_REQUIRE(fs::is_directory(patch));
-      for (const auto &entry : fs::recursive_directory_iterator(patch))
-        if (entry.is_regular_file() && entry.path().extension() == ".class") {
-          const auto out = root / fs::relative(entry.path(), patch);
-          fs::create_directories(out.parent_path());
-          fs::copy_file(entry.path(), out, fs::copy_options::overwrite_existing);
-        }
-    }
     packs.set_root(game.string());
     packs.open_all();
     rpk_set_active(&packs);
     SLRR_REQUIRE(vm.bootstrap_classpath());
-    // part_create loads a car script from the RPK root (the installed game)
-    // unless a class of that name is already loaded, so load the patched car
-    // scripts from the overlaid VM root first.
-    if (patched)
-      for (const auto &entry : fs::recursive_directory_iterator(root / "cars"))
-        if (entry.is_regular_file() && entry.path().extension() == ".class" &&
-            fs::exists(fs::absolute("patch") / fs::relative(entry.path(), root)))
-          SLRR_REQUIRE(vm.load_class(entry.path().string()));
     gameref_clear();
     osd_clear_widgets();
     host_input() = {};
@@ -145,6 +154,9 @@ struct SwaybarFixture : Fixture {
     scene_instances_enable_static_floor(false);
     gameref_clear();
     rpk_set_active(nullptr);
+    packs.set_root(root.string());
+    std::error_code error;
+    if (!overlay.empty()) fs::remove_all(overlay, error); // links only
   }
   uint32_t resource(const char *pack, uint32_t local) {
     const auto id = RpkIndex::make_full_id(packs.open_lib(pack), local);
@@ -495,34 +507,36 @@ void stock_vehicle_save_load_reconstructs_mounts_and_native_condition() {
   f.expect(car, {}, kStock);
 }
 
-// The patched car scripts uncomment their stock bar lists.
-// Chassis.addStockParts adds them through the generic addPart, which keeps
-// only the bars a mount can hold: Einvagen's rear bar has no 702 mount.
+// #311: the patch adds 701/702 mounts to every stock racer chassis that had
+// none and uncomments each script's stock bar list, so a newly assembled car
+// carries its own front and rear bars through the generic addPart.
 void patched_stock_cars_install_their_listed_bars() {
   SwaybarFixture f(true);
-  auto *duhen = f.spawn(kDuhen), *einvagen = f.spawn(kEinvagen), *baiern = f.spawn(kBaiern);
   auto axle = [&](Object *bar) {
     SLRR_REQUIRE(bar && f.vm.tree_instance_of(bar, kSwaybar));
     const auto part = installed(bar);
     const double health = std::clamp<double>(part.wear, 0, 1) * std::clamp<double>(part.tear, 0, 1);
     return Axle{kStock.stiffness * health, kStock.damping * health};
   };
-  auto *front = on_slot(duhen, 701), *rear = on_slot(duhen, 702);
-  SLRR_REQUIRE(installed(front).resource == f.resource("parts.rpk", 0x41ff));
-  SLRR_REQUIRE(installed(rear).resource == f.resource("parts.rpk", 0x017c));
-  f.expect(duhen, axle(front), axle(rear));
-  auto *einvagen_front = on_slot(einvagen, 701);
-  SLRR_REQUIRE(installed(einvagen_front).resource == f.resource("parts.rpk", 0x0185));
-  SLRR_REQUIRE(!on_slot(einvagen, 702));
-  f.expect(einvagen, axle(einvagen_front));
-  // The failed rear addPart leaves no stray bar anywhere on the car.
-  size_t bars = 0;
-  for (const auto &part : part_installed_tree(einvagen))
-    bars += f.vm.tree_instance_of(part.object, kSwaybar);
-  SLRR_REQUIRE(bars == 1);
-  for (const auto &part : part_installed_tree(baiern))
-    SLRR_REQUIRE(!f.vm.tree_instance_of(part.object, kSwaybar));
-  f.expect(baiern);
+  const struct {
+    CarType car;
+    uint32_t front, rear;
+  } expected[] = {
+      {kDuhen, 0x41ff, 0x017c},    // authored mounts; rear entry corrected
+      {kEinvagen, 0x0185, 0x0186}, // authored front, added rear mount
+      {kBaiern, 0x0219, 0x021a},   // both mounts added
+  };
+  for (const auto &row : expected) {
+    auto *car = f.spawn(row.car);
+    auto *front = on_slot(car, 701), *rear = on_slot(car, 702);
+    SLRR_REQUIRE(installed(front).resource == f.resource("parts.rpk", row.front));
+    SLRR_REQUIRE(installed(rear).resource == f.resource("parts.rpk", row.rear));
+    f.expect(car, axle(front), axle(rear));
+    size_t bars = 0;
+    for (const auto &part : part_installed_tree(car))
+      bars += f.vm.tree_instance_of(part.object, kSwaybar);
+    SLRR_REQUIRE(bars == 2);
+  }
 }
 
 void installed_damping_reduces_contacted_stock_chassis_roll() {

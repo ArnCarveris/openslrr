@@ -99,9 +99,9 @@ public class Ishima_Enula_WR_SuperTurizmo extends Ishima_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000161r; // "WRS_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000162r; // "WRS_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x000041FFr; // "WRS_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x000041FFr; // "WRS_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x00000197r; // "swaybar_Ishima_WRS_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x00000198r; // "swaybar_Ishima_WRS_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x00000380r; // "Star_II_9.5x17_ET-30" //

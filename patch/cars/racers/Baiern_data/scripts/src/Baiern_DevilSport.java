@@ -132,9 +132,9 @@ public class Baiern_DevilSport extends Baiern_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x000000D8r; // "brake_Baiern_DS_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x000000D9r; // "brake_Baiern_DS_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x0000021Br; // "swaybar_Baiern_DS_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Cr; // "swaybar_Baiern_DS_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x0000021Br; // "swaybar_Baiern_DS_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Cr; // "swaybar_Baiern_DS_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x000003ACr; // "rim Blossom 9.0 19 ET 0 LOD CATALOG GARAGE" //

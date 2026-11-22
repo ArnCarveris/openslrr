@@ -109,9 +109,9 @@ public class Prime_DLH_500 extends Prime_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000174r; // "brake_Prime_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000175r; // "brake_Prime_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x000001A0r; // "swaybar_Prime_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x000001A1r; // "swaybar_Prime_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x000001A0r; // "swaybar_Prime_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x000001A1r; // "swaybar_Prime_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x000002C2r; // "rim Prime_DLH 9.0 17 ET -30 LOD CATALOG GARAGE" //

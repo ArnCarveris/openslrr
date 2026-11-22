@@ -139,9 +139,9 @@ public class Ishima_Enula_WRY extends Ishima_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000100r; // "WRY_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000101r; // "WRY_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x00000193r; // "WRY_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x00000194r; // "WRY_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x00000193r; // "WRY_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x00000194r; // "WRY_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x00000370r; // "Star_II_8.5x17_ET-30" //

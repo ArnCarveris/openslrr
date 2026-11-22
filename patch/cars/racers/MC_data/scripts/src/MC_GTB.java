@@ -99,9 +99,9 @@ public class MC_GTB extends MC_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000170r; // "brake_MC_GTB_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000171r; // "brake_MC_GTB_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x0000019Br; // "swaybar_MC_GTB_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x0000019Cr; // "swaybar_MC_GTB_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x0000019Br; // "swaybar_MC_GTB_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x0000019Cr; // "swaybar_MC_GTB_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x000002BEr; // "rim MT_Mescaline 9.0 15 ET -20 LOD CATALOG GARAGE" //

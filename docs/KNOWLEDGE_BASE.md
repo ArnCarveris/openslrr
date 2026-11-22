@@ -3888,15 +3888,30 @@ the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
   `stock_parts_list_RGear_sways` lines (Focer RC 300 also `stg_1_`). `Chassis`
   already pushes that list with the other running-gear lists, and
   `src/resources/part_runtime.cpp:add_part` destroys a part no slot accepts, so
-  a listed bar without a mount (Einvagen rear, Baiern, MC...) adds nothing.
-  The patch uncomments only the ten models with mounts.
+  a listed bar without a mount adds nothing. #311 adds the missing mounts to
+  the 17 other racer chassis CFGs (Einvagen gets 702 only) and uncomments all
+  24 lists. Stock lists that named the wrong bar are corrected: Duhen 1.5 rear
+  `0x41FF` to `0x017C`, Ishima Enula WRZ `0x41FF` to `0x0195/0x0196` (stage 1
+  `0x0197/0x0198`), WR SuperTurizmo `0x41FF` to `0x0197/0x0198`.
 - **The installed MWM 2.2.1 car classes are not built from `sources/`.** MWM
   added stock neons to the NOS branches: five `addPart( parts:0xD2xxr, "<color>" )`
   after the canisters of each branch (`parts:0xD273` Red, `0xD285` Green,
   `0xD288` Blue, `0xD291` Cyan, `0xD294` Aqua, `0xD279` Pink, `0xD276` Purple,
-  `0xD282` Orange, `0xD267` Yellow; neon RSDs under `parts:0xF24B`). No MWM car
+  `0xD282` Orange, `0xD267` Yellow, `0xD270` White; neon RSDs under
+  `parts:0xF24B`). The count per branch varies (5, 7 or 8). The SuperDuty top
+  branch replaces the four canisters with two bottles (`parts:0xD215` Botle,
+  `0xD339` Double Botle), ten neons and `cars.racers.SuperDuty:0xD1` rollbar
+  (the RID form must match the `stg_` list one exactly, or the constant pool
+  differs). No MWM car
   source ships, and recompiling `sources/` would drop them. The bundled compiler
   reproduces original classes byte for byte (only header bytes 9-11 differ;
   source line numbers are encoded in the tree), so a reconstruction is proven
   by an identical output. The reconstructed sources are in
   `patch/cars/racers/*_data/scripts/src/`; see SCRIPT_COMPILER.md.
+- **The local `game/` may hold an installed patch.** On 2026-11-22 the patch
+  (sl, parts and ten car classes) was copied into `game/` for in-game tests, so
+  tests that expect stock classes failed there. To test against stock, build a
+  hard-linked view whose changed files come from the untouched MWM 2.2.1 copy
+  and run the test executable from it; `tests/test_swaybars.cpp` builds its
+  patched game view the same way (patched files replace their link, never
+  written through).

@@ -131,9 +131,9 @@ public class Baiern_CoupeSport extends Baiern_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x000000D6r; // "Baiern_CS_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x000000D7r; // "Baiern_CS_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x00000219r; // "Baiern_CS_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Ar; // "Baiern_CS_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x00000219r; // "Baiern_CS_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Ar; // "Baiern_CS_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x0000029Cr; // "DevilSport_5_8.0x17_ET_0" //

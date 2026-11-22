@@ -99,9 +99,9 @@ public class Emer_Nonus_Street_GT extends Emer_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000152r; // "brake_Nonus_SGT_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000153r; // "brake_Nonus_SGT_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x0000018Br; // "swaybar_Nonus_SGT_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x0000018Cr; // "swaybar_Nonus_SGT_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x0000018Br; // "swaybar_Nonus_SGT_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x0000018Cr; // "swaybar_Nonus_SGT_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x000002A8r; // "rim DevilSport_5 9.0 19 ET 0 LOD CATALOG GARAGE" //
@@ -133,9 +133,9 @@ public class Emer_Nonus_Street_GT extends Emer_models
 		stg_1_parts_list_RGear_brakes[ 0] = stg_1_parts_list_RGear_brakes[ 1] = parts:0x00000155r; // "brake_Nonus_GT2_front" //
 		stg_1_parts_list_RGear_brakes[ 2] = stg_1_parts_list_RGear_brakes[ 3] = parts:0x00000156r; // "brake_Nonus_GT2_rear" //
 
-//		stg_1_parts_list_RGear_sways = new int[2];
-//		stg_1_parts_list_RGear_sways[ 0] = parts:0x0000018Dr; // "swaybar_Nonus_GT2_front" //
-//		stg_1_parts_list_RGear_sways[ 1] = parts:0x0000018Er; // "swaybar_Nonus_GT2_rear" //
+		stg_1_parts_list_RGear_sways = new int[2];
+		stg_1_parts_list_RGear_sways[ 0] = parts:0x0000018Dr; // "swaybar_Nonus_GT2_front" //
+		stg_1_parts_list_RGear_sways[ 1] = parts:0x0000018Er; // "swaybar_Nonus_GT2_rear" //
 
 		stg_1_parts_list_RGear_wheels = new int[4];
 		stg_1_parts_list_RGear_wheels[ 0] = stg_1_parts_list_RGear_wheels[ 1] = parts.wheels:0x00000400r; // "rim Baiern_DTM 11.0 19 ET -25 LOD CATALOG GARAGE" //

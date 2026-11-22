@@ -101,9 +101,9 @@ public class Baiern_CoupeSport_GT_III extends Baiern_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x000000DAr; // "brake_Baiern_GT_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x000000DBr; // "brake_Baiern_GT_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x0000021Dr; // "swaybar_Baiern_GT_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Er; // "swaybar_Baiern_GT_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x0000021Dr; // "swaybar_Baiern_GT_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x0000021Er; // "swaybar_Baiern_GT_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x00000400r; // "rim Baiern_DTM 11.0 19 ET -25 LOD CATALOG GARAGE" //

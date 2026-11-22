@@ -154,9 +154,9 @@ public class Hauler_s_SuperDuty_500 extends Hauler_s_models
 		stock_parts_list_RGear_brakes[ 0] = stock_parts_list_RGear_brakes[ 1] = parts:0x00000157r; // "brake_SuperDuty_500_front" //
 		stock_parts_list_RGear_brakes[ 2] = stock_parts_list_RGear_brakes[ 3] = parts:0x00000158r; // "brake_SuperDuty_500_rear" //
 
-//		stock_parts_list_RGear_sways = new int[2];
-//		stock_parts_list_RGear_sways[ 0] = parts:0x0000018Fr; // "swaybar_SuperDuty_500_front" //
-//		stock_parts_list_RGear_sways[ 1] = parts:0x00000190r; // "swaybar_SuperDuty_500_rear" //
+		stock_parts_list_RGear_sways = new int[2];
+		stock_parts_list_RGear_sways[ 0] = parts:0x0000018Fr; // "swaybar_SuperDuty_500_front" //
+		stock_parts_list_RGear_sways[ 1] = parts:0x00000190r; // "swaybar_SuperDuty_500_rear" //
 
 		stock_parts_list_RGear_wheels = new int[4];
 		stock_parts_list_RGear_wheels[ 0] = stock_parts_list_RGear_wheels[ 1] = parts.wheels:0x00000386r; // "rim MT_Mescaline 9.0 15 ET -20 LOD CATALOG GARAGE" //
