@@ -95,6 +95,25 @@ struct HudElement {
   std::string format;
 };
 using VehicleHudLayout = std::array<HudElement, static_cast<size_t>(HudSlot::Count)>;
+// Chassis `cockpit_rpm` / `cockpit_speed` (#301): a 3D pin on the dashboard,
+// distinct from the overlay `osd_rpmpin` / `osd_spdpin`. MWM build 606 reads
+// `x y z yaw pitch roll render offset factor low high`
+// (0x00444B60 rpm, 0x00444CB0 speed) and draws the pin at
+// (yaw, pitch, roll + angle), angle = value * factor + offset limited to
+// [low, high] (0x0043C0A0). Values: |engine rad/s| * 9.5493 rpm and
+// |velocity| * 3.6 km/h. Absent fields keep the build-606 defaults.
+enum class CockpitGauge : size_t { Rpm, Speed, Count };
+struct CockpitNeedle {
+  bool defined = false;
+  uint32_t resource = 0;
+  PartPose pose;
+  float offset = 2.2f, factor = 0.f, low = -2.2f, high = 2.2f;
+};
+using CockpitNeedles =
+    std::array<CockpitNeedle, static_cast<size_t>(CockpitGauge::Count)>;
+// Below `low` gives `low`, otherwise above `high` gives `high`, in that
+// order (no swap when low > high); a non-finite value reads as 0.
+float cockpit_needle_angle(const CockpitNeedle &needle, double value);
 struct PartConfig {
   uint32_t resource = 0;
   std::string source;
@@ -128,6 +147,7 @@ struct PartConfig {
   // with `lod first last`. Empty when the cfg has no `lods` line.
   std::vector<float> lod_sizes;
   VehicleHudLayout hud{};
+  CockpitNeedles cockpit{};
   std::vector<std::string> unknown;
   std::vector<std::string> errors;
   bool valid = false;

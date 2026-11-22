@@ -451,6 +451,9 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   NDC, y down. The stock table keeps its own 16:9 calibration.
 - HUD values come from `src/resources/part_runtime.cpp:part_vehicle_hud`:
   RPM, km/h, mileage, nitro, turbo, gear, and the damage gauge's parts.
+  RPM and km/h come from `src/resources/part_runtime.cpp:gauge_rpm` and
+  `src/resources/part_runtime.cpp:gauge_speed`, which the dashboard pins
+  (`cockpit_rpm` / `cockpit_speed`, see "Dashboard pins" at the end) share.
 - Damage gauge (`osd_damage`, stock font `cars\meshes\osdfont.scx`): glyph
   `A` is the car outline, `E`/`L`/`T` the drivetrain, `O h l r p q t u v` the
   body and `a b c d` the wheels, in one coordinate system with the front up.
@@ -4008,3 +4011,56 @@ the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
   and run the test executable from it; `tests/test_swaybars.cpp` builds its
   patched game view the same way (patched files replace their link, never
   written through).
+
+### Dashboard pins: CFG `cockpit_rpm` / `cockpit_speed` (#301)
+
+- Format, from the MWM executable (SHA-256 `b284a7a5…2b03`, read-only
+  disassembly): `cockpit_rpm` (0x00444B60) and `cockpit_speed` (0x00444CB0)
+  scan `x y z yaw pitch roll render offset factor low high` with
+  `%f %f %f %f %f %f %d %f %f %f %f`. The game's own scanner (0x00553890)
+  reads `0x` hex for `%d`, so stock ids parse. Defaults (constructor
+  0x004467D1): offset 2.2, factor -0.0005 rpm / -0.02 speed, low -2.2,
+  high 2.2. The render is resolved as type 14 against the owning pack.
+- Update (0x0043C0A0, mode 1): `angle = value * factor + offset`; below `low`
+  it becomes `low`, otherwise above `high` it becomes `high` (no swap). The
+  pin is posed at `(yaw, pitch, roll + angle)`, which with
+  `src/resources/part_config.cpp:part_pose_matrix` (yaw, pitch, then roll) is
+  a turn about the posed local Z axis. Values (0x0045283C): rpm is
+  `|engine rad/s| * 9.5493` (0x005F0C14), speed `|velocity| * 3.6`
+  (0x005F0C04), the same sources as `osd_rpmpin` / `osd_spdpin`.
+- The modding tool's `needles.ts` description (field order, defaults, Z spin,
+  km/h) matches the binary. Its "SLRR units, pi = 3.147" remark has no
+  counterpart in the engine: the angle goes straight into the roll in radians.
+- Stock data: 17 racer cfgs in `patch/` and 24 in `game/` carry both lines,
+  all with pin `0x00020037` = `cars:0x37` (`cars\meshes\pin_small.SCX`).
+  Enula, Nonus, SuperDuty pitch their pins; Einvagen rests at its `high` 1.5
+  because its offset 2.2 is above it.
+- OpenSLRR: `include/slrr/part_config.hpp:CockpitNeedle`, parsed in
+  `src/resources/part_config.cpp:parse_part_config` (a line without pose and
+  render, or with a bad number, goes to `unknown` and does not invalidate the
+  cfg), angle in `src/resources/part_config.cpp:cockpit_needle_angle`. The
+  chassis (`native_kind == "car"`) gets one RenderRef child per defined pin in
+  `src/resources/part_runtime.cpp:render_part`, kept in `Record::needles`, not
+  in `renders` (deformation, lamp snapping and HUD bounds must not see a part
+  that turns). `src/resources/part_runtime.cpp:pose_cockpit_needles` sets
+  their matrix every `part_physics_advance` after the steering column;
+  `part_destroy` removes them and `part_visit_gc_roots` marks them.
+- Build 606 only updates the pins in a view whose flag `+0x3C` is set and
+  destroys them otherwise (0x00452836, view record `car + idx * 0x2B8 +
+  0x11C`); the flag is not decoded (probably the internal camera). OpenSLRR
+  keeps them on every car with the lines, in every view.
+- Tests: `tests/test_cockpit_needles.cpp` (suite `cockpit_needles`): parse
+  defaults and limits, stock Baiern (flat) and Enula (pitched) at rest and
+  driving, pivot and axis fixed, pins removed with the car.
+- Pin material: `cars\meshes\pin_small.SCX` is SCX3 with one group of flags
+  `0x101` (SCX3 blend) on `cars	extures\Pin.dds`, a DXT5 card that is clear
+  except for the needle. The vehicle path
+  (`src/render/bgfx_lighting.cpp:draw_instance`) only sent the SCX4
+  transparent bit `0x40000000` and flag-256 flames to its blended pass, so the
+  card was drawn opaque: a black square behind each needle. SCX3 blend now
+  blends on any vehicle mesh without `light_flags`. In the MWM `cars/` and
+  `parts/`, the other SCX3 blend groups are lamp glows (`lampglow.SCX`,
+  Focer and Enula light meshes), drawn with `light_flags`, so unchanged.
+- In game (`--bench-drive`, ValoCity, Baiern, F1 with the #318 fix): both pins
+  show on the dashboard dials at rest, thin needles with no card. The chase
+  view and the overlay pins are unchanged.
