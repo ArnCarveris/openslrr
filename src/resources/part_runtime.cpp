@@ -5165,9 +5165,9 @@ void pose_driver() {
         float chassis_point[3];
         transform_point(wheel_m, std::sin(grip_angle) * grip_r, std::cos(grip_angle) * grip_r,
                         0.f, chassis_point);
-        // Closed fist: the palm is on the rim and the wrist joint ~8 cm behind
-        // it. Start with the wrist along the wheel's axis toward the driver
-        // (the seat's +Z is not that axis on a raked column).
+        // `palm` is the rim's centreline at the grip. Start with the wrist
+        // 7.8 cm behind it along the wheel's axis toward the driver (the
+        // seat's +Z is not that axis on a raked column); refined below.
         float palm[3];
         to_cm(chassis_point[0], chassis_point[1], chassis_point[2], palm);
         physics::Vec3 axis{wheel_m[8], wheel_m[9], wheel_m[10]};
@@ -5187,22 +5187,56 @@ void pose_driver() {
           character_aim_bone(seat.render, type, *index, clavicle, upper, target, 0.8f);
         const float pole[3] = {sign * 0.5f, -1.f, 0.f};
         character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
-        // A straight wrist: the fist continues the forearm onto the rim. Put
-        // the wrist 7.8 cm before the palm on the elbow-to-palm line, re-solve
-        // (two passes converge to under a millimetre), then point the hand's
-        // X axis (wrist to fingers) along it.
-        for (int pass = 0; pass < 2; ++pass) {
+        // Hold the rim: the stock fist (one hand bone, no fingers) has its grip
+        // hole at about (9.5, 0, -1.2) cm in hand space, open along the hand's
+        // Y axis, palm toward -Z. Put that hole on the rim's centreline, its
+        // axis along the rim, the palm toward the wheel's centre and the hand
+        // as straight with the forearm as that allows; re-solve the arm to the
+        // resulting wrist (two passes converge to under a millimetre).
+        float rim_ahead[3], centre[3];
+        {
+          float p[3];
+          transform_point(wheel_m, std::sin(grip_angle) * grip_r + std::cos(grip_angle) * 0.01f,
+                          std::cos(grip_angle) * grip_r - std::sin(grip_angle) * 0.01f, 0.f, p);
+          to_cm(p[0], p[1], p[2], rim_ahead);
+          to_cm(wheel_m[12], wheel_m[13], wheel_m[14], centre);
+        }
+        const auto unit = [](float* v) {
+          const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+          if (n > 1e-6f) for (int i = 0; i < 3; ++i) v[i] /= n;
+          return n > 1e-6f;
+        };
+        float tangent[3] = {rim_ahead[0] - palm[0], rim_ahead[1] - palm[1], rim_ahead[2] - palm[2]};
+        float inward[3] = {centre[0] - palm[0], centre[1] - palm[1], centre[2] - palm[2]};
+        float hand_x[3] = {}, hand_y[3] = {};
+        bool oriented = false;
+        const bool frame = unit(tangent) && unit(inward);
+        for (int pass = 0; frame && pass < 2; ++pass) {
           float elbow[16];
           if (!character_bone_metres(seat.render, lower, elbow)) break;
-          float d[3] = {palm[0] - elbow[12] * 100.f, palm[1] - elbow[13] * 100.f,
+          float f[3] = {palm[0] - elbow[12] * 100.f, palm[1] - elbow[13] * 100.f,
                         palm[2] - elbow[14] * 100.f};
-          const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-          if (n < 1.f) break;
-          for (int i = 0; i < 3; ++i) target[i] = palm[i] - d[i] / n * 7.8f;
+          const float ft = f[0] * tangent[0] + f[1] * tangent[1] + f[2] * tangent[2];
+          for (int i = 0; i < 3; ++i) hand_x[i] = f[i] - ft * tangent[i];
+          if (!unit(hand_x)) break;
+          std::copy(tangent, tangent + 3, hand_y);
+          float hand_z[3] = {hand_x[1] * hand_y[2] - hand_x[2] * hand_y[1],
+                             hand_x[2] * hand_y[0] - hand_x[0] * hand_y[2],
+                             hand_x[0] * hand_y[1] - hand_x[1] * hand_y[0]};
+          // The palm (-Z) faces the wheel's centre.
+          if (hand_z[0] * inward[0] + hand_z[1] * inward[1] + hand_z[2] * inward[2] > 0)
+            for (int i = 0; i < 3; ++i) { hand_y[i] = -hand_y[i]; hand_z[i] = -hand_z[i]; }
+          for (int i = 0; i < 3; ++i)
+            target[i] = palm[i] - hand_x[i] * 9.5f + hand_z[i] * 1.2f;
           character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
+          oriented = true;
         }
-        const float grip_dir[3] = {palm[0] - target[0], palm[1] - target[1], palm[2] - target[2]};
-        character_align_axis(seat.render, type, *index, hand, 0, grip_dir);
+        if (oriented) {
+          // X first, then Y: Y is already perpendicular to X, so the second
+          // turn is a twist about X and keeps it.
+          character_align_axis(seat.render, type, *index, hand, 0, hand_x);
+          character_align_axis(seat.render, type, *index, hand, 1, hand_y);
+        }
       }
     }
   }

@@ -1899,13 +1899,22 @@ seated animation or a full garage transition. Evidence:
   Enula's right lock. On a raked column the seat's +Z is not the wheel axis,
   so the wrist landed 4.1 cm (Baiern) or 6.5 cm (Enula) out of the wheel
   plane instead of 7.8 cm.
-- Now the palm point is the target: the wrist goes 7.8 cm before it on the
-  elbow-to-palm line (two re-solves of the two-bone chain, starting from the
-  wheel axis), and `character_align_axis` points the hand's X axis along that
-  line. Same runs: palm within 1.2 mm of the rim point, centred and at lock,
-  on both cars; the fists close on the rim in the cockpit view.
-- Not done: P3 (gear-shift gesture). The 8 cm wrist-to-palm length is the
-  old constant, not measured on the mesh; the grip angle stays ±1 rad.
+- First fix (06610f4): the wrist on the elbow-to-palm line and the hand's X
+  axis pointed at the rim. The palm point then sat within 1.2 mm of the rim,
+  but in game the fists only rested on the wheel: the stock driver
+  (`humans\driversin.SCX`, 20 bones) has a single `Bip01 L/R Hand` bone and
+  no finger bones; the fist is modelled closed.
+- Grip: in hand space (bind pose, vertices weighted to the hand bone) the
+  fist spans x 1.7–12.1 cm, palm toward -Z, and its grip hole is at about
+  (9.5, 0, -1.2) cm, open along the hand's Y axis (both hands; the left one
+  is mirrored in Y). `pose_driver` now puts that hole on the rim's centreline
+  with Y along the rim, the palm (-Z) toward the wheel's centre and X as
+  close to the forearm as that allows, solves the arm to the resulting wrist
+  (two passes) and turns the hand with two `character_align_axis` calls (X,
+  then Y, which is a twist about X).
+- In game (cockpit view, Baiern, with #318 and #320 applied): the rim now
+  runs into both fists. Not checked: steering locks in game, other drivers
+  (the grip-hole numbers are for `vin.SCX`), P3 (gear-shift gesture).
 
 ### File texture replacement and hidden preview viewports
 
