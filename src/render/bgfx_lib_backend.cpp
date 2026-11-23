@@ -937,6 +937,15 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       debug_overlay_.draw(hwnd_, ww, hh, capture, vehicles);
     }
     debug_was_visible_ = show_debug;
+    {
+      // Per-view GPU times need the bgfx profiler: on while the debug menu
+      // is open, and for the per-pass --perf-log columns (#362).
+      static bool profiler = false;
+      if (profiler != (show_debug || perf::enabled())) {
+        profiler = show_debug || perf::enabled();
+        bgfx::setDebug(profiler ? BGFX_DEBUG_PROFILER : BGFX_DEBUG_NONE);
+      }
+    }
     auto& input = host_input();
     const bool capture = !lmb_down_ && !input.rmb_down && debug_overlay_.captures_mouse();
     if (capture && !input.debug_mouse_capture) {
@@ -962,6 +971,12 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       for (const auto& instance : instances_) sample.instances += instance.sky ? 0u : 1u;
       for (const auto& batch : prop_batches_)
         sample.batch_instances += static_cast<uint32_t>(batch.instances.size());
+      // Per-view GPU times exist while the bgfx profiler is on (#362).
+      for (uint16_t i = 0; i < stats->numViews; ++i) {
+        const auto& view = stats->viewStats[i];
+        sample.gpu_pass_ms[size_t(render_gpu_pass(view.view))] +=
+            ms(view.gpuTimeEnd - view.gpuTimeBegin, stats->gpuTimerFreq);
+      }
       perf::set_render_sample(sample);
     }
     // The swap chain is filled while the window is hidden. Showing it first
@@ -1408,13 +1423,8 @@ void LibBgfxBackend::update_local_light() {
 // scenery_lights_select fades lamps near the cut so the set changes without
 // pops.
 // Numbers and texture handles for the OpenSLRR Debug renderer menu (#243).
-// Per-view GPU times need the bgfx profiler, on only while the menu is open.
+// Its per-view GPU times need the bgfx profiler, switched on in flush (#362).
 void LibBgfxBackend::publish_debug_stats() {
-    static bool profiler = false;
-    if (profiler != debug_overlay_.visible()) {
-      profiler = debug_overlay_.visible();
-      bgfx::setDebug(profiler ? BGFX_DEBUG_PROFILER : BGFX_DEBUG_NONE);
-    }
     auto& stats = render_debug_stats();
     stats.instances = uint32_t(instances_.size());
     stats.view_draws = view_draws_;

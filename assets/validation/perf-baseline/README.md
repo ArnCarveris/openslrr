@@ -28,3 +28,15 @@ differently. The route and camera path are identical.
 - `issue359-world-split/`: `before` (prop-batch merge threshold only) and
   `after` (opaque world on workers, 16 encoders), measured in the same session
   (#359, third increment).
+- `issue361-cascade-alternation/`, `issue361-occlusion/`: #361, before/after
+  in one session (the occlusion prototype was parked).
+- `issue362-gpu-passes/`: per-pass GPU times (#362). `overhead-*` checks the
+  bgfx profiler cost, `settings/` runs single-setting variants by day,
+  `ao-split/` separates the AO prepass from the AO passes.
+
+Since #362, `--perf-log` writes one `gpu_<pass>_ms` column per renderer pass
+(`render_debug.hpp:render_gpu_pass`), and `perf_baseline.ps1 -Presets` also
+takes `msaa4`, `noao`, `hard` (shadow smoothing 0) and `norefl`, each changing
+one setting of `saved`. Close any other 3D application first: a game left
+running kept the RTX 4080 at full clock and made GPU times swing between
+about 3.8 and 5.8 ms from one run to the next.
