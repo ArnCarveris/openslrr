@@ -26,7 +26,7 @@ ownership. The installed MWM `Bot.java` was also inspected: `enterCar` sends
 Reported visual/audio defects remain reports unless a cause is established
 below. Source evidence proves an omitted path, not its complete contribution to
 a particular playtest. Prior fixture results in
-[shared-races.txt](../assets/validation/shared-races.txt) are historical, not new
+[shared-races.txt](../../assets/validation/shared-races.txt) are historical, not new
 validation of this revision.
 
 ## Contacts and motion: baseline findings at d1c719d
@@ -41,11 +41,11 @@ validation of this revision.
 
 ### Why a shared-contact port is not a local enable switch
 
-SLRR_rev `src/engine/vehicle-physics-world.ts` advances full cars on a shared
+`SLRR_rev:src/engine/vehicle-physics-world.ts` advances full cars on a shared
 substep schedule and resolves each unordered pair once. Its
-`src/engine/vehicle-pair-test.ts:vehiclePairContact` computes two-body effective
+`SLRR_rev:src/engine/vehicle-pair-test.ts:vehiclePairContact` computes two-body effective
 mass and contact impulse; the world applies mass-weighted separation.
-`src/engine/race-driver.ts:raceTrafficContact` passes opposite impulses to the
+`SLRR_rev:src/engine/race-driver.ts:raceTrafficContact` passes opposite impulses to the
 full-car and traffic impact owners.
 
 At the baseline, OpenSLRR already had a two-body `RigidBody::contact` primitive,
@@ -107,7 +107,7 @@ silently replacing it with a collision-filter toggle.
   installs compatible stock parts recursively. This is evidence against
   declaring the whole stock-assembly path missing, not proof of a complete
   rendered police car. A police-specific runtime assembly/material/ownership
-  comparison is still required. Upstream `docs/java-traffic-models.md` records
+  comparison is still required. Upstream `SLRR_rev:docs/java-traffic-models.md` records
   assembling Police as well as the regular traffic catalog.
 - **Mechanical AI audio is not globally disabled.**
   `src/resources/part_runtime.cpp:part_physics_advance` updates engine audio for
@@ -125,13 +125,13 @@ silently replacing it with a collision-filter toggle.
   The CFG `sfx_loop` (`PartConfig::sfx_loop`; Erbilac and Wagon, a radio
   music loop) plays as that car's own loop within 40 m. Only the four nearest
   cars within 80 m hold voices. This is a host fallback modelled on upstream
-  `src/audio/traffic-audio.ts`, not vehicle-specific SfxTable parity; the
+  `SLRR_rev:src/audio/traffic-audio.ts`, not vehicle-specific SfxTable parity; the
   Police main CFG has no loop of its own.
 - **Racer seating is explicitly omitted.**
   `src/resources/race_brain.cpp:race_brain_command` accepts `renderinstance`
   without retaining its render ID. `src/resources/part_runtime.cpp:pose_driver`
   seats only the controlled car. Upstream
-  `src/render/java-vehicles.ts` resolves the brain's render and binds it for a
+  `SLRR_rev:src/render/java-vehicles.ts` resolves the brain's render and binds it for a
   mechanical vehicle; it explicitly leaves native-only fake racers unseated.
   Thus visible drivers in fake racers cannot be claimed as an existing upstream
   mechanic. A local pending-render/seat binding can reuse general seating, but
@@ -141,7 +141,7 @@ silently replacing it with a collision-filter toggle.
 - **Lamp support is not AI lamp behavior.**
   `src/resources/part_runtime.cpp:part_lamp_lit` currently exposes night-running
   light state (flag 4), not independent brake/reverse/indicator control.
-  Upstream `src/render/traffic-lamps.ts` has steering-derived indicator state,
+  Upstream `SLRR_rev:src/render/traffic-lamps.ts` has steering-derived indicator state,
   blinking and brake/reverse channels; its documented indicator policy is not
   predictive route/lane-change intent. This distinction matters before claiming
   the requested indicator port complete.
@@ -150,11 +150,11 @@ silently replacing it with a collision-filter toggle.
 
 | Requested area | Finding / remaining work |
 | --- | --- |
-| Full traffic Bot | Upstream `src/engine/bot.ts` contains impact/settle/recover/reverse/ram modes, oriented-hull following, queue restart hysteresis/delay, junction clearance and a per-yellow-phase decision. The host currently has only a subset. Physical forward traffic has no peer-following limit; peer checks occur in reverse recovery. Same-edge following exists only in the external-motion fallback. |
+| Full traffic Bot | Upstream `SLRR_rev:src/engine/bot.ts` contains impact/settle/recover/reverse/ram modes, oriented-hull following, queue restart hysteresis/delay, junction clearance and a per-yellow-phase decision. The host currently has only a subset. Physical forward traffic has no peer-following limit; peer checks occur in reverse recovery. Same-edge following exists only in the external-motion fallback. |
 | Route branches / lanes / speed groups | Physical `race_brain.cpp` traffic routing takes `e.next.front()` on each rebuild. Branch-first random selection is in `traffic_runtime.cpp`'s external/coarse path, not the full physical controller. Upstream retains a route cursor, chooses branch then lane, blends a safe lane change and applies urban/rural speed groups. The host's fixed physical cruise limit is not that policy. |
 | Signals / signs | Shared lamp/driver phases and missing-lamp STOP already exist. Upstream `traffic-control.ts` has explicit signal/STOP/YIELD fixture rules; STOP/YIELD waits are themselves a simplified host policy without crossing-traffic checks. Host fixture production remains trlight-only. Do not infer sign identities from arbitrary numbered decorative resources. Repeated approach-specific cycles and pause/resume still need actual game validation. |
 | Population / streaming | Host count scale, radii, rounding and initial candidate rules are documented policies. Upstream `traffic-stream.ts` checks oriented size/velocity-based spawn safety and physical/distant transition state; upstream documentation still reports conspicuous spawns. Neither current implementation is an original-game population oracle. |
-| Police / pursuit | Upstream `docs/traffic-java-bridge.md` explicitly leaves police wake/follow/horns/drivers/reinsertion chase flow incomplete; source does not implement the MWM AI_follow/AI_GoToTraffic/AI_GoToTarget commands. These cannot be described as ready-made upstream pursuit to copy. Host follow behavior must remain identified as an extension unless further reference evidence is found. |
+| Police / pursuit | Upstream `SLRR_rev:docs/traffic-java-bridge.md` explicitly leaves police wake/follow/horns/drivers/reinsertion chase flow incomplete; source does not implement the MWM AI_follow/AI_GoToTraffic/AI_GoToTarget commands. These cannot be described as ready-made upstream pursuit to copy. Host follow behavior must remain identified as an extension unless further reference evidence is found. |
 | AI fields / splines | Behavior mode and trailing model values are stored without tuning. The host parses AI_spline width but does not translate width/key speed metadata/opponent ID into driving policy; AI_race's opponent ID is not used. Refreshed upstream has no AI_spline/AI_params implementation to port. Original Bot command text confirms argument order, not native semantics. |
 | Day/night/ROC | Existing route/physics fixtures do not exercise the complete challenge, meeting, countdown, result and return state machines. Native registrations or a reached ROC gate are not those flows' acceptance. Preserve the consolidated issue's unchecked gameplay items. |
 
@@ -169,8 +169,8 @@ handoff/deletion and explicit recovery. Those are separate from complete race
 state-machine acceptance.
 
 Actual checks and build-only staging deviations are recorded in
-[traffic-race-audit.txt](../assets/validation/traffic-race-audit.txt). Matched
-[Before/After full-career captures and natural AI/AI contact evidence](../assets/validation/traffic-contacts/README.md)
+[traffic-race-audit.txt](../../assets/validation/traffic-race-audit.txt). Matched
+[Before/After full-career captures and natural AI/AI contact evidence](../../assets/validation/traffic-contacts/README.md)
 are supplied with clearly labelled read-only diagnostic provenance. The images
 show rendering/static-contact smoke, not vehicle-pair impact footage; the
 60-simulated-second full-career trace records actual pair response. No audible

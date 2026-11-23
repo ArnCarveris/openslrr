@@ -3,15 +3,15 @@
 Drafted 12 November 2026 from `main` at `b907b6b`, the native audit
 (then 329 bodies, 4 no-ops, 43 missing of 376; on 20 November 2026: 358, 3
 and 15), issues #15–#19 and the
-roadmap in [NATIVE_AUDIT.md](NATIVE_AUDIT.md#roadmap). Evidence for each
-item is in [KNOWLEDGE_BASE.md](KNOWLEDGE_BASE.md) and
-[EXTERNAL_RESEARCH.md](EXTERNAL_RESEARCH.md). This is a proposal: order,
+roadmap in [scripting/natives.md](../scripting/natives.md#roadmap). Evidence for each
+item is in [KNOWLEDGE_BASE.md](../core/KNOWLEDGE_BASE.md) and
+[EXTERNAL_RESEARCH.md](../research/EXTERNAL_RESEARCH.md). This is a proposal: order,
 scope and exit criteria are open to the maintainers. Status on 20 November
 2026: issues #15–#19, #56 and #64 are closed, and each milestone below marks
 what has since landed.
 
 Every item starts by checking whether SLRR_rev already implements it and
-migrating it when it does ([EXTERNAL_RESEARCH.md §7](EXTERNAL_RESEARCH.md#7-migrating-mechanics-from-slrr_rev)
+migrating it when it does ([EXTERNAL_RESEARCH.md §7](../research/EXTERNAL_RESEARCH.md#7-migrating-mechanics-from-slrr_rev)
 maps the current gaps). Every milestone ends with the same two checks,
 reported separately: the Release x64 build, and an in-game validation of the
 named scenario.
@@ -40,7 +40,7 @@ regenerated.
   the README chart and table from `src/` and the pinned stock table
   `assets/progress/stock-natives.json`.
 - Fix the malformed last `.gitignore` line, and correct the stale statements
-  listed in [KNOWLEDGE_BASE.md §9](KNOWLEDGE_BASE.md#9-where-the-documentation-disagrees-with-the-code).
+  listed in [KNOWLEDGE_BASE.md §9](../core/KNOWLEDGE_BASE.md#9-where-the-documentation-disagrees-with-the-code).
 - Partly done: `main` now has standalone regression suites
   (`scripts/run_save_io_tests.ps1 -Suite <name>`) and one CTest target,
   `audio_recovery` (`-DBUILD_TESTING=ON`). No CI workflow exists yet.
@@ -59,7 +59,7 @@ plausible acceleration.
 
 - #15 HUD size and alignment: done (PR #20 merged).
 - Steering, brake, clutch, shifting and the input profile validated through
-  a relaunch, on keyboard and a physical pad (NATIVE_AUDIT roadmap step 1).
+  a relaunch, on keyboard and a physical pad (scripting/natives.md roadmap step 1).
 - Nitro activation and consumption connected to driving.
 - Compare acceleration, braking and shifts with the original-game telemetry
   corpus (Baiern, Nonus, Einvagen, Duhen) at two or more frame rates.
@@ -122,12 +122,12 @@ natives.
 - Done: the city road network is loaded and the `GroundRef` route queries
   (`getNearestCross`, `getRouteLength`, `alignToRoad`, `getStartDirection`),
   `RenderRef.plotRoute` and the traffic natives are bound
-  ([TRAFFIC_RACE_AUDIT.md](TRAFFIC_RACE_AUDIT.md)). Still to verify in a
+  ([world/traffic-races.md](../world/traffic-races.md)). Still to verify in a
   race: the map, rear view and cruise control.
 - #19 (closed): pedestrians walk the sidewalk rows and `pedestrianDistance`
   is bound. Open: pedestrians do not use the road graph.
 - Traffic behaviour, pursuit and contact limitations listed in
-  [TRAFFIC_RACE_AUDIT.md](TRAFFIC_RACE_AUDIT.md).
+  [world/traffic-races.md](../world/traffic-races.md).
 - Water (`setWater`, `addWaterLimit`): still unbound.
 
 Done when: a city race shows a correct route and GPS, traffic follows lanes

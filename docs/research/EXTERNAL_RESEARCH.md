@@ -18,7 +18,7 @@ text or code. References are written `SLRR_rev:docs/<file>` and
 `PR3:docs/<file>`; `python scripts/check_knowledge_refs.py --external
 SLRR_rev=<checkout> --external PR3=<checkout>` checks them. OpenSLRR code
 references use the same `path:symbol` form as
-[KNOWLEDGE_BASE.md](KNOWLEDGE_BASE.md).
+[KNOWLEDGE_BASE.md](../core/KNOWLEDGE_BASE.md).
 
 Confidence tags:
 
@@ -226,7 +226,7 @@ All little-endian. Each item notes OpenSLRR's status.
   hook that drives spray. It has no `Osd.createIcon` button path for the decal
   picker. OpenSLRR binds the same natives (#64) from the slrr-reverse notes on
   0x004827D0, 0x00482960 and 0x00482C00, but rasterizes paint into textures
-  (KNOWLEDGE_BASE.md, "Garage paint booth (#64)").
+  ([ui/notes.md "Garage paint booth (#64)"](../ui/notes.md#garage-paint-booth-64)).
 
 ## 4. Game mechanics and telemetry
 
@@ -249,7 +249,7 @@ All little-endian. Each item notes OpenSLRR's status.
   OpenSLRR and upstream outputs reproduced about 82.087 N·m at the 437 RPM
   default-DynoData witness. #203 intentionally preserves the recovered cycle
   work but converts torque/power to SI net crank output under the owner's
-  physical-consistency direction; see [the audit](PHYSICS_TICK_SPIKE.md).
+  physical-consistency direction; see [the audit](../vehicles/physics-tick.md).
   `src/physics/dyno_model.cpp:dyno_self_check` now checks that converted witness. **ext + design**
 - **Clutch pitfall.** `ClutchF` is not a torque cap in N·m, and both sides of
   the clutch exchange must share one wheel inertia, or energy is created
@@ -363,7 +363,7 @@ How to look:
 How to migrate:
 
 - Port the behaviour into the OpenSLRR layer that owns it
-  ([ENGINE_CONTRACT.md §2](ENGINE_CONTRACT.md#2-compatibility-contract)),
+  ([ENGINE_CONTRACT.md §2](../core/ENGINE_CONTRACT.md#2-compatibility-contract)),
   in C++. Do not carry over the Three.js, WebGL or async structure.
 - Keep original behaviour apart from SLRR_rev design. Many SLRR_rev values
   are tuning or invented models (damage cages, traffic driver, pedestrian
@@ -416,12 +416,12 @@ The older #48 script-derived curve, instant-centre lift and `setCPatch`
 tolerance calculation no longer run. Stored native fields do not establish
 implemented physics; see ENGINE_CONTRACT §11.
 
-The [revised migration plan](VEHICLE_DYNAMICS_PLAN.md) keeps the earlier
+The [revised migration plan](../vehicles/dynamics-plan.md) keeps the earlier
 three-wheel, missing-spring, gauge, crush and engine follow-ups, but requires
 new reproductions on this baseline before tuning. It separates upstream
 ideas from uncalibrated proposals; especially, the proposed engine
 break-up is not something SLRR_rev `77b0fb6` implements. Earlier captures
-in [the validation record](../assets/validation/vehicle-dynamics/README.md)
+in [the validation record](../../assets/validation/vehicle-dynamics/README.md)
 remain historical evidence, not validation of `8ac2ba9`.
 
 ### v221 shared race port, 18 November 2026
@@ -448,7 +448,7 @@ Read alongside upstream docs `ground-road-routing.md`, `java-race-bots.md`,
 `java-traffic-models.md` and `traffic-java-bridge.md`. Upstream itself disclaims
 original AI parity and complete pursuit. OpenSLRR likewise does not claim exact
 speed, steering, collision response, signals, traffic-behaviour flags or spline
-metadata semantics. Runtime limits and evidence are in SCRIPT_RUNTIME's shared
+metadata semantics. Runtime limits and evidence are in scripting/runtime.md's shared
 race section and assets/validation/shared-races.txt. #179 and its three original
 issues remain open for their separate in-game acceptance checks.
 
@@ -561,7 +561,7 @@ integration fix, not a claim that every upstream Bot behavior has been translate
 
 Refreshed v221 to `7441a697f3b7b2d0ff7ddbe3f20f2e29a03165aa`;
 traffic remains `bea8ce06eabef78ad0c25dde00e17a48765199b5`.
-The [remaining-work audit](TRAFFIC_RACE_AUDIT.md) compares current contacts,
+The [remaining-work audit](../world/traffic-races.md) compares current contacts,
 Bot/controller policy, native assembly, audio and driver seating against this
 snapshot. In particular, v221 vehicle-physics-world.ts / vehicle-pair-test.ts
 coordinate full-car pair contacts and deliver actual impulses to both damage
@@ -615,8 +615,8 @@ in `b907b6b`.
 | PR #3 document | Status relative to main |
 | --- | --- |
 | `PR3:docs/ARCHITECTURE.md` | Subsystem map still valid; omits the compiler, pedestrians, characters and `src/formats`. Size figures are stale |
-| `PR3:docs/SOURCE_REVIEW.md` | Most risks still open on main; condensed in [KNOWLEDGE_BASE.md §10](KNOWLEDGE_BASE.md#10-open-risk-register) |
-| `PR3:docs/ROADMAP.md` | Its milestone 0 (tests, CI) regressed on main; folded into [MILESTONES.md](MILESTONES.md) |
+| `PR3:docs/SOURCE_REVIEW.md` | Most risks still open on main; condensed in [KNOWLEDGE_BASE.md §10](../core/KNOWLEDGE_BASE.md#10-open-risk-register) |
+| `PR3:docs/ROADMAP.md` | Its milestone 0 (tests, CI) regressed on main; folded into [MILESTONES.md](../planning/MILESTONES.md) |
 | `PR3:docs/INSTRUMENTATION.md` | Trace, metrics, native report, physics telemetry and replay, fault injection, fuzzing, ASan: none of it is on main |
 | `PR3:docs/CRASH_LOGGING.md` | `--log-all` crash logging and minidumps: not on main |
 | `PR3:docs/MULTIAGENT.md` | Worktree-per-agent workflow; its scripts are not on main |

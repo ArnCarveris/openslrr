@@ -13,7 +13,7 @@ was then [approved by deqque13](https://github.com/EliasFD3S/openslrr/pull/48#is
 Stage A is implemented in `8bd1e77` (vehicle 14/14, wheel mounts 7/7,
 sanitisers and Windows Release builds pass). Support/rest is implemented
 in `e7c9e7f` plus the render-to-part coordinate correction `005de5b`.
-The [new application evidence](../assets/validation/vehicle-dynamics/support-2026-11-19/README.md)
+The [new application evidence](../../assets/validation/vehicle-dynamics/support-2026-11-19/README.md)
 compares rear-right spring removal and a 620-second three-wheel garage
 stress test against the actual intended baseline. The final static-limit
 follow-up `5570bf3`, its clean Windows Release build and the separately
@@ -34,7 +34,7 @@ a separate handling decision, not an incidental fix for old tests.
 
 The previous numeric reproductions are useful leads, not measurements of
 `8ac2ba9`. Preserve their identified revisions in
-[the historical validation record](../assets/validation/vehicle-dynamics/README.md).
+[the historical validation record](../../assets/validation/vehicle-dynamics/README.md).
 New implementation work needs a fresh baseline, the same car/input/camera and
 settings on both sides, and separately reported build, kernel and in-game checks.
 

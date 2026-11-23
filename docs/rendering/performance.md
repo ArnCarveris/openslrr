@@ -1,0 +1,383 @@
+# Rendering notes: performance
+
+Uniform and texture-stage costs, prop LOD and culling, world-list
+collection and batching, with in-game measurements.
+
+## Per-view light uniforms (#246)
+
+- bgfx uniform semantics (checked in the vendored source,
+  `build/_deps/bgfx-src/src/bgfx.cpp` `Encoder::submit` and
+  `rendererUpdateUniforms`): `setUniform` calls between two submits form a
+  range attached to the next draw only. The renderer replays each draw's range
+  into a value cache that persists across draws, views and frames, in render
+  order. Render order equals submit order only in a `ViewMode::Sequential`
+  view; sorted views reorder draws, so a value set on one draw can be missing
+  on a draw rendered before it.
+- Hence `src/render/bgfx_lighting.cpp:bind_scene_shadow` uploads the
+  view-invariant arrays (fixtures, lamps, lamp and car-tile shadow matrices and
+  tiles, sun cascades, point faces) only when
+  `LibBgfxBackend::light_arrays_current` is false: the draw's view (set by
+  `draw_instance` and `draw_prop_batches`) is marked Sequential through
+  `set_view_sequential`, and the view, frame (`frames_`) and light revision
+  (bumped by the `update_*` light/shadow functions) match the last upload.
+  Per-draw counts and flags (`u_lampParams`, `u_lampShadowParams`,
+  `u_fixtureParams`, shadow params) and textures are still set per draw, so
+  unlit draws (previews, lamp glass) read no lamp. Draws from other paths (sky,
+  terrain parts, OSD) and views not marked Sequential upload every time.
+- #262 extends the rule to the single-value light uniforms and to texture
+  stages; see "Per-view uniform values, kept texture stages and residency
+  skip (#262)" below.
+- Measured (`scene_shadow_gpu` case `per_view_light_uniforms`, 2,000 lit draws
+  in one view): main-thread submission 1.45 → 1.08 ms, bgfx render thread
+  unchanged (≈3.7 ms). The D3D11 renderer re-uploads the program's whole
+  fragment constant buffer whenever any uniform of a draw changed, and every
+  draw still sets per-draw material uniforms; the fragment cbuffer of
+  `fs_mesh` is about 600 vec4 (64-lamp arrays, 24 lamp-shadow and 24
+  car-tile matrices, fixtures, cascades). Cutting render-thread and GPU upload
+  cost needs a smaller cbuffer, e.g. lamp and shadow arrays in a texture.
+
+## Map prop LOD and far size cull (#252)
+
+- Stock data (read-only scan of the game root, `tests/test_prop_lod.cpp`):
+  `lod first last` follows a `render` line and marks the levels it draws at,
+  `lods N s0 s1` is one object-wide line with ascending size ratios
+  (thresholds for levels 1..N). In practice N = 2 and every chain is a pair:
+  the high mesh `lod 2 2` and a `_lod` mesh `lod 0 1` (e.g. `lamp_base`
+  0x118 / 0x13, tree `fa03a` 0xd8 / 0x5d5 `lod_fa3.scx`). Two threshold sets
+  exist: `0.01 0.025` (trees, lamp posts, some buildings) and
+  `0.001 0.0025` (most building fronts). 32 object types in the stock packs
+  have chains. The ratio's definition is not documented; it is implemented as
+  placement bounding radius / distance (not confirmed against the original
+  engine): a fa03a tree switches to its low mesh at about 150 m going out and
+  back at 122 m.
+- Code: `src/resources/part_config.cpp:parse_part_config` reads `lods` into
+  `PartConfig::lod_sizes`. `scene_instances_add_ground_props` keeps the whole
+  chain for types with `lods` (others keep only the highest LOD, as before),
+  tags each prop with its level range and one `PlacementLod` per placement
+  (shell-local centre, radius covering all its LOD renders, thresholds, level).
+  `src/resources/scene_instances.cpp:prop_lod_visible` picks the level with
+  `src/resources/scene_instances.cpp:scene_prop_lod_level` (10 % hysteresis)
+  in both collection paths. The renderer sets `ScenePropLodView` in
+  `sync_instances`: only the main view's collection stores levels; AO, sun
+  cascades, reflections and lamp tiles reuse them. Low meshes are resident
+  with the map (`resources`), a small memory cost.
+- Far size cull: `screen_size_visible` drops props beyond 40 m whose
+  projected box is under `render_debug().far_cull_px` (default 4, was 2).
+- Debug overrides: `lod_bias` (distance multiplier), `force_highest_lod`
+  (pre-#252 behaviour) and `far_cull_px`, all in the snapshot header.
+- Valo City (whole city, no frustum): 16,602 placements with a chain; prop
+  triangles 3.37 M with the highest LOD → 1.94 M with LOD (−42 %) from the
+  first shell origin. With a 2560×1440 projection model the far cull gives
+  1.69 M triangles / 26,728 records at 2 px and 1.47 M / 23,152 at 4 px (of
+  31,075). Draw calls are not reduced by LOD itself (a low mesh replaces the
+  high one); the size cull removes records.
+
+## Light data texture (#254)
+
+- The fixture, street lamp, lamp-tile and car-tile arrays moved out of the
+  fragment constants into a 256 × 3 RGBA32F texture (`s_lightData`, stage 11)
+  read with `texelFetch` (`shaders/scene_shadow.sh:lightData`,
+  `shaders/scene_shadow.sh:lightMatrix`; layout documented there). Matrices
+  are stored by column and rebuilt with `mtxFromCols`, which reproduces the
+  uniform `mat4` exactly.
+- `src/render/bgfx_lighting.cpp:upload_light_data` builds the contents where
+  the #246 per-view arrays were uploaded (first lit draw of a Sequential view
+  and frame, every draw in other views) and calls `updateTexture2D` only when
+  they changed. A bgfx texture update applies to the whole frame, which is
+  valid because light data changes only in the `update_*` functions, before
+  any draw. Per-draw counts and flags stay uniforms.
+- Fragment uniforms (from the embedded D3D11 shaders' uniform tables):
+  `fs_mesh` 595 → 79 vec4, `fs_vehicle` 593 → 77 vec4. Harness, 2,000 lit
+  draws in one view: bgfx render thread 6.5–7.1 ms → 4.7–5.0 ms (about −30 %),
+  main-thread submission unchanged at about 1.1 ms with the per-view path.
+  Images are byte-identical to the uniform version (cross-build capture of the
+  lamp/car-tile scene, and every scene_shadow_gpu pixel count unchanged).
+- Investigations noted while measuring (not fixed):
+  - Half-res GTAO pass 1 still reads the full-resolution D32F prepass:
+    `surfaceNormal` takes 9 depth taps, and each slice sample calls
+    `sampleDelta`, which reads the depth twice (`depthAt`, then `positionAt`).
+    High is 5 slices × 8 steps × 2 sides, so about 170 full-res depth fetches
+    per AO pixel, spread over a screen radius that grows with the world radius
+    (Elias uses 3 m, the harness 1 m, which is why the harness predicted more
+    savings). Filter passes 2 and 3 each rebuild the position and the 9-tap
+    normal again. Likely wins: one fetch per sample, a half-resolution linear
+    depth (R16F/R32F) for all three passes, and a depth mip chain chosen by
+    sample distance (as in XeGTAO); storing the normal once would remove the
+    9-tap reconstruction from passes 2 and 3.
+  - Prop LOD (#252) keeps both meshes of a chain as props, so the collection
+    loops visit about twice as many props for the 16,602 chained placements.
+    Each runs the frustum test before the LOD test, and `prop_lod_visible`
+    recomputes the transformed centre and distance for both of a placement's
+    props. That matches the +0.3 ms of collection seen in game. Testing the
+    LOD before the frustum test, caching the level per placement and frame, or
+    keeping per-LOD lists would remove it.
+
+## LOD selection cost in collection (#257)
+
+- `src/resources/scene_instances.cpp:prop_lod_visible` now computes a
+  placement's level once per updating LOD view: `scene_instances_set_lod_view`
+  bumps `g_lod_epoch` when `update` is set, `PlacementLod::epoch` records the
+  epoch of the stored level, and the second chain member and the other
+  collection path reuse it. The batch path tests the LOD before the frustum
+  sphere, so the non-selected chain member costs one lookup. Levels are now
+  also refreshed for placements in visible cells outside the view frustum,
+  which keeps off-screen casters consistent.
+- Harness (`tests/test_prop_lod.cpp`, Valo City, street-level 60° frustum,
+  no size filter, 60 frames): collection 0.56–0.58 ms with the highest LOD
+  only; with LOD 0.60–0.63 ms before this change and 0.59–0.61 ms after
+  (noisy, ±0.2 ms on a loaded machine). LOD selection itself costs about
+  0.03–0.05 ms here, so the +0.3 ms of collection seen in game at #252 is
+  mostly not LOD selection; it is within frame-to-frame noise of that zone.
+
+## Measured in game after the renderer performance stack (#246–#257)
+
+Elias, 2560×1440, night city, his settings (MSAA 8x, GTAO High, 3 m AO
+radius, shadow quality High, Very soft smoothing), debug snapshot:
+
+| | Before the stack | After the stack |
+| --- | --- | --- |
+| GPU | 13.34 ms | 7.63 ms |
+| bgfx render thread | 12.11 ms | 5.62 ms |
+| World view | 9.31 ms | 5.40 ms |
+| AO pass 1 | 2.60 ms | 0.62 ms |
+
+The frame is still about 11.2 ms with present wait 0.03 ms: the main thread
+is now the bottleneck (scene collection + residency 3.87 ms, of which
+instanced prop batches 1.56 ms; world submission 2.91 ms; OSD + debug 0.62;
+reflections 0.5; AO 0.25; shadows 0.2). The renderer snapshot does not list
+the script, traffic, physics and GC zones, which make up most of the
+remaining ~2.8 ms (they are in the menu's "Session and host" section).
+
+## Static prop world cache and persistent batches (#260)
+
+- `src/resources/scene_instances.cpp:refresh_world_cache` stores, per map
+  prop, its script-space world centre and its render-space instance matrix
+  (S·shell·pose·S), plus each cell's world centre, for
+  `GroundPropMap::cached_shell`. Both collection paths call it with the
+  shell's current matrix and it recomputes only when that matrix changes
+  (ground shells are static), instead of a matrix product, two
+  `transform_point` and a sign-flip loop per placement and frame.
+- `scene_instances_collect_batches` keeps a persistent layout: at load each
+  map gets one slot per batchable mesh (`GroundPropMap::batch_ids`,
+  `batch_geometry`, `GroundPropBatch::slot`); the output vector holds one
+  entry per slot and shell, keeps its instance vectors' capacity from frame
+  to frame and is only rebuilt when the shells or slots change. The
+  per-frame `batch_of` hash map is gone. Entries can be empty; every consumer
+  already skips empty batches (the debug stats now count non-empty ones).
+- The world list copy in `scene_instances_collect` was kept: in the harness
+  taking the frame list instead of copying it saved nothing measurable, and
+  it would force reflection and shadow collections to rebuild the list later
+  in the frame.
+- The renderer snapshot (`src/render/debug_overlay.cpp:render_timing_dump`)
+  now lists Scripts, Traffic, Physics (vehicles, pedestrians, collision), GC
+  and the render flush, plus "other main thread" (frame minus scripts,
+  traffic, physics, flush and GC), so the main-thread budget adds up.
+- Harness (`tests/test_prop_lod.cpp`, Valo City, street frustum, 60 frames,
+  frame cache on, batch vector kept across frames as in the renderer):
+  main-view collection 0.60–0.70 ms → 0.17–0.24 ms; identical output
+  (same records and transform checksums with and without LOD).
+
+## Per-view uniform values, kept texture stages and residency skip (#262)
+
+- Same bgfx rule as #246, extended to every single-value light uniform:
+  `LibBgfxBackend::set_uniform` (`src/render/bgfx_lighting.cpp`) skips a
+  value equal to the one already set in the same Sequential view and frame
+  (sun, fog, sky and cloud wind, shadow filter/params/origin/ranges/eye and
+  matrix, interior sun, point and local light, car depth, AO, fixture/lamp
+  counts, lightmap and mesh UV transforms). The view comes from
+  `LibBgfxBackend::BindingScope`, opened by `draw_instance` and
+  `draw_prop_batches`; a new view or frame (`frames_`) starts a new
+  generation. Every set of these handles in the renderer goes through
+  `set_uniform`: outside a Sequential scope it forgets that handle, so sky,
+  terrain parts, sun flare, AO passes and shadow passes that set the same
+  uniforms stay correct. Matrices pass 16 floats; a new handle routed through
+  `set_uniform` must pass its real size.
+- Two bgfx cases where a set value never reaches the draw the cache expects
+  (`build/_deps/bgfx-src/src/bgfx.cpp` `EncoderImpl::submit`, `bgfx_p.h`
+  `discard`): a dropped submit (no indices, or more than
+  `BGFX_CONFIG_MAX_DRAW_CALLS`) discards its pending uniforms, and values set
+  after the last submit of a scope attach to whatever submit comes next.
+  `submit_bound` forgets everything after a submit without indices, and the
+  scope destructor forgets everything when values are still pending (this
+  also covers the #246 arrays). The draw-call limit is not detected: past it
+  the frame is already missing draws.
+- Texture stages (`set_texture`, `submit_bound`): in this bgfx (fe9bbdec6)
+  `setTexture` compares the binding (`setBind`) and writes a sampler uniform,
+  and the encoder hashes the binding set at a submit when it changed;
+  `BGFX_DISCARD_BINDINGS` resets the bindings after every submit. Inside a
+  Sequential scope, submits now use `BGFX_DISCARD_ALL & ~BGFX_DISCARD_BINDINGS`
+  and only stages whose sampler, texture or flags changed are set again. A
+  draw that leaves a kept stage unset (vehicle stage 4 without a live
+  reflection cube, mesh and vehicle samplers on the same stage) is submitted
+  with the full discard, so no draw samples a texture it did not ask for. The
+  scope ends with `bgfx::discard(BGFX_DISCARD_BINDINGS)`, so sky, terrain,
+  blended, OSD and shadow draws outside it start with no bindings, as before.
+  Every `setTexture` and `submit` inside the two scoped functions must use
+  the wrappers, or the kept state no longer matches the encoder.
+- Instanced map props: `kPropInstanceChunk` (`src/render/bgfx_lib_backend.hpp`)
+  raised from 128 to 1024 placements per submit. Instance data comes from the
+  per-frame transient vertex buffer (6 MB default, 80 bytes per placement)
+  whatever the chunk; `getAvailInstanceDataBuffer` still clamps a chunk when
+  the buffer runs low. Draw order inside a batch changes (each group now
+  covers all placements at once); the city capture is byte-identical.
+- `sync_instances` (`src/render/bgfx_lib_backend.cpp`) lists the meshes it
+  keeps (shadow meshes, lamp casters, resident props, instances, previews)
+  with revision, owner and deformed flag. When that list and
+  `instance_meshes_.size()` match the previous frame, `cache_scene_mesh` and
+  the sweep would change nothing, so the used map, prefetch, cache loop and
+  sweep are skipped (`residency_skips_`); skin uploads still run.
+  `clear_scene` resets the stored list.
+- Harness (`tests/test_scene_shadow_gpu.cpp` `city_submission`, Valo City at
+  22 h, street view, 640×360, world view 5 Sequential, two runs): caches off
+  then on in the same process, captures byte-identical to each other and to
+  the pre-#262 build. sync_instances 0.38–0.39 → 0.32 ms, world submission
+  0.84–0.87 → 0.68–0.69 ms, bgfx render thread 1.28–1.34 → 0.92–0.94 ms.
+  Per frame: uniform sets 39,590 → 186, texture sets 15,063 → 1,995, draws
+  1,368 → 1,367. The pre-#262 build measured 0.39–0.46 / 0.79–0.99 /
+  1.34–1.62 ms in the same harness.
+- In game after #260 and #262 (Elias, 2560×1440, night city, about the same
+  spot and time as the #246–#257 snapshot, 6,090 draws, 625 batches / 8,946
+  placements): frame 11.2 → 10.2 ms, GPU 7.63 → 7.36 ms, bgfx render thread
+  5.62 → 4.70 ms, world view GPU 5.40 → 5.25 ms, scene collection +
+  residency 3.87 → 3.24 ms, world submission 2.91 → 2.68 ms. The main thread
+  is still the limit (render flush 7.9 ms of a 10.1 ms frame; scripts 0.37,
+  physics 0.98, other 0.88). Open question: the "instanced prop batches"
+  zone (main-view `scene_instances_collect_batches` only) stayed at 1.55 ms
+  although the #260 harness measured 0.6–0.7 → 0.17–0.24 ms for it, so the
+  in-game cost lies in something the harness does not reproduce (scene,
+  LOD/size filter, frame cache state).
+
+## Instanced night overlays and blended props, world list zones (#264)
+
+- Profiler: `perf::Zone::WorldList` wraps the frame's world list build in
+  `src/resources/scene_instances.cpp:world_instances` (the first collection of
+  the frame builds it, which is the main view's
+  `scene_instances_collect_batches`, so it is nested in "instanced prop
+  batches"), and `perf::Zone::WorldCopy` wraps the copy of that list in
+  `scene_instances_collect`, summed over every collection of the frame. The
+  snapshot and the menu's view table now show draws per view:
+  `LibBgfxBackend::submit_counted` (`src/render/bgfx_lib_backend.hpp`) counts
+  every renderer submit into `view_draws_`, reset at the start of the frame
+  and published with the debug stats.
+- Night overlays: night-only props (`GroundProp::night_only`, the authored
+  night facades) get a persistent slot per mesh (`GroundPropMap::night_ids`,
+  `night_geometry`, `GroundProp::night_slot`). When `scene_instances_collect`
+  receives a `night_batches` vector (only `sync_instances` passes
+  `night_batches_`), visible night props go there instead of one
+  `SceneInstance` each; other callers still get SceneInstances with
+  `emissive_overlay`, which every shadow, AO and reflection pass already
+  skips. `draw_dynamic_world` draws them in pass 1 through
+  `LibBgfxBackend::draw_props_instanced` (`src/render/bgfx_lighting.cpp`).
+- Props with a blended section (`LibBgfxBackend::blended_prop_instance`: a map
+  placement whose SCX3/4 mesh has a blended group, no ground polygons) keep
+  their SceneInstance, because shadows, AO and reflections use it. Only the
+  world view draws them instanced: `draw_dynamic_world` groups them per mesh
+  and lighting in first-appearance order and draws each group in both passes
+  through `draw_props_instanced` instead of `draw_instance`.
+- `draw_props_instanced` is draw_instance's group lambda for a map placement
+  (cull_backfaces, no preview, sky, skin or texture replacement, opacity 1)
+  with `inst_program_`. Each group gets its own instance data, because the
+  tint draw_instance computes from the placement colour (diffuse, ColorMixTex,
+  blend modulation, emission colour) is computed per placement in the same
+  order and sent in the instance colour, with `u_color.rgb` = 1 and the alpha
+  (which never depends on the placement) in `u_color.a`. fs_mesh multiplies
+  `tint * placement`, so the product is the same float.
+- `shaders/vs_mesh_inst.sc` applies vs_mesh's overlay depth bias (a 2 mm
+  normal offset before #281) when the instance colour's w is 2 (1 otherwise, including the shadow programs).
+  Pitfall: the first version read `u_alphaTest.y` in this vertex shader, like
+  vs_mesh does; the bgfx render thread then took ~45 ms per frame in the
+  harness, and the main thread got slower too (bisected: same code without
+  that shader change ran at normal speed). Keep that uniform out of
+  vs_mesh_inst.
+- Order: pass 1 is now the instance loop (world list, signal glow), then the
+  night overlays, then the blended props; groups are drawn group-major over
+  their placements. Overlays add light (SRC_ALPHA, ONE), which an 8-bit
+  target accumulates in any order; the captures below show no change.
+- Harness (`tests/test_scene_shadow_gpu.cpp` `city_submission`, now run at
+  640×360 and at 2560×1440; the size also drives the far-size filter, so
+  2560 keeps the props the game keeps; Valo City 22 h, world view only,
+  caches on). Both captures are byte-identical to the pre-#264 build
+  (`build/city_frame_reference_<w>x<h>.bin`, written by the earlier build).
+  At 2560×1440: world-view draws 2,555 → 1,843, scene instances 789 → 116
+  (673 overlay placements in 65 meshes, 114 blended placements),
+  sync_instances 0.50–0.67 → 0.36–0.41 ms, world submission
+  1.55–1.64 → 0.97–1.06 ms, bgfx render thread 1.87–2.12 → 1.29 ms (two
+  runs each).
+
+## Parallel prop batch collection and collection sub-zones (#266)
+
+- `scene_instances_collect_batches` runs its placement loop on the job pool
+  ([knowledge base §5.10](../core/KNOWLEDGE_BASE.md#510-threads-and-the-worker-pool) "Per-frame work on the pool"). A first version chose the LOD in a
+  separate pass (jobs list the LOD placements, the host thread chooses) and
+  was slower than serial in the harness (0.36 ms warm against 0.28 ms): two
+  pool dispatches and a serial pass over every LOD placement. The shipped
+  version is one dispatch with the LOD chosen in place through
+  `std::atomic_ref`.
+- Equivalence: `city_submission` compares the pooled loop with the same
+  loop run inside a job (where a batch runs serially) on the same frame
+  state: identical batches and placement order. The 640x360 and 2560x1440
+  captures match the pre-#266 build on 24 threads and with the test process
+  pinned to one and to two cores. Windows has no ThreadSanitizer here (MSVC
+  only, no g++/clang); the review covers what the jobs read and write.
+- New profiler zones in sync_instances: `CollectInstances` (the main view's
+  `scene_instances_collect`), `CollectSkins` (walker palettes, every
+  collection), `CollectPreviews` (script viewport previews) and `Residency`
+  (`src/render/bgfx_lib_backend.cpp:sync_instances`), shown under "Scene
+  collection + residency" in the snapshot.
+- Harness (`city_submission`, 2560x1440, world view, 24 pool threads; "cold"
+  overwrites 96 MB before every frame): batches zone 0.28-0.32 ms warm,
+  0.50 ms cold before; 0.17-0.23 ms warm, 0.26-0.31 ms cold after.
+  sync_instances cold 0.72-0.73 -> 0.46-0.54 ms. Main-view
+  `scene_instances_collect` (still serial) takes 0.11-0.15 ms warm and
+  0.16-0.21 ms cold.
+- Known harness flake, present before #266 (seen on the #264 build with
+  no source change): about one run in three, the 2560x1440 capture differs
+  from another run's in 17 scattered pixels of the lamp-lit road by 1 in one
+  channel, between two runs in the same process too (warm against cold).
+  The cause is not found; it is not thread related (it happens with the
+  serial #264 code). `city_submission` prints the warm/cold comparison and
+  requires only caches on/off and pooled/serial equality.
+
+## Walker palettes, camera list and world list costs (#268)
+
+- Walker palettes were already built once per frame and shared by every
+  collection (`g_frame_characters`); the cost is the pose rebuild. New ones
+  now run on the job pool (8 or more, with 4 or more pool threads), see
+  [knowledge base §5.10](../core/KNOWLEDGE_BASE.md#510-threads-and-the-worker-pool).
+  Walkers outside a view's frustum still get no palette; walkers that are
+  merely far keep theirs, because the renderer skips a walker without one and
+  dropping them would change the image.
+- `src/resources/gameref.cpp:gameref_active_cameras` read every GameRef of
+  the scene, and `fullscreen_script_camera`, `sync_instances` and
+  `draw_previews` call it each frame. It now reads `g_camera_refs`, the keys
+  given kind Camera (`gameref_upsert`, `gameref_bind_scene_camera`), dropping
+  the ones that are gone. Ties in `cam_pri` are now broken by `cam_seq`
+  (activation order) instead of the node table's hash order. Harness: a full
+  scan of 6,000 extra nodes takes 34.5 us warm; the registry ~0.
+- `src/resources/character.cpp:character_posed` checks for skin weights
+  before the character lookup, which used to insert a `Character` entry for
+  every render node of the world list.
+- The world list (`collect_root`) costs about 1 us per node, spread over the
+  transform chain, paint and texture matching, and moving the large
+  `SceneInstance` into the list. The mesh side of the texture matching is now
+  cached per mesh and revision (`mesh_texture_keys`), and the list is
+  reserved once. No per-node revision exists (`g_scene_revision` is global
+  and texture and paint fields change without it), so caching whole nodes or
+  whole previews across frames would need change tracking first. Memoising
+  parent matrices would change the float association of `chain_matrix`, so
+  the captures would no longer match.
+- Harness: `city_submission` has a third case, `crowd` (2560x1440): 80
+  walkers of the Valo City types (humans 0x57-0x5B, 60 ahead of the camera),
+  a car-like subtree of 30 cars.rpk renders whose nodes carry a paint id
+  (approximation: the paint id matches no texture, so the matching loops run
+  but nothing is repainted), and the same subtree in an inset preview drawn
+  by `draw_previews`. The walker clock ends at the same value in every run,
+  because a step computed at a different absolute time rounds differently.
+  Before -> after: walker palettes 0.30-0.32 -> 0.15-0.17 ms, previews
+  0.05-0.06 -> 0.04 ms, world list 0.12-0.13 ms (unchanged within noise),
+  sync_instances 0.95-1.0 -> 0.92-0.97 ms. The crowd frame's bgfx render
+  thread is 9-11 ms before and after (not investigated: 80 skinned walkers
+  and 30 overlapping car meshes at 2560x1440).
+- The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
+  `city_submission` now accepts up to 64 differing bytes at most 1 apart and
+  fails on anything larger.

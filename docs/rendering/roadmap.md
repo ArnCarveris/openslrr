@@ -65,7 +65,7 @@ this does not establish that every reported temporal shimmer is resolved.
 Anisotropic world-texture filtering is exposed in the patched video menu and
 debug overlay, off/hardware maximum, default on, persisted through the existing
 host options file. It is separate from shadow comparison filtering. See
-HOST_NATIVE_UTILITIES.md for index 6 and assets/validation/shadow-performance-filtering.txt
+scripting/natives.md for index 6 and assets/validation/shadow-performance-filtering.txt
 for tests and measurements. Previous timing numbers remain historical evidence,
 not the current performance claim.
 
@@ -214,7 +214,7 @@ GPU tests using the real garage show sunlight changes when only the clock
 changes; replacing window alpha with an opaque mask blocks the corresponding
 light. Flare ghosts/rays use camera-to-sun visibility from the same field; tests
 cover visible glass versus blocked roof/frame. See
-[interior-directional-sun.txt](../assets/validation/interior-directional-sun.txt).
+[interior-directional-sun.txt](../../assets/validation/interior-directional-sun.txt).
 Stock g1 fixture placement and explicit white tube emission are implemented below.
 
 ## Stock garage ceiling fixtures
@@ -231,12 +231,12 @@ Real-asset GPU tests cover all nine sources individually, occlusion, moved sourc
 exact depth reuse, reflection-view equality, rooted lifetime/option gating and
 white tube pixels with lighting disabled. An isolated game capture was inspected:
 white paired tubes align with the fittings and light reaches the surrounding
-walls/floor. See [neon-fixture-placement.txt](../assets/validation/neon-fixture-placement.txt).
+walls/floor. See [neon-fixture-placement.txt](../../assets/validation/neon-fixture-placement.txt).
 A follow-up corrects grazing-angle fixture shadow acne: four texel-aligned
 comparisons use the receiver's projected plane depth rather than one shared
 reference for a hardware PCF footprint. A vehicle-panel regression goes from
 9,724 affected pixels to zero; actual object occlusion remains covered. See
-[fixture-shadow-receiver-plane.txt](../assets/validation/fixture-shadow-receiver-plane.txt).
+[fixture-shadow-receiver-plane.txt](../../assets/validation/fixture-shadow-receiver-plane.txt).
 Other garage models still need explicit emitter metadata/adapters; this does not
 claim a generic SCX authoring format, calibrated photometry or area-light softness.
 
@@ -256,7 +256,7 @@ is preserved. A dedicated fixture-light test projects a vehicle shadow onto a
 vertical wall and removes it by moving the blocker away. With high ceiling lamps,
 a car farther from a wall may physically cast only onto the floor; no global
 wall decal is substituted. See
-[interior-seams-occupants.txt](../assets/validation/interior-seams-occupants.txt).
+[interior-seams-occupants.txt](../../assets/validation/interior-seams-occupants.txt).
 
 ## Ambient occlusion and quality controls (#193 / #201)
 
@@ -274,7 +274,7 @@ GPU tests verify flat planes, contact occlusion, method differences, all tiers,
 indirect-only application, resize/off cleanup, changed shadow pixels and cache reuse.
 Isolated garage captures and the Options layout were inspected; a representative
 hardware/FPS comparison and the reported deformed-body artifacts still need broader
-in-game validation. See [ao-shadow-options.txt](../assets/validation/ao-shadow-options.txt).
+in-game validation. See [ao-shadow-options.txt](../../assets/validation/ao-shadow-options.txt).
 
 ## Still outstanding
 
@@ -335,7 +335,7 @@ camera depth and tangent-hemisphere rejection reduce that to 10 pixels in high
 quality; medium/low have zero. HBAO has 37/6,640 at high and zero at lower tiers.
 Contact occlusion and instanced props remain covered. These are numerical
 regressions, not a claim of full GI or temporally accumulated AO. See
-[ao-road-banding/README.md](../assets/validation/ao-road-banding/README.md).
+[ao-road-banding/README.md](../../assets/validation/ao-road-banding/README.md).
 
 
 ## Pedestrian sun shadows (#230)

@@ -9,7 +9,7 @@ intentional**. The default clock remains 120 Hz; native APIs are unchanged.
 The included Java patch also corrects port-flow normalization and fuel heat.
 Following the [maintainers' review](https://github.com/EliasFD3S/openslrr/pull/215#issuecomment-7069913565),
 physics now steps on its own thread ([§1](#physics-thread)). The compile-time
-rate override and [standalone experiment](../tests/test_physics_tick_rate.cpp)
+rate override and [standalone experiment](../../tests/test_physics_tick_rate.cpp)
 support further work. New default controls are not part of this branch.
 
 ## Findings and remaining work
@@ -27,10 +27,10 @@ support further work. New default controls are not part of this branch.
 
 ## 1. Clock and ownership
 
-[`mainloop_frame`](../src/boot/mainloop.cpp) passes raw elapsed time to
-[`Jvm::advance_sim_time`](../src/jvm/jvm.cpp), separately from its clamped
+[`mainloop_frame`](../../src/boot/mainloop.cpp) passes raw elapsed time to
+[`Jvm::advance_sim_time`](../../src/jvm/jvm.cpp), separately from its clamped
 input/camera delta. The VM applies time warp then clamps to 0.1 s.
-[`part_physics_advance`](../src/resources/part_runtime.cpp) admits at most 4/60 s
+[`part_physics_advance`](../../src/resources/part_runtime.cpp) admits at most 4/60 s
 per frame, accumulates that and runs at most four host ticks. Excess time is
 **discarded**, not retained as simulation debt. Below 15 FPS, or at fast time
 warp, chassis time can lag behind VM/flap time.
@@ -53,9 +53,9 @@ scheduled clock or frame-independent input sampling.
 
 The shared collision pass used to mutate live parts, scene state and damage
 from inside the substeps, so moving only
-[`VehicleDynamics::advance`](../src/physics/vehicle_dynamics.cpp) onto a thread
+[`VehicleDynamics::advance`](../../src/physics/vehicle_dynamics.cpp) onto a thread
 would not have decoupled the world. The tick is therefore split in three
-([contract §6](ENGINE_CONTRACT.md#host-threads-and-the-worker-pool)):
+([contract §6](../core/ENGINE_CONTRACT.md#host-threads-and-the-worker-pool)):
 
 1. `prepare_batch` (host, before `render.flush()`): count the host ticks owed,
    rebuild scene collision, configure each car for the first tick
@@ -94,7 +94,7 @@ by a local, uncommitted probe:
 
 ### Rate changes are not just a constant
 
-`advance_chassis_tick` in [the runtime](../src/resources/part_runtime.cpp) executes
+`advance_chassis_tick` in [the runtime](../../src/resources/part_runtime.cpp) executes
 `frequency / update_frequency` iterations with integer division, passing exactly
 one solver timestep to each body in each iteration. Thus:
 
@@ -123,10 +123,10 @@ that are not positive multiples of 60; the standalone kernel experiment permits
 
 ### Interpolation and CPU cost
 
-`publish_render_poses` in [the runtime](../src/resources/part_runtime.cpp) is
+`publish_render_poses` in [the runtime](../../src/resources/part_runtime.cpp) is
 O(cars/frame), independent of substep count. Consumption also involves
-[GameRef checks](../src/resources/gameref.cpp),
-[scene hierarchy traversal](../src/resources/scene_instances.cpp) and cameras.
+[GameRef checks](../../src/resources/gameref.cpp),
+[scene hierarchy traversal](../../src/resources/scene_instances.cpp) and cameras.
 The new opt-in `interpolation_ms` CSV subzone scopes **actual pose publication**
 inside Physics (not Vehicles); it does not time downstream reader/cache work.
 It includes record traversal and pose generation, rather than inferring cost from
@@ -181,15 +181,15 @@ OptionsDialog source. References:
 
 | Source | Role |
 | --- | --- |
-| [OptionsDialog.java](../patch/sl/Scripts/game/src/OptionsDialog.java) | Menu labels, command and renderer option 5 |
-| [Patch README](../patch/README.md) | Option table and explanation |
-| [natives_script.cpp](../src/natives/natives_script.cpp) | Renderer getter/setter case 5 |
-| [host_game_options.hpp](../include/slrr/host_game_options.hpp), [host_game_options.cpp](../src/platform/host_game_options.cpp) | Enum, Adaptive default and persisted `framerate_mode=` key |
-| [part_runtime.cpp](../src/resources/part_runtime.cpp) | Only behavioral consumer: Classic skips pose blending |
-| [gameref.cpp](../src/resources/gameref.cpp), [gameref.hpp](../include/slrr/gameref.hpp) | Consume the published render pose |
-| [test_options_retry.cpp](../tests/test_options_retry.cpp), [validation](../assets/validation/options-retry/after.txt) | Save round trip |
-| [test_vehicle_contacts_runtime.cpp](../tests/test_vehicle_contacts_runtime.cpp) | Adaptive setup/restore and passive-car wake interpolation |
-| [Engine contract](ENGINE_CONTRACT.md), [knowledge base](KNOWLEDGE_BASE.md) | Physics/options documentation |
+| [OptionsDialog.java](../../patch/sl/Scripts/game/src/OptionsDialog.java) | Menu labels, command and renderer option 5 |
+| [Patch README](../../patch/README.md) | Option table and explanation |
+| [natives_script.cpp](../../src/natives/natives_script.cpp) | Renderer getter/setter case 5 |
+| [host_game_options.hpp](../../include/slrr/host_game_options.hpp), [host_game_options.cpp](../../src/platform/host_game_options.cpp) | Enum, Adaptive default and persisted `framerate_mode=` key |
+| [part_runtime.cpp](../../src/resources/part_runtime.cpp) | Only behavioral consumer: Classic skips pose blending |
+| [gameref.cpp](../../src/resources/gameref.cpp), [gameref.hpp](../../include/slrr/gameref.hpp) | Consume the published render pose |
+| [test_options_retry.cpp](../../tests/test_options_retry.cpp), [validation](../../assets/validation/options-retry/after.txt) | Save round trip |
+| [test_vehicle_contacts_runtime.cpp](../../tests/test_vehicle_contacts_runtime.cpp) | Adaptive setup/restore and passive-car wake interpolation |
+| [Engine contract](../core/ENGINE_CONTRACT.md), [knowledge base](../core/KNOWLEDGE_BASE.md) | Physics/options documentation |
 
 Both modes use identical physics. Even with 960 Hz substeps, Classic draws at
 60 Hz host-pose cadence. Removal would require recompiling/distributing the
@@ -201,21 +201,21 @@ dropping its getter case would report Classic (0). No removal is made here.
 
 The current chain is:
 
-1. [Controller input shaping](../src/platform/host_input.cpp) applies mapped axis
+1. [Controller input shaping](../../src/platform/host_input.cpp) applies mapped axis
    smoothing once per frame. This is not exactly the prototype's constant digital
    slew, and does not inherently bypass filtering for analog pedals.
-2. [`configure_drive`](../src/resources/part_runtime.cpp) supplies pedal, idle,
+2. [`configure_drive`](../../src/resources/part_runtime.cpp) supplies pedal, idle,
    limit, inertia `0.28 + 0.01 × max(0, engine_inertia)`, starter and the dyno torque
    sampler (nitro 0) once per host tick.
-3. [`step_drive`](../src/physics/vehicle_dynamics.cpp) now recovers indicated
+3. [`step_drive`](../../src/physics/vehicle_dynamics.cpp) now recovers indicated
    torque as `net_table_torque + F`, applies pedal/idle/combustion/limiter gates,
    then subtracts shared mechanical friction F and incremental closed-throttle
    pumping `D × (1 − gas)`, where `D = 14 + 0.012 × max(0, rpm − idle)`.
    Starter torque and the crank/wheel clutch impulse exchange remain unchanged.
-4. [HUD/audio](../src/resources/part_runtime.cpp) consume live rpm and pedal.
+4. [HUD/audio](../../src/resources/part_runtime.cpp) consume live rpm and pedal.
    Turbo gauge response is `dyno_boost_fraction × pedal`.
 
-The [spike-only prototype](../tests/test_physics_tick_rate.cpp) evaluates
+The [spike-only prototype](../../tests/test_physics_tick_rate.cpp) evaluates
 raw-pedal shaping and plate/airflow immediately before each real solver substep,
 not in a second crank integrator. It uses 3.5/s digital slew versus direct analog,
 exact first-order 40-ms plate lag, the issue's RPM-dependent nonlinear flow curve,
@@ -246,7 +246,7 @@ across substeps until the host consumes it, not reset or retriggered on every st
 whose plate derivative crosses the threshold.
 
 No named live rpm/plate/manifold/BOV getters were found in the reviewed Chassis
-reference declarations or [pinned native census](../assets/progress/stock-natives.json).
+reference declarations or [pinned native census](../../assets/progress/stock-natives.json).
 Pedal input is already available through `Controller.user_GetAxisVal` and
 `Input.AXIS_THROTTLE`; pedal is not plate position. New native registrations alone
 cannot make unchanged TUFA call undeclared methods. A mod-facing API needs shipped
@@ -257,7 +257,7 @@ wiring does not require a new Java API.
 
 ### Torque and power
 
-The [cycle model](../src/physics/dyno_model.cpp) uses 720 crank degrees
+The [cycle model](../../src/physics/dyno_model.cpp) uses 720 crank degrees
 (`period = 120/rpm`). For work W per cylinder and N cylinders:
 
 | Quantity | Legacy output | Corrected output |
@@ -289,7 +289,7 @@ The old 437 rpm witness (82.0871 Nm, 4781.27 W) now anchors recovered **cycle
 work**, not the old output scales. Its SI-converted result is about 52.2220 Nm
 and 2389.81 W. This deliberately changes original-game behavior with the owner's
 permission; neither version proves calibration for every MWM engine. The
-[research provenance and endpoint disagreement](EXTERNAL_RESEARCH.md#4-game-mechanics-and-telemetry)
+[research provenance and endpoint disagreement](../research/EXTERNAL_RESEARCH.md#4-game-mechanics-and-telemetry)
 remain relevant (Steam build 940 evidence versus target MWM).
 
 ### Port-volume/flow law
@@ -299,7 +299,7 @@ Both reference source trees have the same relevant formulas in
 `Block_Vee.java` (150–160 and 224–234). Heads compute
 `X = valve_disk_area_cm² × lift_cm`; blocks use
 `c = 0.9 × efficiency × X² / cylinder_volume_cm³`, clamped to 1 for maxima.
-Minima divide by efficiency. In [the cycle](../src/physics/dyno_model.cpp), c is
+Minima divide by efficiency. In [the cycle](../../src/physics/dyno_model.cpp), c is
 used as `min(1, c × dt × 1000)` pressure relaxation, not geometric optimal volume.
 
 The formula has implicit unitful calibration, grows with lift², and at fixed
@@ -346,12 +346,12 @@ measured Cd. Manifold/header flow efficiency η multiplies both minimum and maxi
 flow; it no longer increases minimum leakage when placed in a denominator. Tuning
 can make η exceed 1, so ηCd is not asserted to be a strict physical bound.
 
-The shared [CylinderHead helper](../patch/parts/scripts/enginepart/slidingenginepart/reciprocatingenginepart/src/CylinderHead.java)
+The shared [CylinderHead helper](../../patch/parts/scripts/enginepart/slidingenginepart/reciprocatingenginepart/src/CylinderHead.java)
 serves DOHC/SOHC/OHV proxies without subtype exceptions. Both
-[Inline](../patch/parts/scripts/enginepart/block/src/Block_Inline.java) and
-[Vee banks](../patch/parts/scripts/enginepart/block/src/Block_Vee.java) call it,
+[Inline](../../patch/parts/scripts/enginepart/block/src/Block_Inline.java) and
+[Vee banks](../../patch/parts/scripts/enginepart/block/src/Block_Vee.java) call it,
 then retain the existing Vee average. Intake/exhaust zero geometry or efficiency
-is handled independently. Sources **and compiled TUFA** ship in [the patch](../patch/README.md).
+is handled independently. Sources **and compiled TUFA** ship in [the patch](../../patch/README.md).
 No new DynoData schema/native API is needed; the earlier draft's claim that every
 curtain-based correction needed one was too broad.
 
@@ -362,7 +362,7 @@ At fixed gas state, doubling all lengths halves the 1-ms capacity/volume ratio;
 the old squared law instead multiplied it by eight.
 
 Actual authored geometry (wear=1; source π=3.1416), verified by executing the
-compiled Java helper in [VM tests](../tests/test_port_flow.cpp):
+compiled Java helper in [VM tests](../../tests/test_port_flow.cpp):
 
 | Intake | Bore/stroke mm | d / lift mm | η | Legacy c | New c |
 | --- | --- | --- | --- | --- | --- |
@@ -406,7 +406,7 @@ recalibration/decoupling, not a constant-only patch.
 
 The [owner's follow-up](https://github.com/EliasFD3S/openslrr/issues/203#issuecomment-7069947601)
 repeats the 1.09 MJ/kg report. The patched
-[AirFuelDeliverySystem](../patch/parts/scripts/enginepart/src/AirFuelDeliverySystem.java)
+[AirFuelDeliverySystem](../../patch/parts/scripts/enginepart/src/AirFuelDeliverySystem.java)
 now uses `H = LHV / (A/F)stoich`, per kg of charge, and drops the ×1.55
 factor: `mixture_H = H × (0.8 + 0.2 × match)`. The cycle's charge mass is
 inducted air at ambient density, so heat per kg of air at the stoichiometric
@@ -452,7 +452,7 @@ thermal efficiency, or any actual stock engine's output.
 
 ## 5. Stability experiment
 
-The [standalone fixture](../tests/test_physics_tick_rate.cpp) uses a synthetic
+The [standalone fixture](../../tests/test_physics_tick_rate.cpp) uses a synthetic
 235 N·m peak table curve, 800 rpm idle, 7000 rpm limit, neutral idle for 3 s,
 full throttle for 3 s, then lift for 7 s. It samples every kernel step at five
 flywheel inertias (0.10, 0.22, 0.28, 0.38 and 0.60 kg·m²), plus one automatic
@@ -555,7 +555,7 @@ Repeat with 120, 240, 480 and 1000. The shared-world check intentionally reports
 the non-multiple's lost clock time; passing it is not an endorsement of that rate.
 
 Configure the game with `-DSLRR_VEHICLE_PHYSICS_HZ=960`, then follow the normal
-[Release build recipe](../README.md#build). A fresh configure defaults to 120;
+[Release build recipe](../../README.md#build). A fresh configure defaults to 120;
 explicitly set 120 to restore the shipped rate in a reused build directory.
 All host translation units must use the same value. Use a private,
 reset game copy for each benchmark:

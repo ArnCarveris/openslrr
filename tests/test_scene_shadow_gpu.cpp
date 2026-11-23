@@ -2375,7 +2375,7 @@ struct SceneShadowRegression {
     const size_t differ=compare(off.image,on.image,worst);
     uint64_t lit=0;for(size_t i=0;i<on.image.size();i+=4) lit+=on.image[i]+on.image[i+1]+on.image[i+2];
     std::printf("CITY FRAME caches on vs off: %zu bytes differ, max %d (sum %llu)\n",differ,worst,(unsigned long long)lit);
-    // A known flake, older than #266 (KNOWLEDGE_BASE.md, #266 and #268):
+    // A known flake, older than #266 (docs/rendering/performance.md, #266 and #268):
     // about one run in three a capture differs from another run's by 1 in a
     // few dozen scattered lamp-lit pixels. Anything larger is a real change.
     const auto flake=[](size_t bytes,int max){return bytes<=64&&max<=1;};

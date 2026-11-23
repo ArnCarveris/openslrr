@@ -2095,7 +2095,7 @@ std::vector<SceneInstance> collect_root(void *root, bool defer_skin) {
     }
     // Legacy resource cues (flags 640, e.g. finishObject) animate independently
     // of the script pose. Host timing/opacity defaults are documented in
-    // SCRIPT_RUNTIME.md; original per-bit semantics are not established.
+    // docs/scripting/runtime.md; original per-bit semantics are not established.
     uint32_t resource_flags = 0;
     scene_shadow_info(static_cast<uint32_t>(n->type_id), &resource_flags, nullptr);
     if (root == g_world && n->kind == GameRefKind::RenderRef && !n->vehicle_material &&

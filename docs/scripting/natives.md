@@ -4,9 +4,9 @@ Baseline snapshot from 9 November 2026, incrementally updated 18 November 2026.
 The three `Painter` natives are registered (#64). `Camera.setFog` is registered. The remaining `PhysicsRef` signatures are
 bound, and `GameRef.setActiveCollision` is no longer an explicit no-op.
 Earlier increments covered the resource and vehicle bindings, the Language
-work described in [SCRIPT_COMPILER.md](SCRIPT_COMPILER.md), and the Leftovers classification.
+work described in [scripting/compiler.md](compiler.md), and the Leftovers classification.
 The Release x64 registry was compared with the
-376 entries in the stock table at `docs/stubs.txt` in the research workspace.
+376 entries in the stock table `stubs.txt` (under `docs/` in the research workspace).
 The same table is pinned in `assets/progress/stock-natives.json`, and
 `python scripts/render_native_coverage.py` recomputes the counts below and the
 README chart from the registrations in `src/`.
@@ -38,7 +38,7 @@ that category. It is not a compatibility score or a complete runtime trace.
 
 | Native or group | Current behavior |
 | --- | --- |
-| `FindFile` and File path operations | Share canonical physical confinement (#84). Enumeration alone can address the root. Leading separators are game-relative; external junctions are rejected and internal junctions allowed. Masks and dotted names remain supported. See [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md). |
+| `FindFile` and File path operations | Share canonical physical confinement (#84). Enumeration alone can address the root. Leading separators are game-relative; external junctions are rejected and internal junctions allowed. Masks and dotted names remain supported. See [saves/notes.md](../saves/notes.md#filesave-io-fixes--issues-68-70-and-71). |
 | `GameRef.setState` | Sets pose and linear/angular velocities. Cars receive the state in the live solver. Generic GameRefs retain the state but have no general dynamic-body solver yet. |
 | `GameRef.setActiveCollision` | Queues an idempotent activation request. The next physics preparation enables the generic object's CFG-defined collision and clears the queued flag. Existing vehicle and legacy RenderRef collision remain independent. |
 | `PhysicsRef` | `create`, `createBox`, `createSphere`, `setMatrix`, `setStatic`, `getPos`, `getOri`, `getVel` (both overloads) and `getAngVel` are bound. World boxes, spheres and resource CFG bodies join scene collision; OSD click boxes remain separate. `getVel(Vector3)` returns point velocity. `setStatic(0)` hands the body to the host free-body solver (gravity, scene and car contacts; a primitive gets a 500 kg/m³ density); `setStatic(1)` fixes it again. Free bodies do not collide with each other. |
@@ -47,7 +47,7 @@ that category. It is not a compatibility score or a complete runtime trace.
 | `Vehicle.getHorn` | Checks the selected horn SFX row on the canonical chassis, using live player horn input or the `sethorn` command. |
 | `Vehicle.hasCrime` | Returns the stored zone speed limit in m/s, or -1 without a zone. Automatic zone enter/leave producers are still missing. |
 | `System.isLoading`, `isLoadingReset`, `setLdPriority` | Track active RPK scans and measured pack-work history; reset seeds the 32-sample ring without clearing ongoing scans. Priority changes scan cadence. Mesh/texture streaming has no corresponding queue. |
-| `System.compileAll` | Embedded C++ compiler writes validated TUFA containers for source units, including multiple classes per file. Existing loaded classes require a restart. See SCRIPT_COMPILER.md. |
+| `System.compileAll` | Embedded C++ compiler writes validated TUFA containers for source units, including multiple classes per file. Existing loaded classes require a restart. See scripting/compiler.md. |
 | `System.info` | Selector 5 returns the live host VM heap count. Other selectors return an empty string. |
 | `ResourceRef.makeTexture` | Resolves the filename and gives the file-backed texture a live native ID and type 7. Decal passes that ID to Painter; OSD/material replacement resolves its path too. `duplicate` gives a file texture an independent handle, and aliases retain its type. Saving embeds its pixels as a type-7 PNG blob. |
 | `ResourceRef.duplicate`, `RenderRef.create` | Copy both RPK and file-backed texture replacements by value. Later skin selections do not mutate previously created render instances or shared geometry. A duplicated `RenderRef` type gets a live id, so creating a render from `copy.id()` keeps its replacements (Painter's decal slots). |
@@ -65,18 +65,18 @@ that category. It is not a compatibility score or a complete runtime trace.
 | `GroundRef.setFog` | Stores a global color and near and far distances. Nothing in the renderer reads them. |
 | `RenderRef.plotRoute` | Builds a navigator-owned coloured ribbon from the last queried route. Invalid/missing routes return zero. Texture input is not yet sampled. |
 | `GroundRef` road/route natives | Selected-ground directed TRC routes, independent alignment position/direction vectors, cached length/metre position/projection queries, timed crossing halts and path exclusions. Host route-query semantics beyond the v221 port are not recovered original implementations. |
-| `GroundRef` traffic natives | Explicit TRC lane/crossing-curve traversal, physical native wheel/suspension/tyre forces with matching render hubs, native-only racer placement from off-map staging, model-weight-based rival share and density scaling, finite positioned reinsertion, stable individual IDs, balanced deferred Java notifications and teardown. setTrafficCarBehaviour stores its flag only; trailing model parameters remain uninterpreted. Signal fixtures share a host crossing cycle with cached lens emission and red/yellow entry restrictions, five-second missing-lamp STOP and rear-checked blocked-driver recovery. Released cars retain static-world response even without a driver/engine. Shared120Hz chassis OBB pairs exchange finite-mass impulses; movable props/free bodies query all active physical cars. Pair damage/detachment uses actual impulse and pre-hit motion, with bounded translational rather than exact rotational CCD. Original signal timing, explicit STOP/YIELD signs, physical forward following and full pursuit remain incomplete. See [the #197 audit](TRAFFIC_RACE_AUDIT.md). |
+| `GroundRef` traffic natives | Explicit TRC lane/crossing-curve traversal, physical native wheel/suspension/tyre forces with matching render hubs, native-only racer placement from off-map staging, model-weight-based rival share and density scaling, finite positioned reinsertion, stable individual IDs, balanced deferred Java notifications and teardown. setTrafficCarBehaviour stores its flag only; trailing model parameters remain uninterpreted. Signal fixtures share a host crossing cycle with cached lens emission and red/yellow entry restrictions, five-second missing-lamp STOP and rear-checked blocked-driver recovery. Released cars retain static-world response even without a driver/engine. Shared120Hz chassis OBB pairs exchange finite-mass impulses; movable props/free bodies query all active physical cars. Pair damage/detachment uses actual impulse and pre-hit motion, with bounded translational rather than exact rotational CCD. Original signal timing, explicit STOP/YIELD signs, physical forward following and full pursuit remain incomplete. See [the #197 audit](../world/traffic-races.md). |
 | Brain AI commands (not separate native signatures) | Shared physical driver for AI_race, GoToTarget, GoToTraffic, follow and MWM ROC splines. BeginRace/stop/suspend hold; NightRace retains the race destination. Host tuning, basic world-space follow offsets; renderinstance seating and spline metadata remain incomplete. Original Bot bytecode, real City/ROC terrain, ordered ROC gates and the finish gate pass physics integration tests; full career UI/result flows remain pending gameplay validation. |
 | `RenderRef.lineCreate`, `lineAdd` | Build renderable ribbons from positions, normals and widths. Color is applied per segment. |
-| `LightSource` family (OpenSLRR, #235) | New `java.render` classes, not stock natives. Point, spot and rect lights attached to a GameRef; consumed by the garage renderer only. Rect lights render as spots, inner cone and per-spot shadows are not honoured. See ENGINE_CONTRACT §12 "Script light sources". |
+| `LightSource` family (OpenSLRR, #235) | New `java.render` classes, not stock natives. Point, spot and rect lights attached to a GameRef; consumed by the garage renderer only. Rect lights render as spots, inner cone and per-spot shadows are not honoured. See [rendering/contract.md "Script light sources"](../rendering/contract.md#script-light-sources-235). |
 | `Chassis.setCooling`, `setSteerWheelRadius`, `setSteerWheel`, `setBuck` | Store configuration. No temperature simulation or bucking effect consumes these values yet. The installed wheel on slot type 11 turns about the cfg `steering` locator. |
-| `Chassis.setNitroSFX` | Configures the press-triggered nitrous one-shot. Mapped driving input selects the wet dyno bank and depletes a native aggregate; explicit `reload` fills it. The HUD uses remaining/capacity. Stock flag-256 exhaust meshes and central fake-light glow share simulation-clock flicker; original flare sizing/rays/ghosts remain approximate or absent. See ENGINE_CONTRACT "Nitrous driving and exhaust". |
+| `Chassis.setNitroSFX` | Configures the press-triggered nitrous one-shot. Mapped driving input selects the wet dyno bank and depletes a native aggregate; explicit `reload` fills it. The HUD uses remaining/capacity. Stock flag-256 exhaust meshes and central fake-light glow share simulation-clock flicker; original flare sizing/rays/ghosts remain approximate or absent. See [vehicles/driving-model.md "Nitrous driving and exhaust"](../vehicles/driving-model.md#nitrous-driving-and-exhaust-303-304). |
 | `GroundRef.setPedestrianDensityN`, `addPedestrianType`, `remPedestrianType`, `removePedestrianType`, `pedestrianDistance` | Density, after the script's Config factor, sets people per square metre of `city.walk` row area around the driven car. Each type's `native ped` cfg supplies the render and the walk clip. Walkers follow the original engine model: free agents inside a row, pushed back by its walls and both sidewalk runs, leaving only through gates (see `src/resources/pedestrian_lines.cpp`). `removePedestrianType` is the original native table's name for `remPedestrianType`. `pedestrianDistance(pos, type)` returns the distance to the nearest live walker of that type id, or of any type for 0, and -1 when there is none. |
 | `PhysicsRef.getPos` | Returns a new Vector3 copying the one stored by `setMatrix`. Without one, it returns a new Vector3 from the object's pose. The copy matters: `Osd` keyboard navigation calls `gad.getHotSpot().sub(cur)`, and returning the stored vector let the arrow keys move the button's own Rectangle (`Rectangle.pos` is the same vector the button passed to `setMatrix`). |
 | `Part.setSfxLoopParams` | Stores the two parameters without applying them to a voice. Native car CFG sfx_loop is kept in `PartConfig::sfx_loop` and played by `update_traffic_engine_audio`; mechanical AI already updates its SfxTables. Script engine loops have no listener-distance input; native traffic loops use distance gain and stereo pan. |
 | `Chassis.setHornSFX` | Stores all indexed sounds. The current player input plays the index 1 sample once per press. |
 | `GameRef.create_native` on native cars | Builds the CFG-backed native assembly, skips a chassis-specific Java constructor and binds the Java reference to its live chassis. Tested with the real fake_racers staging/traffic flow; other native resource kinds retain their existing path. |
-| `Painter.paintPart`, `doPaint`, `xPaint` | Pick the installed part under the pointer and draw into that part's own runtime texture (`paint_texture.hpp`), shown in its cfg `texture` paint slot. `paintPart` fills it with one colour; `doPaint` projects the spray brush or a decal as a square `size` metres wide onto the paint-slot triangles that face it; a temporary (`temp`) decal preview is replaced by the next one and removed by `xPaint`, by a committed stroke or two host frames after the script stops refreshing it. The executable queues `paint`/`bigdecal` part commands instead; the projection, orientation and preview expiry are host approximations. `File.write(ResourceRef)` saves such a texture as a PNG in its save blob (SDAT trailer or JSON `blobs`); `readResID` restores it, or reads the JPEG the stock game wrote beside the save as `<file>.<ordinal>`. See KNOWLEDGE_BASE.md, "Garage paint booth (#64)". |
+| `Painter.paintPart`, `doPaint`, `xPaint` | Pick the installed part under the pointer and draw into that part's own runtime texture (`paint_texture.hpp`), shown in its cfg `texture` paint slot. `paintPart` fills it with one colour; `doPaint` projects the spray brush or a decal as a square `size` metres wide onto the paint-slot triangles that face it; a temporary (`temp`) decal preview is replaced by the next one and removed by `xPaint`, by a committed stroke or two host frames after the script stops refreshing it. The executable queues `paint`/`bigdecal` part commands instead; the projection, orientation and preview expiry are host approximations. `File.write(ResourceRef)` saves such a texture as a PNG in its save blob (SDAT trailer or JSON `blobs`); `readResID` restores it, or reads the JPEG the stock game wrote beside the save as `<file>.<ordinal>`. See [ui/notes.md, "Garage paint booth (#64)"](../ui/notes.md#garage-paint-booth-64). |
 | `GameRef.getInfo`, `queueEvent` | Implement selected queries and commands. `repair` performs the native per-part deformation, damage-associated slot/wheel and CFG mount/base-mesh reset; stock Java owns the installed-tree recursion and wear/tear caps, with a native fallback only for detached assembly children omitted from `attachedParts`. Unhandled queries return zero. Other command paths still need coverage as new sections are exercised. |
 | `GameType.registerCallback`, notifications | Control, drive and animate callbacks run. Notifications have event routing and GC roots. Other callback modes and event producers still need verification. |
 | `Input.getAxis`, `activeAxis`, `Controller.user_SetAxisSmooth` | Win32 keyboard/mouse and simultaneous SDL3 peripherals are wired. The primary pad retains the legacy profile alias; other peripherals expose signed axes, buttons and hats. Rebinding raw axes is relative to their initial position; reopen controls after adding a device. Hardware rig calibration and force feedback are not validated/implemented, respectively. Pointer movement is excluded from rebinding. Negative mouse axis requests reset deltas, while their sensitivity argument remains unused. Default pad driving controls are retained per axis unless explicitly overridden or their physical channel is assigned elsewhere. Steering fallback and analog classification share that policy. Smoothing uses a host time-based approximation. Menu/cancel hotkey presses share a 250 ms UI debounce across command changes; select has a separate gate. Releases and driving axes remain immediate. |
@@ -166,7 +166,8 @@ material slot and checks viewport deactivate/reactivate/destroy. Its synthetic
 paths do not validate image decoding. The user additionally validated seated
 driver behavior, skin changes and return to the menu in game for PR #155
 (#112 and #156). Evidence logs live in assets/validation/driver-mask and
-assets/validation/driver-selector; see KNOWLEDGE_BASE.md for implementation
+assets/validation/driver-selector; see [vehicles/notes.md "Driver duplicate visibility (#112)"](../vehicles/notes.md#driver-duplicate-visibility-112)
+and [ui/notes.md "File texture replacement and hidden preview viewports"](../ui/notes.md#file-texture-replacement-and-hidden-preview-viewports) for implementation
 entry points and remaining limits.
 
 
@@ -174,7 +175,7 @@ Issue #130 changes scene collision/render collection, not native registrations.
 RenderRefs no longer acquire collision merely from their visible mesh; trigger
 sensors are excluded, while explicit physics and ground collision survive.
 The trigger_markers suite exercises native-car ON/OFF notification delivery
-and the visual/physics separation with MWM resources. See SCRIPT_RUNTIME.md,
+and the visual/physics separation with MWM resources. See scripting/runtime.md,
 "Trigger cues and physical bodies", for reconstructed cue settings and the
 remaining in-game validation. Registration counts do not imply that the full
 MWM challenge is validated.
@@ -183,4 +184,182 @@ MWM challenge is validated.
 Issue #82 batches the renderer output of existing Text/OSD natives. It changes
 no registration or Java body. Existing glyph/font/colour/layer semantics are
 retained; controlled D3D11 render evidence and limits are documented under
-"Batched OSD text" in SCRIPT_RUNTIME.md.
+"Batched OSD text" in scripting/runtime.md.
+
+## Exact native coverage descriptors (#115)
+
+`scripts/render_native_coverage.py:host_registrations` retains full descriptors
+instead of normalizing slashes and dropping returns. Source diagnostics reject
+slash-form and malformed descriptors with file/line context. Stock return types
+come from the pinned typed_signature via stock_runtime_descriptor; the pinned
+manifest itself is unchanged. classify_rows tries the exact expected descriptor
+first, then only an omitted void return. If the same owner/method/parameters
+exist with no matching return, the audit fails and lists expected/registered
+descriptors. Additional return overloads are allowed when an expected signature
+also exists. Bodies and native_noop remain distinct per exact registration.
+
+Validation: nine standard-library Python tests cover primitive/object/array
+returns, omitted V, exact priority, overloads, missing bindings, slash and syntax
+errors, source diagnostic locations and CLI --check failure before output
+writes. The full source audit and regenerated-output --check pass; counts remain
+339 bodies / 3 explicit no-ops / 34 missing (376 total). Generated coverage JSON
+now states the exact-descriptor scope; README and scripting/natives.md agree. No
+runtime source, executable, stock manifest or production Java changed, so no
+new game compilation or in-game validation is needed for this audit-only fix.
+
+## Rendering, sound and cursor native utilities
+
+Implemented against the research workspace's `stubs.txt`, the original script callers, and the
+contracts documented in `repos/slrr-reverse/engine/Runtime/Render/RenderNatives.cpp`,
+`Audio/Sound.cpp` and `Cars/Cars.cpp`.
+
+| Native | Host behavior |
+| --- | --- |
+| `GfxEngine.forceRendering`, `flush` | Seven presentations, guarded against recursion. The loader is synchronous; bgfx frames retire deferred GPU resource releases. No Java callbacks or VM collection are entered by this presentation hook. |
+| `GfxEngine.printScreen(String)` | Queues a framebuffer readback through bgfx's built-in TGA writer. Relative paths use the game root. Parent directories are created. The script's `printScreenIndexed` uses `.tga`, which is preserved without doubling the suffix. Requires the bgfx renderer. |
+| `Text.setDefaultColor`, `getDefaultColor` | Complete 32-bit ARGB, initially `0xffffffff`. Applied on text creation; existing texts retain their colors. |
+| `MouseCursor.getPos` | New Vector3 containing normalized screen x/y and zero z. A missing inner cursor returns null. |
+| `MouseCursor.getPickedPos` | New Vector3 containing the world-space scene hit, using the same camera/ray convention as mechanic picking. Keeps the last hit on a miss, initially zero. |
+| `Sound.changeMusicSet` | Selects Garage_Shop, Roam_ride, Race_chase or Main_menu under the game's music directory. Invalid set/NONE stops music. Re-selecting the current set does not restart it. |
+| `Sound.nextTrack`, `prevTrack` | Wrap around the active playlist and actually switch the streamed track. |
+| `Sound.getMode`, `setMode` | Per-playlist mode state (initially 3). Accept 0..3, preserve the old mode for invalid values. No active set: get returns -1, set returns its input, matching the reference native. Specific shuffle/repeat policies for these mode values have not been established; the host currently advances sequentially at EOF. |
+| `Sound.has3DHardware`, `hasMixHardware` | Zero: the software mixer does not provide the legacy DirectSound hardware-buffer capabilities. This does not mean sound is unavailable. |
+
+Effects and music share one FMOD Core system with separate channel groups.
+Music uses FMOD streams rather than loading complete songs, retaining the
+MP3/WAV/WMA playlist scan, sequential order and bounded bad-track recovery.
+The shared mixer is updated in modal script pumps as well as the main loop,
+even with music stopped. Startup logs list scan counts and track starts;
+FMOD failures include the operation and error text. Stock Cinepak FMV PCM
+uses a separate FMOD group and updates the mixer during boot intros too;
+its audio position drives video timing, falling back continuously to wall
+time on EOF or channel failure. Other VLC/Windows codec fallbacks retain
+their own audio outputs. No Studio banks or authored events are required.
+
+### Audio options
+
+The VM now keeps `Input.createHotkey` on Input rather than rewriting it to
+`Osd.createHotkey`. The existing Java Osd overloads can therefore activate
+hotkeys without the missing-method error. This does not add a general keyboard
+hotkey dispatcher to the host.
+
+Slider hit boxes (knob or track Button.parent) now route through the Slider's
+range/tick-aware `setValue`. The host copies the result to `osd.sliderValue`
+before dispatching its command. Async GameType handlers receive an Event with
+F_GAD_CHANGE and the Slider as gadget, through handleMessage(Event); synchronous
+dialog handlers retain osdCommand. This keeps tuning controls separate from
+the dialog OK/Cancel buttons. Reference casts in TREE no longer turn subsequent
+instance assignments into static writes. Mouse capture keeps dragging active outside
+the track; release, cancellation and hidden controls are handled.
+
+The engine-owned Config instance is loaded before Init and retained as a VM
+static. Audio edits queue a save after 500 ms of inactivity and flush on normal
+shutdown. Persistence uses the original Java `Config.saveConfig/loadConfig`
+and `save/game/options` (written as JSON, legacy SDAT still read), including all three channel volumes and
+the other Config fields. No original Java files are patched. The engine volume
+value is saved/restored; engine-loop audio is driven by
+`update_engine_audio` (`src/resources/part_runtime.cpp`).
+
+A temporary headless diagnostic exercised the actual OptionsDialog sliders,
+verified 20/40/60% through save/reload in an isolated directory, and started all
+four music sets with volume zero. Audible playback and visual mouse interaction
+remain user checks; no game window was launched.
+
+`SLRR_rev` remains a resource/script reference; no directly portable audio
+device or screenshot implementation was taken from it.
+
+### Repeated effects and UI bursts
+
+Transient FMOD effects are grouped by normalized WAV path. Requests closer
+than 35 ms are coalesced before reading/allocating another voice. At most two
+copies of one transient cue may overlap; their gains are divided by the copy
+count so correlated waveforms cannot multiply that cue's peak amplitude.
+Coalesced requests return the already playing voice handle.
+
+Menu hover/select/back share a three-voice budget and may repeat rapidly
+without the transient 35 ms coalescing window. Select/back remove
+lingering hover voices, and hover cannot obscure an active select/back sound.
+Looping sounds are excluded from grouping. The existing overall 32-voice
+budget evicts a transient first; it no longer interrupts a loop to admit a
+new voice when all slots are occupied by loops.
+
+`host_sfx_stats()` exposes the active voice and coalesced-request counts.
+A temporary muted XAudio2 diagnostic confirmed 1,000 hover requests -> one
+voice, 1,000 wrench requests -> one voice, two spaced wrench requests -> two
+voices, click priority, and preservation of independent looping voices.
+
+A temporary fuel-rail tuning diagnostic verified that dragging updates the
+mixture ratio to 17:1 while keeping the dialog shown and its result untouched.
+The audio-slider/save-reload diagnostic also passes after this correction.
+
+The tuning pointer regression also traverses `osd_hit_index` before changing
+values: slider track Buttons are `nofocus` because their Slider parent owns
+focus, not because they should swallow mouse input. Their hit volumes now
+remain clickable. An active modal OSD also prevents unmatched mouse clicks
+from becoming mechanic/world clicks. A headless wide-dialog display/wait
+probe drags the slider, remains waiting, and closes only on an explicit OK.
+
+### Map ambient sounds
+
+Map placements (`gametype ... params`) can point at object CFGs with ambient
+sound lines. In the stock Valo City (`objects.rpk`) these are the
+`ambience_placeholders` (city-centre traffic from 8 to 18 h, the island sea
+loop), the `fa*` trees (birds, 4-21 h), the `kuka_*` bins (flies) and the
+`krthaz*` houses (dogs in the morning, grasshoppers at night): about 13,700
+emitters across `city` and `city2`. `scene_ambience` registers them when
+`spawn_ground_shell` creates a ground shell and updates them once per frame
+with simulated seconds. The rules below come from `StreetLegal_Redline.exe`
+(SLRR 2.2.1):
+
+| Rule | Original |
+| --- | --- |
+| `sfx_loop <sound> <radius> [from_hour=0] [to_hour=24]`. One loop per object; a later line replaces an earlier one, so the city centre plays only its second traffic loop. | parser 0x465340 |
+| `sfx_random <sound> <radius> [min_s=1] [max_s=1] [from_hour=0] [to_hour=24]`, at most 16 per object. | parser 0x465410 |
+| Hours become truncated seconds of the day. The window is `[from, to)` and wraps at midnight (`18 8` is night). | 0x4670a0 |
+| One timer per object. The first delay uses entry 0's min/max; each firing plays a uniformly drawn entry and schedules the next draw after that entry's own min + random range. Outside its hours an entry retries 30-90 s later. | 0x4660f7, 0x467983 |
+| A sound starts only when `distance² - radius² <= 250²` (`distance <= 250 m` when the radius is 0). | 0x550560 |
+| Gain is the sound resource's `volume` times DirectSound 3D rolloff: full inside `mindist`, `mindist / distance` up to `maxdist`, constant beyond. The original sets these distances on the 3D buffer. | 0x55b6a0 |
+
+The listener is the world camera. Loops follow the listener every frame and
+stop when they leave their range or hours, when their shell leaves the
+active world, and when the game root changes. They pause with
+`System.timeWarp(0)` like the engine loops. Random one-shots use the normal
+transient-effect path, so the 32-voice budget and repeat coalescing above
+still apply.
+
+Limitations: there is no stereo panning or Doppler; voices are not positioned
+in 3D, only attenuated by distance. The original's `instances` and `flags`
+sound properties are not interpreted. Many trees request the same bird cue,
+so the transient coalescing keeps at most two copies of it playing.
+`SLRR_AMBIENCE_LOG=1` logs each random request. Loop starts and stops are
+always logged as `[ambience]`.
+
+
+### Renderer options: anisotropic filtering
+
+Existing natives `java.game.OptionsDialog.getRendererOption(I)I` and
+`setRendererOption(II)V` use option index **6** for anisotropic filtering.
+Getter returns 0/1. Setter treats zero as off and nonzero as on and saves via
+the existing host graphics persistence path. Default is on; malformed/missing
+keys retain that default. `save/game/openslrr_options` stores
+`anisotropic_filtering=0|1`; stock Config's binary layout is unchanged.
+
+The patched OptionsDialog video menu and debug Renderer checkbox share this
+value. The setting takes effect on subsequent rendered frames, enables bgfx's
+maximum anisotropy reset flag and opts world colour/detail texture samplers into
+anisotropic min/mag filtering. The actual maximum is backend/hardware-defined;
+this is not an API for selecting individual sample counts. Shadow comparison,
+cubemap and UI samplers retain their own filtering contracts. Existing texture
+mip availability still limits the result. Source and compiled TUFA container
+are both shipped in patch/sl/Scripts/game; no new native signature was added.
+
+
+### AO and shadow controls
+
+The same OptionsDialog getters/setters add integer IDs 7–12: AO method
+(0 off, 1 HBAO, 2 GTAO), AO quality, shadow quality, shadow smoothing (each 0–2),
+AO strength (0–200 percent), and AO radius (25–300 cm). Setters clamp values and
+save immediately through host graphics persistence. Missing/malformed keys retain
+defaults; stock Config binary layout is unchanged. Menu source and compiled TUFA
+container ship together. Defaults are AO off, medium qualities, soft shadows,
+100 percent strength and 100 cm radius. Debug Renderer controls share these values.

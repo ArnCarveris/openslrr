@@ -96,7 +96,27 @@ not a promised gameplay FPS gain. See assets/validation/gc-lookup-epochs.txt.
   from the installed classes and does not establish a complete GC algorithm.
 
 Notification/callback dispatch and cooperative thread scheduling are described
-in [SCRIPT_RUNTIME.md](SCRIPT_RUNTIME.md). Collision activation and the other
+in [scripting/runtime.md](runtime.md). Collision activation and the other
 missing game subsystems remain separate work. Native code retaining managed
 locals across a cooperative yield must use `Jvm::RootScope` or another explicit
 root provider.
+
+## GC eligibility cache and mark epochs (#110)
+
+`src/jvm/gc.cpp:needs_finalizer` caches class eligibility, skipping descriptors
+and empty-owner searches. New class insertion, game-root/classpath changes and
+append-only native registration invalidate cached results. Real finalizers still
+run through ordinary VM dispatch and retain once-only/resurrection behavior.
+
+The weak heap address index is updated at allocation/sweep, checked before any
+native-address dereference, and never acts as a GC root. Per-object epochs
+replace temporary managed/marked hash sets; each resurrection trace gets a new
+epoch. Finalizer discovery walks a stable owning-vector prefix instead of
+allocating another pointer snapshot. See "Collection costs and finalizer lookup (#110)" above for memory/CPU tradeoffs.
+
+`gc_runtime` covers native/script finalizers, late class/native availability,
+resurrection and allocations, invalid native pointers, roots/pinning/cycles and
+locals/arguments on a suspended cooperative stack. The 60,000 mixed-object
+fixture takes about 11ms to collect versus 168-171ms before; allocation costs
+26-29ms versus 23ms before. The baseline/current logs and limits are recorded in
+assets/validation/gc-lookup-epochs.txt. This is not a gameplay FPS measurement.

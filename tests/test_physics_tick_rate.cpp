@@ -8,7 +8,7 @@
 //      src/physics/suspension_geometry.cpp src/physics/dyno_model.cpp
 //      /Fe:build/tick_960.exe /Fo:build/
 // Exercise 120, 240, 480, 960 and 1000 Hz; the printed lines are the
-// measurements that docs/PHYSICS_TICK_SPIKE.md compares across rates.
+// measurements that docs/vehicles/physics-tick.md compares across rates.
 #include "standalone_test.hpp"
 
 #include "slrr/vehicle_dynamics.hpp"
