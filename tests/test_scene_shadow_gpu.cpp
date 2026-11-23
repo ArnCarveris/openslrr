@@ -2182,6 +2182,11 @@ struct SceneShadowRegression {
           b.lamp_shadow_dt_override_=10.f;
           b.defer_submits_=b.parallel_submission_ready();
           VideoOptions video;video.shadows=2;
+          if(day) {
+            // #359: the sun cascades queue one job each, as in a game frame.
+            const float script_eye[3]={frame_matrix[12],frame_matrix[13]+2.f,frame_matrix[14]};
+            b.update_static_shadow(script_eye,video);
+          }
           const float car_script[3]={frame_matrix[12]+14.f,frame_matrix[13],frame_matrix[14]+1.5f};
           b.set_lamp_shadow_focus(car_script);
           b.update_lamp_shadows(video);
@@ -2195,7 +2200,7 @@ struct SceneShadowRegression {
           b.upload_light_data();
           b.defer_submits_=false;
         }
-        if(day) {
+        if(day && !workers) {
           VideoOptions video;video.shadows=2;
           const float script_eye[3]={frame_matrix[12],frame_matrix[13]+2.f,frame_matrix[14]};
           b.update_static_shadow(script_eye,video);
@@ -4099,6 +4104,8 @@ int main() {
     SceneShadowRegression::city_submission(backend,2560,1440,true);
     SceneShadowRegression::city_submission(backend,1280,720,true,true);
     SceneShadowRegression::city_submission(backend,1280,720,true,false,true);
+    // #359: by day, with the sun cascades on worker encoders.
+    SceneShadowRegression::city_submission(backend,1280,720,true,true,true);
     backend.close();
     std::puts("PASS vehicle/scenery shadow visibility, preview/emission "
               "isolation and reflection-view parity");

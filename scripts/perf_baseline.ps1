@@ -35,6 +35,10 @@ param(
   [int] $Seed = 3
 )
 $ErrorActionPreference = "Stop"
+# powershell -File passes "day,night" as one string: split it here.
+$Scenes = @($Scenes | ForEach-Object { $_ -split "," })
+$Cpus = @($Cpus | ForEach-Object { $_ -split "," })
+$Presets = @($Presets | ForEach-Object { $_ -split "," })
 $hours = @{ day = 13; night = 22 }
 $masks = @{ all = 0; p4 = 0xFF; e4 = 0xF0000 }
 $exe = (Resolve-Path $Exe).Path

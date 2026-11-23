@@ -1284,9 +1284,19 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     outer_world_view[12+row]-=outer.view[axis*4+row]*shadow_origin_[axis];
   const auto outer_frustum=view_frustum(outer_world_view.data(),outer.projection.data());
   // One scene traversal; nested light volumes reuse these immutable draw records.
-  const auto casters=scene_instances_collect(&outer_frustum,nullptr,false);
-  std::vector<SceneBatch> outer_batches;
-  scene_instances_collect_batches(&outer_frustum,outer_batches);
+  // Shared with the cascade jobs (#359), which may run on worker encoders
+  // after this function returns; nothing writes them after collection.
+  struct SunCasters {
+    std::vector<SceneInstance> casters;
+    std::vector<SceneBatch> batches;
+    std::vector<const SceneInstance*> skinned;
+    std::vector<float> skinned_distance;
+  };
+  const auto sun_casters=std::make_shared<SunCasters>();
+  sun_casters->casters=scene_instances_collect(&outer_frustum,nullptr,false);
+  scene_instances_collect_batches(&outer_frustum,sun_casters->batches);
+  const auto& casters=sun_casters->casters;
+  const auto& outer_batches=sun_casters->batches;
   for(const auto& instance:casters) {
     if(!instance.geometry || instance.sky || instance.vehicle_material || instance.gpu_skin ||
        instance.light_flags || instance.emissive_overlay) continue;
@@ -1300,8 +1310,8 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   // palettes are already complete. The outer collection deliberately skips
   // palette completion; recomputing it for off-camera characters would bring
   // back that CPU cost, so off-screen characters do not cast.
-  std::vector<const SceneInstance*> skinned_casters;
-  std::vector<float> skinned_distance;
+  auto& skinned_casters=sun_casters->skinned;
+  auto& skinned_distance=sun_casters->skinned_distance;
   for(const auto& instance:instances_) {
     if(!instance.geometry || !instance.gpu_skin || instance.skin.size()<48u*16u ||
        instance.light_flags || instance.emissive_overlay || instance.opacity<.99f) continue;
@@ -1361,9 +1371,23 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     bgfx::setViewClear(view_id, BGFX_CLEAR_DEPTH, 0, 1.f, 0);
     bgfx::setViewTransform(view_id, projection.view.data(),
                            projection.projection.data());
-    enc()->touch(view_id);
     // Debug toggle (#243): an off cascade stays cleared (fully lit).
-    if (!render_debug().sun_cascades[cascade]) continue;
+    if (!render_debug().sun_cascades[cascade]) {
+      enc()->touch(view_id);
+      continue;
+    }
+    // One job per cascade view (#359): culling and submission may run on a
+    // worker encoder, like the car lamp tiles (#270). The view setup above
+    // stays on the API thread; the job only reads the shared casters, the
+    // mesh cache (filled above, before any job runs) and its own copies.
+    const auto origin=shadow_origin_;
+    const float cascade_radius=cascade_radii()[cascade];
+    queue_or_run([this,sun_casters,frustum,view_id,origin,cascade_radius,conservative] {
+    const auto& casters=sun_casters->casters;
+    const auto& outer_batches=sun_casters->batches;
+    const auto& skinned_casters=sun_casters->skinned;
+    const auto& skinned_distance=sun_casters->skinned_distance;
+    enc()->touch(view_id);
     for (const auto &instance : casters) {
       // Vehicles retain their separate nearby depth map. The scenery depth
       // shader has no skin palette; skinned casters need their own path.
@@ -1399,7 +1423,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
         set_uniform(u_static_shadow_params_, params);
         enc()->setTexture(0, s_tex_, tex);
         auto relative=instance.transform;
-        for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
+        for(int axis=0;axis<3;++axis) relative[12+axis]-=origin[axis];
         enc()->setTransform(relative.data());
         enc()->setVertexBuffer(0, part.vbh);
         enc()->setIndexBuffer(part.ibh, group.index_start, group.index_count);
@@ -1419,16 +1443,18 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
         if(shadow_bounds_visible(*batch.geometry,instance.transform,frustum)) filtered.instances.push_back(instance);
       if(!filtered.instances.empty()) shadow_batches.push_back(std::move(filtered));
     }
-    draw_prop_batches(view_id, shadow_batches, true, conservative);
+    // Not a lamp-local field: pass that explicitly rather than reading
+    // static_shadow_local_ from a worker (#270 rule).
+    draw_prop_batches(view_id, shadow_batches, true, conservative, false, 0);
     if(bgfx::isValid(ao_skin_depth_program_) && render_debug().skinned_casters)
       for(size_t i=0;i<skinned_casters.size();++i) {
         // Skinned bounds describe the rest pose, not the animated limbs. Cull
         // by the camera-centred cascade radius instead (plus a body margin).
-        if(skinned_distance[i]>cascade_radii()[cascade]+3.f) continue;
+        if(skinned_distance[i]>cascade_radius+3.f) continue;
         const auto* instance=skinned_casters[i];
         const auto& part=instance_meshes_.at(instance->geometry.get());
         auto relative=instance->transform;
-        for(int axis=0;axis<3;++axis) relative[12+axis]-=shadow_origin_[axis];
+        for(int axis=0;axis<3;++axis) relative[12+axis]-=origin[axis];
         for(const auto& group:part.shadow_groups) {
           const auto surface=scx_surface(part.geo.info.version,group);
           if(surface.blend) continue;
@@ -1448,6 +1474,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
           submit_counted(view_id,ao_skin_depth_program_);
         }
       }
+    });
   }
   ++shadow_atlas_revision_;
   shadow_cached_casters_=std::move(stamps);

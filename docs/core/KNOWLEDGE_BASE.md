@@ -732,7 +732,10 @@ palettes into the frame cache in order.
 "Worker encoders", `render_debug().worker_encoders`). When on,
 `src/render/bgfx_lib_backend.cpp:parallel_submission_ready` is true with 3 or
 more pool threads; `queue_or_run` then queues the AO prepass
-(`src/render/bgfx_ao.cpp`), each car lamp tile (`src/render/bgfx_shadows.cpp`)
+(`src/render/bgfx_ao.cpp`), each car lamp tile (`src/render/bgfx_shadows.cpp`),
+each sun cascade (#359, `src/render/bgfx_shadows.cpp:LibBgfxBackend::update_static_shadow_inner`:
+collection, mesh caching, cache stamps and the view setup stay on the host;
+each cascade's culling and draws are one job sharing the collected casters)
 and each reflection face draw instead of submitting it, and
 `src/render/bgfx_lib_backend.cpp:run_worker_submits` runs the queue on the
 pool while the host thread draws the sky and the world on encoder 0. Rules:
