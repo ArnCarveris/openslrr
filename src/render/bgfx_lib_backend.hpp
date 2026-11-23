@@ -797,6 +797,11 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
+  // Cascade alternation (#361): which atlas tiles hold a map drawn with
+  // shadow_cascade_matrices_ and the current origin, and the last frame
+  // that reached the sun cascades.
+  std::array<bool,4> cascade_tile_valid_{};
+  int32_t sun_cascade_frame_ = -2;
   bool shadow_cache_valid_ = false;
   uint64_t shadow_atlas_revision_ = 0;
   bool shadow_cascades_active_ = false;
