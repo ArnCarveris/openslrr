@@ -497,3 +497,48 @@ Findings:
 
   The main view's `collect_batches` is unchanged within noise (0.52 →
   0.57 ms): it merges far fewer placements than the outer frustum.
+
+## Opaque world on worker encoders (#359, third increment)
+
+- Run-to-run noise of the #358 replay, same build twice in a row: ±0.03 ms
+  on all cores, ±0.2–0.3 ms on four E-cores. Between sessions the same build
+  drifted by about 6 % (#366's day all-cores 4.96 ms read 5.25 ms later), so
+  every comparison below is before/after in the same session.
+- `scene_instances_collect_batches` merges on the pool only from 8,192
+  placements (`kParallelMergeMin`). Logged in game: the main view merges
+  about 3,000, reflection faces about 200, the outer sun frustum about
+  21,000. The always-parallel merge of #366 had made the main view slower
+  (`collect_batches` 0.44 → 0.53 ms at night, all cores); with the threshold
+  it is back to 0.45 ms and `sun_collect` keeps 0.72 ms.
+- `LibBgfxBackend::submit_world` cuts the opaque world into four consecutive
+  views drawn before `kWorldView` (KNOWLEDGE_BASE §5.10): sky and prop
+  batches, then pass 0 over three runs of `instances_`, each a worker job.
+  The host keeps the blended part. One opaque view was not enough: the host
+  finished its small blended part and waited for the single worker
+  (harness host wait 1.0–1.6 ms). AO is decided per view
+  (`view_id == ao_world_view_`), so the opaque views got none until
+  `ao_receiver_view` included them; the harness caught it (129,738 bytes
+  differ, max 17).
+- With four opaque jobs a day frame queues more jobs than bgfx's default
+  eight encoders. Jobs without an encoder ran serially on the host after the
+  world, and day frames got slower (all cores 4.91 → 5.30 ms). bgfx now
+  starts with 16 encoders.
+- Tried and dropped: the host claiming queued jobs once its own world work
+  is done. Host wait fell (e4 day 1.44 → 0.66 ms) but frame time did not
+  change; the jobs' total work is the critical path.
+- Harness (`scene_shadow_gpu`, night and day workers cases): threaded and
+  one-thread images byte-identical; reference-capture differences unchanged.
+- Replay of the #358 drive, same session
+  (`assets/validation/perf-baseline/issue359-world-split/`, before = threshold
+  only, after = this increment):
+
+| Run | Frame | p95 | Host wait |
+| --- | --- | --- | --- |
+| day, all | 4.91 → 4.79 ms | 5.56 → 5.38 ms | 0.22 → 0.88 ms |
+| day, e4 | 7.97 → 7.82 ms | 8.69 → 8.40 ms | 0.38 → 1.44 ms |
+| night, all | 3.72 → 3.60 ms | 4.43 → 4.23 ms | 0 → 0.48 ms |
+| night, e4 | 5.44 → 5.00 ms | 6.15 → 5.64 ms | 0 → 0.68 ms |
+
+  The gains are small: the four opaque jobs together take longer than the
+  host did alone (worker submission 2.28 → 3.16 ms by day), the cost of
+  bgfx's shared submit state that #270 already measured.

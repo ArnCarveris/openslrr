@@ -157,6 +157,11 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
 
     bgfx::Init init;
     init.type = bgfx::RendererType::Count;
+    // A day frame queues the AO prepass, car tiles, reflection faces, four
+    // sun cascades and four opaque world runs (#359). With bgfx's default of
+    // eight encoders (the host's included) the jobs left without one ran on
+    // the host after the world, serially.
+    init.limits.maxEncoders = 16;
     init.platformData.type = bgfx::NativeWindowHandleType::Default;
     init.swapChain.nwh = hwnd_;
     init.swapChain.width = static_cast<uint32_t>(width_);
@@ -779,16 +784,20 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
                          0.f, 0);
     } else {
       bgfx::setViewRect(world_view, 0, 0, ww, hh);
-      const uint32_t clear = (garage_ || world_cam) ? 0x3a342cff : 0x1a2230ff;
-      bgfx::setViewClear(world_view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
-                         clear, 0.f, 0);
     }
+    // The world view's clear colour and rect, reused by kWorldOpaqueView (#359).
+    const uint32_t world_clear = (garage_ || world_cam) ? 0x3a342cff : 0x1a2230ff;
+    std::array<uint16_t, 4> world_rect{0, 0, ww, hh};
+    if (!fmv_bg)
+      bgfx::setViewClear(world_view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
+                         world_clear, 0.f, 0);
     if (world_cam && world_inset) {
       const int x = std::clamp(int(world_vp->vp_x * width_), 0, width_ - 1);
       const int y = std::clamp(int(world_vp->vp_y * height_), 0, height_ - 1);
-      bgfx::setViewRect(world_view, x, y,
-          std::clamp(int(world_vp->vp_w * width_), 1, width_ - x),
-          std::clamp(int(world_vp->vp_h * height_), 1, height_ - y));
+      world_rect = {uint16_t(x), uint16_t(y),
+                    uint16_t(std::clamp(int(world_vp->vp_w * width_), 1, width_ - x)),
+                    uint16_t(std::clamp(int(world_vp->vp_h * height_), 1, height_ - y))};
+      bgfx::setViewRect(world_view, world_rect[0], world_rect[1], world_rect[2], world_rect[3]);
     }
     bgfx::setViewTransform(world_view, view, render_proj);
     set_view_sequential(world_view);
@@ -881,14 +890,14 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       // encoder binds it (#270).
       upload_light_data();
       defer_submits_ = false;
-      run_worker_submits([&] {
-        if (world_cam && (outdoor_lighting_ ||
-            std::any_of(instances_.begin(), instances_.end(),
-                        [](const SceneInstance& instance) { return instance.sky; })))
-          draw_sky(world_view, view, render_proj);
-        draw_dynamic_world(world_view);
-        if (garage_ && !parts_.empty()) draw_scene(world_view);
-      });
+      const bool sky = world_cam && (outdoor_lighting_ ||
+          std::any_of(instances_.begin(), instances_.end(),
+                      [](const SceneInstance& instance) { return instance.sky; }));
+      submit_world(world_view, BGFX_INVALID_HANDLE, world_rect,
+                   BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL, world_clear,
+                   view, render_proj, sky, [&] {
+                     if (garage_ && !parts_.empty()) draw_scene(world_view);
+                   });
 
       if (debug_render.sun_flare && video.flares) draw_sun_flare(view, render_proj, world_view);
       // Runtime reports only active-world nitrous children. Never submit this
@@ -1849,12 +1858,72 @@ void LibBgfxBackend::refresh_distance_fog(const float render_eye[3]) {
   fog_enabled_ = true;
 }
 
-void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
+void LibBgfxBackend::submit_world(uint16_t world_view, bgfx::FrameBufferHandle target,
+                                  const std::array<uint16_t, 4>& rect, uint16_t clear_flags,
+                                  uint32_t clear_color, const float* view, const float* proj,
+                                  bool sky, const std::function<void()>& host_after) {
+    // #359: the opaque world (sky, prop batches, pass 0) goes to its own
+    // Sequential view on a worker, ordered just before the world view and
+    // drawing into the same target; it takes over the world view's clear.
+    // The host submits the blended part (pass 1, night overlays) to the world
+    // view meanwhile. Only for kWorldView (not a world drawn over a video).
+    const bool split = world_view == kWorldView && parallel_submission_ready();
+    if (split) {
+      // The opaque world in serial order, cut into consecutive views run in
+      // that order: sky and prop batches; then pass 0 over three equal runs
+      // of instances_, the last also drawing the blended groups' opaque
+      // sections. Only the first view clears.
+      for (uint16_t k = 0; k < kWorldOpaqueViews; ++k) {
+        const uint16_t id = uint16_t(kWorldOpaqueView + k);
+        bgfx::setViewFrameBuffer(id, target);
+        bgfx::setViewRect(id, rect[0], rect[1], rect[2], rect[3]);
+        bgfx::setViewClear(id, k == 0 ? clear_flags : uint16_t(BGFX_CLEAR_NONE), clear_color, 0.f, 0);
+        bgfx::setViewTransform(id, view, proj);
+        set_view_sequential(id);
+      }
+      bgfx::setViewClear(world_view, BGFX_CLEAR_NONE);
+      build_blended_groups();
+      std::array<float, 16> view_copy, proj_copy;
+      std::copy_n(view, 16, view_copy.begin());
+      std::copy_n(proj, 16, proj_copy.begin());
+      worker_jobs_.push_back([this, sky, view_copy, proj_copy] {
+        enc()->touch(kWorldOpaqueView);
+        if (sky) draw_sky(kWorldOpaqueView, view_copy.data(), proj_copy.data());
+        draw_prop_batches(kWorldOpaqueView, prop_batches_, false);
+      });
+      constexpr size_t kRuns = kWorldOpaqueViews - 1;
+      const size_t count = instances_.size();
+      for (size_t run = 0; run < kRuns; ++run) {
+        const uint16_t id = uint16_t(kWorldOpaqueView + 1 + run);
+        const size_t begin = count * run / kRuns, end = count * (run + 1) / kRuns;
+        const bool last = run + 1 == kRuns;
+        worker_jobs_.push_back([this, id, begin, end, last] {
+          enc()->touch(id);
+          draw_world_pass(id, 0, begin, end, last);
+        });
+      }
+    }
+    run_worker_submits([&] {
+      if (split) {
+        draw_world_blended(world_view);
+      } else {
+        if (sky) draw_sky(world_view, view, proj);
+        draw_dynamic_world(world_view);
+      }
+      if (host_after) host_after();
+    });
+  }
+  void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
+    build_blended_groups();
+    draw_world_opaque(view_id);
+    draw_world_blended(view_id);
+  }
+  void LibBgfxBackend::build_blended_groups() {
     perf::Scope perf_scope(perf::Zone::World);
-    draw_prop_batches(view_id, prop_batches_, false);
     // Props with a blended section, one group per mesh and lighting in first
     // appearance order (#264). Their records stay in instances_ for shadows,
-    // AO and reflections; here they are drawn instanced instead.
+    // AO and reflections; here they are drawn instanced instead. Built on the
+    // host before either part is submitted; both parts only read the groups.
     size_t groups = 0;
     for (const auto& instance : instances_) {
       if (!blended_prop_instance(instance)) continue;
@@ -1877,8 +1946,21 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       }
       blended_groups_[g].placements.push_back({instance.transform.data(), instance.color});
     }
+    blended_group_count_ = groups;
+  }
+  void LibBgfxBackend::draw_world_opaque(uint16_t view_id) {
+    perf::Scope perf_scope(perf::Zone::World);
+    draw_prop_batches(view_id, prop_batches_, false);
+    draw_world_pass(view_id, 0);
+  }
+  void LibBgfxBackend::draw_world_blended(uint16_t view_id) {
+    perf::Scope perf_scope(perf::Zone::World);
+    draw_world_pass(view_id, 1);
+  }
+  void LibBgfxBackend::draw_world_pass(uint16_t view_id, int pass, size_t begin, size_t end,
+                                       bool groups) {
     const auto draw_blended = [&](int pass) {
-      for (size_t g = 0; g < groups; ++g) {
+      for (size_t g = 0; g < blended_group_count_; ++g) {
         const auto& group = blended_groups_[g];
         const auto found = instance_meshes_.find(group.geometry);
         if (found == instance_meshes_.end()) continue;
@@ -1886,8 +1968,10 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
                              group.placements.data(), group.placements.size());
       }
     };
-    for (int pass = 0; pass < 2; ++pass) {
-      for (const auto& instance : instances_) {
+    {
+      end = std::min(end, instances_.size());
+      for (size_t index = begin; index < end; ++index) {
+        const auto& instance = instances_[index];
         if (instance.sky || blended_prop_instance(instance)) continue;
         // The mesh stays resident, so a pedestrian walking into view does not
         // upload on that frame. The triangles behind the camera are not sent.
@@ -1917,14 +2001,13 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
                                placement_scratch_.data(), placement_scratch_.size());
         }
       }
-      draw_blended(pass);
+      if (groups) draw_blended(pass);
     }
   }
-  void LibBgfxBackend::draw_previews()
+  void LibBgfxBackend::apply_base_view_order()
 {
-    perf::Scope perf_scope(perf::Zone::World);
     // Reset each frame: closing the map must restore normal world/OSD order.
-    std::array<uint16_t, 151> base_order{};
+    std::array<uint16_t, 151 + kWorldOpaqueViews> base_order{};
     size_t base_slot = 0;
     for (uint16_t i = 0; i < 64; ++i) {
       if (i == kWorldView) {
@@ -1932,6 +2015,8 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
         if (point_shadow_active_) base_order[base_slot++] = 64;
         base_order[base_slot++] = 65;
         base_order[base_slot++] = 66;
+        for (uint16_t k = 0; k < kWorldOpaqueViews; ++k)
+          base_order[base_slot++] = uint16_t(kWorldOpaqueView + k);
       }
       base_order[base_slot++] = i;
     }
@@ -1939,6 +2024,11 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       base_order[base_slot++] = 64;
     for(uint16_t f=67;f<128;++f) base_order[base_slot++]=f;
     bgfx::setViewOrder(0, uint16_t(base_order.size()), base_order.data());
+  }
+  void LibBgfxBackend::draw_previews()
+{
+    perf::Scope perf_scope(perf::Zone::World);
+    apply_base_view_order();
     const auto* main_camera = fullscreen_script_camera();
     const auto* main_vp = main_camera ? gameref_get(main_camera->viewport) : nullptr;
     const bool inset = main_vp && (main_vp->vp_w < .99f || main_vp->vp_h < .99f);
@@ -1949,7 +2039,7 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       std::stable_sort(views.begin(), views.end(), [](const auto& a, const auto& b) {
         return a.first < b.first;
       });
-      std::array<uint16_t, 151> order{};
+      std::array<uint16_t, 151 + kWorldOpaqueViews> order{};
       size_t slot = 0;
       for (uint16_t i = 0; i < kWorldView; ++i) order[slot++] = i;
       for(uint16_t f=128;f<151;++f) order[slot++]=f;
@@ -1958,7 +2048,12 @@ void LibBgfxBackend::draw_dynamic_world(uint16_t view_id) {
       order[slot++] = 66;
       order[slot++] = kFmvLayer;
       order[slot++] = kOsdUnder;
-      for (const auto& entry : views) order[slot++] = entry.second;
+      for (const auto& entry : views) {
+        if (entry.second == kWorldView)
+          for (uint16_t k = 0; k < kWorldOpaqueViews; ++k)
+            order[slot++] = uint16_t(kWorldOpaqueView + k);
+        order[slot++] = entry.second;
+      }
       for (uint16_t i = kPreview0 + uint16_t(views.size() - 1); i < 64; ++i) order[slot++] = i;
       if (!point_shadow_active_)
         order[slot++] = 64;

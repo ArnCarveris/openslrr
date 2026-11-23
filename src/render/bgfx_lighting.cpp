@@ -695,7 +695,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         set_uniform(u_sun_spec_, sun_s);
         set_uniform(u_sun_dir_, sun_r);
         bind_point_light(!preview && !instance.light_flags);
-        bind_ambient_occlusion(!preview && !transparent && !instance.light_flags && view_id==ao_world_view_);
+        bind_ambient_occlusion(!preview && !transparent && !instance.light_flags && ao_receiver_view(view_id));
         enc()->setUniform(u_diffuse_,diffuse);
         const float spec[4] = {group.specular[0], group.specular[1], group.specular[2],
                                group.shininess > 0.f ? group.shininess : 1.f};
@@ -845,7 +845,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
                                   instance.lighting.has_direction)));
       bind_baked_light(group, &part.tex, mix, world_mesh,
                       scene_light ? &instance.lighting : nullptr, procedural_sky ? sky : nullptr);
-      bind_ambient_occlusion(world_mesh && view_id==ao_world_view_);
+      bind_ambient_occlusion(world_mesh && ao_receiver_view(view_id));
       if (instance.emissive_overlay && group && group->emission_index != 0xffff) {
         const auto& uv = group->emission_map;
         const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
@@ -1028,7 +1028,7 @@ void LibBgfxBackend::draw_props_instanced(uint16_t view_id, const ScenePart& par
       set_texture(0, s_tex_, tex, world_sampler());
       bind_baked_light(group, &part.tex, mix, world_mesh, scene_light ? &lighting : nullptr,
                        nullptr);
-      bind_ambient_occlusion(world_mesh && view_id == ao_world_view_);
+      bind_ambient_occlusion(world_mesh && ao_receiver_view(view_id));
       if (bgfx::isValid(mask)) {
         const auto& uv = group->emission_map;
         const float channels[4] = {0.f, static_cast<float>(group->base_map.channel),
@@ -1188,7 +1188,7 @@ void LibBgfxBackend::draw_prop_batches(uint16_t view_id,
           // Batched props occlude in the AO prepass, so they must also
           // receive it. Otherwise fs_mesh reads whatever u_aoSampling the
           // previous draw left and stages 9/10 are unbound.
-          bind_ambient_occlusion(view_id == ao_world_view_);
+          bind_ambient_occlusion(ao_receiver_view(view_id));
 
           uint64_t state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA |
                            BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_GREATER;
