@@ -2459,6 +2459,8 @@ constexpr size_t kParallelCellMin = 16;
 constexpr size_t kParallelThreadMin = 4;
 // Fewer new walker palettes than this are built on the host thread (#268).
 constexpr size_t kParallelSkinMin = 8;
+// Placements below which collect_batches merges on the calling thread (#359).
+constexpr size_t kParallelMergeMin = 8192;
 
 std::vector<SceneInstance> scene_instances_collect(
     const SceneFrustum* frustum,
@@ -2734,9 +2736,20 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
       });
     }
   });
-  // Merge (#359): number every hit within its batch in run order, size each
-  // batch once, then copy the instances on the pool. Each batch lists its
-  // placements in exactly the serial order; only the copies run in parallel.
+  // Merge. A few thousand placements (the main view, about 3,000 in the
+  // city; reflection faces, about 200) are cheapest copied in order on this
+  // thread. The outer sun-cascade frustum lists about 21,000: there (#359)
+  // every hit is numbered within its batch in run order, each batch is sized
+  // once and the copies run on the pool. Either way each batch lists its
+  // placements in exactly the serial order.
+  size_t hit_total = 0;
+  for (size_t run = 0; run < runs; ++run) hit_total += hit_runs[run].size();
+  if (runs == 1 || hit_total < kParallelMergeMin) {
+    for (size_t run = 0; run < runs; ++run)
+      for (const auto& hit : hit_runs[run])
+        out[hit.slot].instances.push_back({hit.prop->render_matrix, hit.prop->color});
+    return;
+  }
   static std::vector<uint32_t> slot_fill;  // host thread only, capacity kept
   slot_fill.assign(out.size(), 0);
   for (size_t run = 0; run < runs; ++run)

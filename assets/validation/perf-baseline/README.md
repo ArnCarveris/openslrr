@@ -25,3 +25,6 @@ differently. The route and camera path are identical.
   to worker encoders (#359), saved and low presets on every CPU profile.
 - `issue359-batch-merge/`: the same, after the parallel batch merge and the
   `sun_collect` zone (#359, second increment).
+- `issue359-world-split/`: `before` (prop-batch merge threshold only) and
+  `after` (opaque world on workers, 16 encoders), measured in the same session
+  (#359, third increment).

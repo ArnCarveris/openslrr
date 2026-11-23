@@ -2222,7 +2222,12 @@ struct SceneShadowRegression {
         bgfx::setViewTransform(view_id,view,render);
         b.view_draws_.fill(0);
         start=std::chrono::steady_clock::now();
-        if(workers) b.run_worker_submits([&]{b.draw_dynamic_world(view_id);});
+        if(workers) {
+          // The game's world submission (#359): with worker encoders the
+          // opaque part goes to kWorldOpaqueView on a worker, ordered first.
+          b.apply_base_view_order();
+          b.submit_world(view_id,fb,{0,0,width,height},BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH,0xff,view,render,false);
+        }
         else b.draw_dynamic_world(view_id);
         if(crowd) {bgfx::setViewFrameBuffer(LibBgfxBackend::kPreview0,fb);b.draw_previews();}
         const double submit=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();

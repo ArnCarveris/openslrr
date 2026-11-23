@@ -66,6 +66,10 @@ class LibBgfxBackend final : public IRenderBackend {
   static constexpr uint16_t kOsdUnder = 7;
   static constexpr uint16_t kPreview0 = 8;
   static constexpr uint16_t kOsdView = 70;
+  // Opaque part of the world on worker encoders (#359): consecutive views
+  // drawn just before kWorldView into the same target, in submission order.
+  static constexpr uint16_t kWorldOpaqueView = 151;
+  static constexpr uint16_t kWorldOpaqueViews = 4;
 
  public:
   const char* name() const override { return "bgfx"; }
@@ -371,11 +375,35 @@ class LibBgfxBackend final : public IRenderBackend {
     std::vector<PropPlacement> placements;
   };
   std::vector<BlendedPropGroup> blended_groups_;  // rebuilt per world draw, capacity kept
+  size_t blended_group_count_ = 0;
   std::vector<PropPlacement> placement_scratch_;
   void refresh_distance_fog(const float render_eye[3]);
 
   void draw_sky(uint16_t view_id, const float* view, const float* projection);
+  // The world in one Sequential view: build_blended_groups, then the opaque
+  // part (prop batches, pass 0), then the blended part (pass 1, night
+  // overlays). With worker encoders, flush gives the opaque part its own
+  // view (kWorldOpaqueView, ordered just before the world view, which it
+  // clears) on a worker while the host submits the blended part (#359).
   void draw_dynamic_world(uint16_t view_id);
+  // Runs the queued worker passes and submits the world (sky when `sky`),
+  // split as above when worker encoders are on; host_after runs on the host
+  // after the world, inside the same window (#359).
+  void submit_world(uint16_t world_view, bgfx::FrameBufferHandle target,
+                    const std::array<uint16_t, 4>& rect, uint16_t clear_flags,
+                    uint32_t clear_color, const float* view, const float* proj, bool sky,
+                    const std::function<void()>& host_after = {});
+  void build_blended_groups();
+  void draw_world_opaque(uint16_t view_id);
+  void draw_world_blended(uint16_t view_id);
+  // One pass over instances_[begin, end) (pass 1 adds the night overlays);
+  // `groups` also draws the blended prop groups' sections of that pass.
+  void draw_world_pass(uint16_t view_id, int pass, size_t begin = 0,
+                       size_t end = SIZE_MAX, bool groups = true);
+  // Draw order of every view; draw_previews may reorder it for an inset
+  // world viewport. Called every frame so kWorldOpaqueView always runs
+  // just before the world view.
+  void apply_base_view_order();
   void draw_sun_flare(const float* view, const float* projection, uint16_t view_id);
   void draw_nitro_flares(const float* view, const float* projection, uint16_t view_id);
 
@@ -578,6 +606,13 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_ao_params_=BGFX_INVALID_HANDLE,u_ao_sampling_=BGFX_INVALID_HANDLE,u_ao_field_size_=BGFX_INVALID_HANDLE;
   std::array<float,4> ao_projection_{};
   uint16_t ao_width_=0,ao_height_=0,ao_screen_width_=0,ao_screen_height_=0,ao_world_view_=UINT16_MAX;
+  // Views whose world draws receive AO: the AO world view, plus
+  // kWorldOpaqueView when the opaque world is split off it (#359).
+  bool ao_receiver_view(uint16_t view) const {
+    return view == ao_world_view_ ||
+           (view >= kWorldOpaqueView && view < kWorldOpaqueView + kWorldOpaqueViews &&
+            ao_world_view_ == kWorldView);
+  }
   bool ao_active_=false;
 
   static constexpr size_t kFixtureLights=12;

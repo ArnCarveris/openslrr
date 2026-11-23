@@ -738,7 +738,18 @@ collection, mesh caching, cache stamps and the view setup stay on the host;
 each cascade's culling and draws are one job sharing the collected casters)
 and each reflection face draw instead of submitting it, and
 `src/render/bgfx_lib_backend.cpp:run_worker_submits` runs the queue on the
-pool while the host thread draws the sky and the world on encoder 0. Rules:
+pool while the host thread draws the world on encoder 0. The world itself is
+split too (#359, `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::submit_world`):
+the opaque part goes to four consecutive Sequential views
+(`kWorldOpaqueView` 151–154, ordered just before `kWorldView` by
+`apply_base_view_order` and the inset order in `draw_previews`), sky and
+prop batches first, then pass 0 over three equal runs of `instances_`; the
+first view takes the world view's clear, and the host submits only the
+blended part (pass 1, night overlays) to `kWorldView`. AO reaches those views
+through `ao_receiver_view`. bgfx starts with 16 encoders
+(`init.limits.maxEncoders`): with the default eight, a day frame's jobs
+outnumbered the free encoders and the rest ran serially on the host after
+the world. Rules:
 
 - One job per Sequential view, so the order inside a view is the serial one.
   Each job calls `bgfx::begin(true)` and sets the thread-local `t_encoder_`
