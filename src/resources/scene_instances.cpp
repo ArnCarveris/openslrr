@@ -2693,6 +2693,7 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
   };
   struct Hit {
     uint32_t slot;
+    uint32_t pos;  // index in its batch, assigned in serial order below
     const GroundProp* prop;
   };
   static std::vector<std::vector<Hit>> hit_runs;
@@ -2729,13 +2730,26 @@ void scene_instances_collect_batches(const SceneFrustum* frustum,
           const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
           if (dist > 12.f && extent / dist * 128.f < 4.f) return;
         }
-        list.push_back({static_cast<uint32_t>(visible.shell->offset + batch.slot), &prop});
+        list.push_back({static_cast<uint32_t>(visible.shell->offset + batch.slot), 0, &prop});
       });
     }
   });
+  // Merge (#359): number every hit within its batch in run order, size each
+  // batch once, then copy the instances on the pool. Each batch lists its
+  // placements in exactly the serial order; only the copies run in parallel.
+  static std::vector<uint32_t> slot_fill;  // host thread only, capacity kept
+  slot_fill.assign(out.size(), 0);
   for (size_t run = 0; run < runs; ++run)
-    for (const auto& hit : hit_runs[run])
-      out[hit.slot].instances.push_back({hit.prop->render_matrix, hit.prop->color});
+    for (auto& hit : hit_runs[run]) hit.pos = slot_fill[hit.slot]++;
+  for (size_t slot = 0; slot < out.size(); ++slot)
+    if (slot_fill[slot]) out[slot].instances.resize(slot_fill[slot]);
+  jobs_parallel_for(runs, [&](size_t run) {
+    for (const auto& hit : hit_runs[run]) {
+      auto& instance = out[hit.slot].instances[hit.pos];
+      instance.transform = hit.prop->render_matrix;
+      instance.color = hit.prop->color;
+    }
+  });
 }
 
 void scene_instances_override_mesh(uint32_t id,

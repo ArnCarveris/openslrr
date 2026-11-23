@@ -23,3 +23,5 @@ Two replays of the same build differ by about ±2 % in draws and by less than
 differently. The route and camera path are identical.
 - `issue359-cascades/`: the same replay by day after the sun cascades moved
   to worker encoders (#359), saved and low presets on every CPU profile.
+- `issue359-batch-merge/`: the same, after the parallel batch merge and the
+  `sun_collect` zone (#359, second increment).
