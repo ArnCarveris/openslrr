@@ -297,6 +297,9 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
         pic.push_back('\\');
       pic += "frontend\\textures\\Loading.dds";
       osd_set_loading_overlay(pic);
+      // The pump below delivers clicks before the Java modal exists. With
+      // the plate set they are not produced; drop what was already latched.
+      host_input_cancel_pointer_gestures();
       render.pump(0);
       render.flush();
     });

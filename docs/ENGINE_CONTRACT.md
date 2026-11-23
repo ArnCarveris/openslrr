@@ -388,8 +388,10 @@ count, so visiting many packs does not retain a CRT file stream for each.
 Pack basename lookup and the generation-scoped parent/child index avoid
 repeated global scans during resource traversal. Exact path lookup still
 wins over the first-opened basename match, and children retain pack/TOC
-order. Registration/root changes invalidate derived traversal data and
-must remain quiescent as described in §6.
+order. A duplicate local type ID resolves to its first TOC entry; child
+traversal uses that same entry, so a shadowed duplicate cannot reparent or
+repeat the canonical resource. Registration/root changes invalidate derived
+traversal data and must remain quiescent as described in §6.
 
 ### Load chain
 
@@ -579,9 +581,12 @@ such a slot is a one-degree-of-freedom hinged plate
 
 - Closed, it is latched and does not move.
 - `Part.flap(1)` and the `flap_toggle` command (Mechanic's tuning click)
-  drive it open to the stop, where a strut holds it against gravity, or shut,
-  where it latches. A load that forces a held panel well back from the stop
-  beats the strut, so a door left open swings shut when the car pulls away.
+  push it with build 606's spring (gain 60 per second squared): open aims at
+  95% of the travel, so the panel overshoots, hits its stop and shakes before
+  it rests (a heavy hood sags below the target, where the spring carries its
+  weight); close aims through the closed pose, where it latches. A load that
+  forces a held panel well back from the stop beats the spring once it has
+  settled, so a door left open swings shut when the car pulls away.
   `flap(0)` returns 1 while it is open, by script or by a hit.
 - A chassis impact reaching the panel (`damage_chassis` hands it on) releases
   the latch above 3.5 m/s local speed, independently of the damage options.
@@ -611,9 +616,10 @@ such a slot is a one-degree-of-freedom hinged plate
 The car does not feel its panels' contacts, and the panels do not collide
 with each other, loose bodies, other cars or the ground (floor triangles are
 left out, as for the chassis walls). In the garage, where the car is
-suspended, a panel opens without world contacts. Its constants are an
-OpenSLRR design; the original flap solver is not recovered and SLRR_rev has
-no `flap` native.
+suspended, a panel opens without world contacts. The script spring's gain and
+95% target are build 606's (flap solver 0x0043F850); its light damping and
+the other constants are an OpenSLRR design, and SLRR_rev has no `flap`
+native.
 
 ## 11. Physics and damage
 
@@ -826,10 +832,33 @@ not read by the solver. Likewise, `setInstantCenter` values and the
 `WheelState::jacking` field are retained but have no active load effect:
 there is no instant-centre anti-dive/anti-squat force or jacking feedback.
 Wheel YPR and the existing arm/hub kinematics still affect contact geometry.
-The proposed anti-roll-bar loop is commented out, not implemented. The
-original has no effect from stock anti-roll-bar parts either: MWM
-`Swaybar.updatevariables` has its `addrollbar` commands commented out. Only
-the native CFG `rollbar` lines of fake-racer and traffic templates carry one.
+Anti-roll bars are an optional host approximation, deliberately enabling a
+stock feature whose Java commands and catalog branch were dormant. The patched
+Catalog exposes the existing `parts:0220` branch on Running Gear / Suspension;
+no resource IDs are changed. The patch adds the missing 701/702 mount slots to
+the stock racer chassis CFGs (#311) and uncomments every racer script's stock
+`*_parts_list_RGear_sways` list, so newly assembled stock racers come with
+bars; the generic `addPart` drops any bar no mount can hold.
+`part_runtime` replaces each axle's configuration from its current installed
+`Swaybar` on authored mount 701 (front) or 702 (rear). Existing generic CFG
+compatibility remains authoritative, not the part class's model/axle name.
+Finite nonnegative `force` / `damping` fields are scaled by clamped wear and
+tear; removing, moving, destroying or repairing the part is reflected by the
+next refresh/tick without an accumulated command or new save state. Extraction
+is independent of the engine and controller.
+
+The kernel reimplements the bounded chassis-couple approach found in SLRR_rev
+`77b0fb6` and `4ca11c2`, not a recovered original MWM force law. Both axle corners
+must be enabled, touching and non-rigid. After tyre evaluation, opposite world-Y
+forces act at the two suspension hardpoints, with magnitude capped at half the
+body's weight. Stiffness uses the right-minus-left solved length relative to
+each corner's own rest length (unlike the upstream raw-length rule); damping
+opposes their relative world-Y velocity. This adds no net lift and does not
+rewrite the already-evaluated tyre loads. Zero inputs leave prior behavior
+unchanged. Kernel callers' invalid coefficients act as zero; an invalid script
+coefficient pair disables that installed bar. The couple uses the same fixed
+substeps, including on passive/engine-less cars; it is not a full bar/linkage or
+same-step tyre-load-transfer model.
 
 The approved migration keeps that tyre law but corrects brake coupling.
 After the drivetrain impulse, one bearing/service/handbrake impulse budget
@@ -1446,7 +1475,8 @@ unchanged. While script lights own the scene, including when all of them are
 disabled, the neon point record stays ambient-only (intensity 0, no shadows).
 The patched Garage creates one spot per twin-tube fitting in garages 1–3 (9, 10
 and 12 lights, intensity 30, range 26 m, set per garage in its fixture tables);
-the open-air ROC garage has none. The stock `misc.garage:0x001D` neon remains an ambient-only record
+the open-air ROC garage has none, and since #330 it has no neon either: it is an
+exterior scene (`internalScene = 0`) lit by the sun. The stock `misc.garage:0x001D` neon remains an ambient-only record
 whenever fixtures exist.
 
 ### Scenery lights (#237)
@@ -1513,6 +1543,26 @@ the rebind listener, axes, hotkeys, and focus. Do not bypass the mapping with
 a key hardcoded in driving. The listener must allow primary and secondary
 commands and the other control menus.
 
+Pointer gestures have one owner at a time. A loading plate (`LoadingScreen`
+overlay or dialog) takes every click; a section change, a modal or a movie
+takes the 3D-view clicks, including the Mechanic's part clicks. Starting or
+ending a plate or a section change cancels latched clicks and every held
+button (`host_input_cancel_pointer_gestures`): its release clicks nothing, and
+only a fresh press counts. The right button starts a camera drag only when the
+world camera can be dragged (`gameref_world_camera_can_drag`), never in menus.
+Camera look keys are the controller's bindings (stock `CAMTURNSET`), not raw
+arrows, so a script that resets to `DRIVERSET` stops the orbit. The pointer is
+visible while `MouseCursor.visible` (set by `MouseCursor.enable`) is nonzero.
+A driving chase look is not undone by time: a parked car keeps it, and
+forward travel tows the camera back behind the car like a rope (tan(a/2)
+shrinks by exp(-s/r) over s metres at follow distance r). A script
+`setMatrix` on the bound follow camera holds it in place until the car pulls
+the `dist` range taut. `angle offset gain rate` turns a held follow camera or
+a script orbit camera around its target (relative azimuth 0 is behind it);
+its rate runs on game time unless `simulate 1` keeps the camera on real time.
+`zoom aov rate` eases the view angle toward aov at rate per second (a negative
+rate snaps).
+
 SDL3 owns joystick/gamepad discovery and polling on that same host thread;
 Win32 still owns the window, keyboard scan codes and mouse. Devices 0/1 remain
 `SysKeyboard`/`SysMouse`. Device 2 keeps the saved name `XInput Gamepad` and its
@@ -1538,6 +1588,13 @@ covers, among other things, gauges, needles, odometer, damage, nitro, and
 turbo. Preserve the expected size, aspect, and coordinates. A reference image
 that looks offset at a high resolution can reflect stock behavior that is
 kept on purpose, not an element to recenter automatically.
+
+The chassis CFG lines `cockpit_rpm` and `cockpit_speed` are a separate,
+3D instrument: a pin mesh parented to the chassis at the CFG pose, turned
+about its own posed Z axis by `value * factor + offset` limited to
+`[low, high]` (rpm, km/h). They never replace or move the overlay pins
+(`osd_rpmpin`, `osd_spdpin`), and they live and die with the chassis
+(`src/resources/part_runtime.cpp:pose_cockpit_needles`).
 
 The damage gauge is a map of the car, not one colour. The stock font holds
 a neutral car outline and one blip per region in one coordinate system,
@@ -1589,7 +1646,11 @@ Engine loops use the scripts' SfxTables.
 `scene_ambience` plays the `sfx_loop`/`sfx_random` lines of map placements
 through `host_sfx`; it owns those voices and stops them when their ground
 shell leaves the active world.
-Do not substitute a fixed engine sound for an RPM/load curve.
+Do not substitute a fixed engine sound for an RPM/load curve. Native
+script-less cars (traffic, fake racers) have no SfxTables; they use the
+speed-modelled host loop of `update_traffic_engine_audio` (distance gain, stereo
+pan, mass-dependent pitch, plus the CFG `sfx_loop` radio), bounded to the
+nearest four cars, and its voices stop with the car like the SfxTable loops.
 
 Simultaneous voices are deliberately bounded, and menu repeats are handled
 separately. Installing a kit can produce many install events: avoid adding

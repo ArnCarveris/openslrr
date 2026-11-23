@@ -152,6 +152,11 @@ struct WheelState {
   double holding_impulse = 0;
   TireForces tire_force{};
 };
+// Optional host anti-roll approximation, in N/m and N s/m. Invalid or
+// negative coefficients act as zero; no installed bar means both stay zero.
+struct AntiRollConfig {
+  double stiffness = 0, damping = 0;
+};
 struct DriveWheel {
   double weight = 0, steer = 0, brake = 0, handbrake = 0, bearing = 0;
   double rolling_resistance = 0;
@@ -207,6 +212,11 @@ public:
   } ground_impact;
   std::array<WheelConfig, 4> wheels;
   std::array<WheelState, 4> state;
+  // Front (0/1) and rear (2/3): both corners must contact on non-rigid
+  // suspension. Couples world-Y hardpoint forces, bounded to half body weight
+  // per side, after tyre evaluation; never changes the current tyre loads.
+  // Deflection is relative to each corner's rest length (no rest-offset preload).
+  std::array<AntiRollConfig, 2> anti_roll{};
   // Installed-body low points in chassis coordinates; no implicit support
   // is created when the runtime supplies none. Contact is floor-only.
   std::array<Vec3, 8> body_supports{};

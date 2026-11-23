@@ -17,6 +17,7 @@
 
 #include "slrr/gameref.hpp"
 #include "slrr/part_runtime.hpp"
+#include "slrr/host_cursor.hpp"
 #include "slrr/host_input.hpp"
 #include "slrr/object.hpp"
 #include "slrr/osd_registry.hpp"
@@ -37,19 +38,15 @@ constexpr float kDtClamp = 0.1f;  // PE Engine_dtClamp @ 0x60C8CC
 
 void dispatch_due_timers(Jvm& jvm, float now, int32_t* fired) {
   // Soft PE TickTimers → queueEvent EVENT_TIME (0x80) → handleEvent(ref,I,I).
-  // Gate on GameType.event_mask like stock mask test. Only the live
-  // section may consume timers (stale Splash from tree smoke).
-  // GameLogic is not a section: its 10 s timer is the 4x clock
-  // (spendTime(timeRefreshRate * timeFactor), then it re-arms).
-  Object* actual = nullptr;
-  Value av = jvm.get_static("java.game.GameLogic", "actualState");
-  if (av.tag == ValueTag::Obj) actual = av.v.o;
+  // Gate on GameType.event_mask like stock mask test, not on the active
+  // section: City keeps its one-second tick through RaceSetup and checks
+  // actualState itself, GameLogic's 10 s timer is the 4x clock and a Bot
+  // rejoins traffic from its own timer. A section that leaves (the tree-smoke
+  // Splash included) clears EVENT_TIME or its timers in exit().
   for (const DueTimer& t : gameref_poll_timers(now)) {
     auto* o = static_cast<Object*>(t.key);
     if (!o) continue;
     script_event_emit(jvm,o,nullptr,kEventTime,Value::make_int(t.timer_id));
-    const bool game_clock = o->class_name == "java.game.GameLogic";
-    if (actual && o != actual && !game_clock) continue;
     GameRefState* st = gameref_get(o);
     if (st && (st->event_mask & kEventTime) == 0) continue;
     jvm.invoke(o->class_name, "handleEvent",
@@ -294,7 +291,10 @@ void spin_mechanic_inventory(Jvm& jvm, float dt) {
 
 void dispatch_mechanic_pointer(Jvm& jvm) {
   auto& in = host_input();
-  if (g_mechanic_pointer_depth) {
+  // The cursor handlers' gate, plus loading plates and section changes: a
+  // click there must not remove a part from the garage that follows.
+  if (g_mechanic_pointer_depth || video_fmv_block_osd() || osd_has_modal() ||
+      osd_loading_dialog() || !osd_loading_overlay().empty() || scene_transition_active()) {
     in.part_click = false;
     return;
   }
@@ -547,11 +547,20 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   painter_tick();
 
   auto& in = host_input();
-  const float yaw = host_input_camera_axis(7);
-  const float pitch = host_input_camera_axis(8);
-  const float zoom = host_input_camera_axis(10);
+#ifdef _WIN32
+  // MouseCursor.enable() sets visible; no MouseCursor yet keeps the pointer.
+  {
+    const Value cursor = jvm.get_static("java.io.Input", "cursor");
+    host_cursor_set_visible(cursor.tag != ValueTag::Obj || !cursor.v.o ||
+                            field_int(cursor.v.o, "visible") != 0);
+  }
+#endif
+  const float key_yaw = host_input_camera_axis(controller, 7);
+  const float key_pitch = host_input_camera_axis(controller, 8);
+  const float zoom = host_input_camera_axis(controller, 10);
   // One camera: the script camera. Orbit, spring and Pori all live on it.
-  gameref_orbit_world_camera(yaw * 2.5f, pitch * 1.5f, zoom, frame_dt);
+  gameref_orbit_world_camera((in.look_yaw + key_yaw) * 2.5f, (in.look_pitch + key_pitch) * 1.5f,
+                             key_yaw, key_pitch, zoom, frame_dt);
   in.look_yaw = 0.f;
   in.look_pitch = 0.f;
   in.look_zoom = 0.f;
@@ -836,6 +845,12 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
       osd_set_loading_dialog(false);
       osd_set_loading_overlay({});
     }
+    // Clicks latched or held while a plate came up or went away belong to
+    // neither side of it.
+    static bool was_loading = false;
+    const bool loading = osd_loading_dialog() || !osd_loading_overlay().empty();
+    if (loading != was_loading) host_input_cancel_pointer_gestures();
+    was_loading = loading;
   }
 
   // Compatibility tick only without a running Java time refresher.
@@ -918,7 +933,7 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     const int mode = field_int(sections.actual(), "cameraMode");
     camera->follow_variant = mode == 3 || mode == 4 ? mode : 0;
   }
-  gameref_advance_world_camera(frame_dt);
+  gameref_advance_world_camera(frame_dt, static_cast<float>(jvm.time_warp()));
   dispatch_mechanic_pointer(jvm);
   dispatch_world_pointer(jvm);
 

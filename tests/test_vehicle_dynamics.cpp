@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 using namespace slrr::physics;
@@ -97,6 +98,64 @@ struct Car {
   }
   double speed() const { return dynamics.body.velocity.length(); }
 };
+
+const Terrain flat_ground = [](double, double, double, GroundHit& hit) {
+  hit = {};
+  return true;
+};
+
+// Extended, contacting massless suspensions with no current spring load. The
+// chassis and bump stops stay clear of the floor, isolating the added couple
+// from tyre/rest friction and from the existing spring/support solvers.
+VehicleDynamics anti_roll_fixture() {
+  VehicleDynamics car;
+  car.body.configure(1200, {-.85, .4, -1.5}, {.85, 1.4, 1.5}, {0, .75, 0},
+                     {1000, 1500, 1800});
+  car.body.position = {0, .75, 0};
+  for (size_t i = 0; i < car.wheels.size(); ++i) {
+    auto& w = car.wheels[i];
+    w.enabled = true;
+    w.center = {i % 2 ? .75 : -.75, .4, i < 2 ? -1.0 : 1.0};
+    w.radius = .3;
+    w.anchor = .3;
+    w.rest = .25;
+    w.minimum = .1;
+    w.maximum = .8;
+    w.spring = 10000;
+  }
+  return car;
+}
+
+void set_roll(VehicleDynamics& car, double angle) {
+  car.body.orientation = {0, 0, std::sin(angle * .5), std::cos(angle * .5)};
+}
+
+void one_step(VehicleDynamics& car, const Terrain& terrain = flat_ground) {
+  SLRR_REQUIRE(car.advance(VehicleDynamics::timestep, terrain) == 1);
+}
+
+Vec3 anti_roll_hardpoint(const VehicleDynamics& car, size_t corner) {
+  const auto& w = car.wheels[corner];
+  const Vec3 local = w.center - w.down.normalized() * w.anchor_length();
+  return car.body.position + car.body.orientation.rotate(local - car.body.center);
+}
+
+Vec3 couple_momentum(const VehicleDynamics& before, size_t axle, double force) {
+  const Vec3 span = anti_roll_hardpoint(before, 2 * axle) -
+                    anti_roll_hardpoint(before, 2 * axle + 1);
+  return span.cross({0, force, 0}) *
+         (VehicleDynamics::timestep * std::exp(-.015 * VehicleDynamics::timestep));
+}
+
+void require_same_body(const RigidBody& a, const RigidBody& b) {
+  SLRR_REQUIRE((a.position - b.position).length() == 0);
+  SLRR_REQUIRE((a.velocity - b.velocity).length() == 0);
+  SLRR_REQUIRE((a.momentum - b.momentum).length() == 0);
+  SLRR_REQUIRE(a.orientation.x == b.orientation.x);
+  SLRR_REQUIRE(a.orientation.y == b.orientation.y);
+  SLRR_REQUIRE(a.orientation.z == b.orientation.z);
+  SLRR_REQUIRE(a.orientation.w == b.orientation.w);
+}
 
 }  // namespace
 
@@ -574,6 +633,242 @@ SLRR_TEST(a_braked_car_holds_against_a_strong_crosswind) {
   SLRR_REQUIRE(moved < .02);
 }
 
+SLRR_TEST(default_anti_roll_is_identical_to_the_unforced_body) {
+  auto car = anti_roll_fixture();
+  for (const auto& axle : car.anti_roll) {
+    SLRR_REQUIRE(axle.stiffness == 0);
+    SLRR_REQUIRE(axle.damping == 0);
+  }
+  set_roll(car, .04);
+  car.body.velocity = {3, .2, -12};
+  car.body.set_omega({0, 0, .2});
+  auto expected = car.body;
+  expected.integrate(VehicleDynamics::timestep);
+  one_step(car);
+  require_same_body(car.body, expected);
+  for (const auto& s : car.state) {
+    SLRR_REQUIRE(s.contact);
+    SLRR_REQUIRE(s.force == 0);
+  }
+}
+
+SLRR_TEST(anti_roll_has_no_symmetric_heave_force) {
+  for (double heave : {-1.0, 0.0, 1.0}) {
+    auto car = anti_roll_fixture(), baseline = car;
+    car.body.velocity = baseline.body.velocity = {3, heave, -12};
+    car.anti_roll = {{{20000, 1500}, {35000, 2200}}};
+    one_step(baseline);
+    one_step(car);
+    require_same_body(car.body, baseline.body);
+  }
+}
+
+SLRR_TEST(anti_roll_neutral_rest_offsets_do_not_preload_the_chassis) {
+  auto car = anti_roll_fixture(), baseline = car;
+  for (auto* v : {&car, &baseline}) {
+    for (size_t corner : {size_t{1}, size_t{3}}) {
+      v->wheels[corner].center.y += .125;
+      v->wheels[corner].rest += .125;
+    }
+    v->body.velocity.y = -.4;
+  }
+  car.anti_roll = {{{20000, 1500}, {35000, 2200}}};
+  one_step(baseline);
+  one_step(car);
+  SLRR_REQUIRE((car.body.momentum - baseline.body.momentum).length() < 1e-9);
+  SLRR_REQUIRE((car.body.velocity - baseline.body.velocity).length() == 0);
+}
+
+SLRR_TEST(anti_roll_resists_roll_with_mirrored_equal_opposite_forces) {
+  const Terrain different_normals = [](double x, double, double, GroundHit& hit) {
+    hit = {};
+    hit.normal = {x < 0 ? .1 : -.2, 1, .05};
+    return true;
+  };
+  for (size_t axle : {size_t{0}, size_t{1}}) {
+    Vec3 mirror_sum;
+    for (double angle : {-.04, .04}) {
+      auto car = anti_roll_fixture();
+      set_roll(car, angle);
+      auto baseline = car;
+      const auto before = car;
+      car.anti_roll[axle].stiffness = 12000;
+      one_step(baseline, different_normals);
+      one_step(car, different_normals);
+      const size_t left = axle * 2, right = left + 1;
+      SLRR_REQUIRE(car.state[left].contact && car.state[right].contact);
+      const double force = (car.state[right].length - car.state[left].length) * 12000;
+      const Vec3 delta = car.body.momentum - baseline.body.momentum;
+      SLRR_REQUIRE((delta - couple_momentum(before, axle, force)).length() < 1e-9);
+      SLRR_REQUIRE(delta.z * angle < 0);
+      SLRR_REQUIRE(std::abs(delta.x) < 1e-12 && std::abs(delta.y) < 1e-12);
+      SLRR_REQUIRE((car.body.velocity - baseline.body.velocity).length() == 0);
+      for (size_t i = 0; i < car.state.size(); ++i)
+        SLRR_REQUIRE(car.state[i].force == baseline.state[i].force);
+      mirror_sum += delta;
+    }
+    SLRR_REQUIRE(mirror_sum.length() < 1e-9);
+  }
+}
+
+SLRR_TEST(anti_roll_damping_dissipates_roll_without_net_lift) {
+  for (double roll_speed : {-.3, .3}) {
+    auto car = anti_roll_fixture();
+    car.body.set_omega({0, 0, roll_speed});
+    car.body.velocity = {3, -.2, -12};
+    auto baseline = car;
+    const auto before = car;
+    car.anti_roll[0].damping = 2000;
+    const double relative_speed = before.body.point_velocity(anti_roll_hardpoint(before, 0)).y -
+                                  before.body.point_velocity(anti_roll_hardpoint(before, 1)).y;
+    one_step(baseline);
+    one_step(car);
+    const Vec3 delta = car.body.momentum - baseline.body.momentum;
+    SLRR_REQUIRE((delta - couple_momentum(before, 0, -2000 * relative_speed)).length() < 1e-9);
+    SLRR_REQUIRE(delta.dot(before.body.omega()) < 0);
+    SLRR_REQUIRE(car.body.momentum.length() < baseline.body.momentum.length());
+    SLRR_REQUIRE((car.body.velocity - baseline.body.velocity).length() == 0);
+  }
+}
+
+SLRR_TEST(front_and_rear_anti_roll_configs_are_independent) {
+  auto baseline = anti_roll_fixture();
+  baseline.wheels[1].center.y += .04;
+  baseline.wheels[3].center.y -= .02;
+  auto front = baseline, rear = baseline, both = baseline;
+  front.anti_roll[0].stiffness = both.anti_roll[0].stiffness = 10000;
+  rear.anti_roll[1].stiffness = both.anti_roll[1].stiffness = 30000;
+  const auto before = baseline;
+  one_step(baseline);
+  one_step(front);
+  one_step(rear);
+  one_step(both);
+  const Vec3 front_delta = front.body.momentum - baseline.body.momentum;
+  const Vec3 rear_delta = rear.body.momentum - baseline.body.momentum;
+  SLRR_REQUIRE(front_delta.z < 0 && rear_delta.z > 0);
+  const double front_force = (front.state[1].length - front.state[0].length) * 10000;
+  const double rear_force = (rear.state[3].length - rear.state[2].length) * 30000;
+  SLRR_REQUIRE((front_delta - couple_momentum(before, 0, front_force)).length() < 1e-9);
+  SLRR_REQUIRE((rear_delta - couple_momentum(before, 1, rear_force)).length() < 1e-9);
+  SLRR_REQUIRE((both.body.momentum - baseline.body.momentum - front_delta - rear_delta).length() < 1e-9);
+  SLRR_REQUIRE((both.body.velocity - baseline.body.velocity).length() == 0);
+}
+
+SLRR_TEST(anti_roll_requires_two_enabled_contacting_nonrigid_corners) {
+  for (size_t corner : {size_t{0}, size_t{1}}) {
+    for (int policy = 0; policy < 3; ++policy) {
+      auto baseline = anti_roll_fixture();
+      baseline.body.set_omega({0, 0, .2});
+      Terrain terrain = flat_ground;
+      if (policy == 0) {
+        terrain = [corner](double x, double, double, GroundHit& hit) {
+          hit = {};
+          return corner == 0 ? x > 0 : x < 0;
+        };
+      } else if (policy == 1) {
+        baseline.wheels[corner].enabled = false;
+        baseline.state[corner].contact = true; // stale state cannot keep a bar alive
+      } else {
+        auto& w = baseline.wheels[corner];
+        w.rigid_contact = true;
+        w.minimum = w.maximum = w.rest = .41;
+        w.spring = 0;
+      }
+      auto car = baseline;
+      car.anti_roll[0] = {20000, 2000};
+      one_step(baseline, terrain);
+      one_step(car, terrain);
+      require_same_body(car.body, baseline.body);
+      if (policy == 2) {
+        SLRR_REQUIRE(car.state[0].contact && car.state[1].contact);
+      } else {
+        SLRR_REQUIRE(!car.state[corner].contact);
+      }
+    }
+  }
+}
+
+SLRR_TEST(invalid_anti_roll_coefficients_individually_act_as_zero) {
+  const double invalid[] = {-1, -std::numeric_limits<double>::max(),
+      std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()};
+  for (double value : invalid) {
+    for (int component = 0; component < 3; ++component) {
+      auto baseline = anti_roll_fixture();
+      set_roll(baseline, .04);
+      baseline.body.set_omega({0, 0, .2});
+      auto car = baseline;
+      if (component == 0) {
+        car.anti_roll[0] = {value, value};
+      } else if (component == 1) {
+        baseline.anti_roll[0] = {0, 2000};
+        car.anti_roll[0] = {value, 2000};
+      } else {
+        baseline.anti_roll[0] = {12000, 0};
+        car.anti_roll[0] = {12000, value};
+      }
+      one_step(baseline);
+      one_step(car);
+      require_same_body(car.body, baseline.body);
+    }
+  }
+}
+
+SLRR_TEST(extreme_anti_roll_coefficients_stay_finite_at_the_paired_weight_cap) {
+  for (double coefficient : {1e12, std::numeric_limits<double>::max()}) {
+    for (double roll_speed : {-2.0, 2.0}) {
+      auto car = anti_roll_fixture();
+      // Displacement=2m and speed=+/-3m/s make both DBL_MAX products
+      // overflow; opposing spring/damper terms must not become NaN.
+      car.wheels[1].center.y += 2;
+      car.wheels[1].maximum = 5;
+      car.body.set_omega({0, 0, roll_speed});
+      const auto before = car;
+      auto baseline = car;
+      car.anti_roll[0] = {coefficient, coefficient};
+      one_step(baseline);
+      one_step(car);
+      SLRR_REQUIRE(car.state[0].contact && car.state[1].contact);
+      const double force = std::copysign(.5 * car.body.mass * 9.81, roll_speed);
+      const Vec3 delta = car.body.momentum - baseline.body.momentum;
+      SLRR_REQUIRE((delta - couple_momentum(before, 0, force)).length() < 1e-9);
+      SLRR_REQUIRE((car.body.velocity - baseline.body.velocity).length() == 0);
+      SLRR_REQUIRE(car.body.position.finite() && car.body.velocity.finite());
+      SLRR_REQUIRE(car.body.momentum.finite() && car.body.omega().finite());
+    }
+  }
+}
+
+SLRR_TEST(anti_roll_on_an_engineless_coasting_car_does_not_rewrite_tyre_loads) {
+  Car coasting;
+  auto& before = coasting.dynamics;
+  before.drive.torque = [](double) { return 0.0; };
+  before.drive.gears = 0;
+  before.drive.ratios = {};
+  before.drive.starter = 0;
+  before.engine_running = false;
+  before.engine_omega = 0;
+  set_roll(before, .04);
+  before.body.velocity = {2, 0, -12};
+  for (auto& s : before.state) s.spin = 12 / .31;
+  auto baseline = before, car = before;
+  car.anti_roll = {{{20000, 500}, {30000, 800}}};
+  one_step(baseline);
+  one_step(car);
+  SLRR_REQUIRE(!car.engine_running && car.engine_omega == 0 && car.gear == 0);
+  SLRR_REQUIRE((car.body.momentum - baseline.body.momentum).length() > 1e-5);
+  SLRR_REQUIRE((car.body.velocity - baseline.body.velocity).length() < 1e-12);
+  for (size_t i = 0; i < car.state.size(); ++i) {
+    const auto& a = car.state[i];
+    const auto& b = baseline.state[i];
+    SLRR_REQUIRE(a.contact && b.contact && a.force > 0);
+    SLRR_REQUIRE(a.force == b.force && a.length == b.length);
+    SLRR_REQUIRE(a.tire_force.longitudinal == b.tire_force.longitudinal);
+    SLRR_REQUIRE(a.tire_force.lateral == b.tire_force.lateral);
+    SLRR_REQUIRE(a.spin == b.spin);
+  }
+}
+
 int main() {
   const slrr::standalone::Test tests[] = {
       tyre_grip_follows_the_tyre_script,
@@ -601,6 +896,16 @@ int main() {
       wind_follows_the_log_profile_with_gusts_it_carries,
       wind_changes_the_air_speed_the_car_meets,
       a_braked_car_holds_against_a_strong_crosswind,
+      default_anti_roll_is_identical_to_the_unforced_body,
+      anti_roll_has_no_symmetric_heave_force,
+      anti_roll_neutral_rest_offsets_do_not_preload_the_chassis,
+      anti_roll_resists_roll_with_mirrored_equal_opposite_forces,
+      anti_roll_damping_dissipates_roll_without_net_lift,
+      front_and_rear_anti_roll_configs_are_independent,
+      anti_roll_requires_two_enabled_contacting_nonrigid_corners,
+      invalid_anti_roll_coefficients_individually_act_as_zero,
+      extreme_anti_roll_coefficients_stay_finite_at_the_paired_weight_cap,
+      anti_roll_on_an_engineless_coasting_car_does_not_rewrite_tyre_loads,
   };
   return slrr::standalone::run("vehicle_dynamics", tests);
 }

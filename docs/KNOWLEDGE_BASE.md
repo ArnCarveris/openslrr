@@ -321,8 +321,8 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    `src/physics/wheel_mount.cpp:pre_contact_velocity`). Without a dyno the car
    has no drive torque; `engine_lost` keeps `collide_chassis` running for it.
 9. A part on a CFG `flap` slot (doors, hood, trunk) is a latched hinged plate
-   (`src/physics/flap_hinge.cpp:flap_step`). `Part.flap`/`flap_toggle` drive
-   it, `damage_chassis` hands each impact to
+   (`src/physics/flap_hinge.cpp:flap_step`). `Part.flap`/`flap_toggle` push
+   it with build 606's spring (#327, below), `damage_chassis` hands each impact to
    `src/resources/part_runtime.cpp:flap_impact`, which can release the latch
    and swing it, and `advance_flaps` integrates it at 240 Hz on frame time
    with gravity, the carrier's velocity change and wind, then re-places it
@@ -463,8 +463,25 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
 - `src/render/bgfx_osd.cpp:draw_vehicle_hud` draws the stock instrument
   layout from a hard-coded table, scaled by `stock_scale = 0.5625 / (h/w)`.
   CFG `osd_*` lines (`include/slrr/part_config.hpp:HudSlot`) override it.
+- `osd_rpm/speed/gear/mileage` spell their value only when the render's RSD
+  `flags` has bit 4 (stock lcdfont/osdfont/slider renders: `flags 4.000`);
+  build 606 picks its font batch from that bit (0x0052CF2C). Any other render
+  is drawn whole like `osd_gauge`: Easy Forza OSD puts its gauge plate
+  (`cars:0xBAA4`, `flags 1152.000`, a one-quad SCX) on `osd_rpm`
+  (`include/slrr/vehicle_hud_damage.hpp:hud_render_draws_text`). A loose
+  `--vehicle-osd` cfg qualifies dependency slot 2 against the installed
+  `cars.rpk`, exactly as an installed car cfg does; it has no per-pack file
+  fallback (`src/render/bgfx_osd.cpp:draw_vehicle_hud`).
+- CFG mesh overrides (`osd_gauge`, needles, non-font readouts) use the Osd
+  camera of `Osd.java`: `CAM_OFFSET` 5.48, 30 degree vertical view, so the
+  z = 0 plane spans +-1.469 (`SCALE_3D`) vertically and +-1.469 x aspect
+  horizontally, scaled by 5.48 / (5.48 - z). Font readout anchors are screen
+  NDC, y down. The stock table keeps its own 16:9 calibration.
 - HUD values come from `src/resources/part_runtime.cpp:part_vehicle_hud`:
   RPM, km/h, mileage, nitro, turbo, gear, and the damage gauge's parts.
+  RPM and km/h come from `src/resources/part_runtime.cpp:gauge_rpm` and
+  `src/resources/part_runtime.cpp:gauge_speed`, which the dashboard pins
+  (`cockpit_rpm` / `cockpit_speed`, see "Dashboard pins" at the end) share.
 - Damage gauge (`osd_damage`, stock font `cars\meshes\osdfont.scx`): glyph
   `A` is the car outline, `E`/`L`/`T` the drivetrain, `O h l r p q t u v` the
   body and `a b c d` the wheels, in one coordinate system with the front up.
@@ -776,6 +793,18 @@ VM and lifetime:
   pass: boot to the main menu and the garage was checked in game.
 - `System.arraycopy` grows the destination on purpose
   (`src/natives/natives_internal.hpp:native_arraycopy`).
+- An unassigned reference field or static reads as Void and compares equal to
+  null (`src/jvm/tree_eval.cpp:values_equal`). RacerTalkDialog builds its
+  static reply texts only `if (Text_honkin == null)`; before #226 every racer
+  reply except the literal lines was blank.
+- Timers belong to their GameType. A section change neither removes nor drops
+  them; EVENT_TIME is gated only by the event mask
+  (`src/boot/section_machine.cpp:change_active_section`,
+  `src/boot/mainloop.cpp:dispatch_due_timers`). Stock sections clear their own
+  timers or mask in exit(). City's one-second tick (police, racer challenges,
+  night races, the garage trigger) keeps running through RaceSetup and checks
+  actualState itself; before #226 it stopped for the rest of the visit after a
+  day race was set up.
 
 Resources and data:
 
@@ -887,7 +916,7 @@ Process:
 | Ambient start range | 250 m beyond the CFG radius | `src/resources/scene_ambience.cpp:scene_ambience_audible` |
 | Chassis wall probe | four spheres of 0.18 m | `src/resources/part_runtime.cpp:collide_chassis` |
 | Tyre reference scaling (`8ac2ba9`) | friction / 1.76863, stiffness / 17.6839, sliction / 0.814, each clamped; nominal lateral peak multiplier 1.42 before load/slip factors | `src/physics/tire_model.cpp:tire_forces` |
-| Hinged panel step / latch release / tear-off | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
+| Hinged panel step / latch release / tear-off / script spring | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap / 60 s⁻² toward 95% open (build 606), damping 2.3 s⁻¹ | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
 | Prop cell | 64 m | `src/resources/scene_instances.cpp:kPropCellSize` |
 | Shadow maps | 2048² | `src/render/bgfx_lib_backend.hpp:kShadowResolution` |
 | Pedestrian radius / density scale | 400 m / ×4 | `src/resources/part_runtime.cpp:tick_pedestrians` |
@@ -1942,6 +1971,84 @@ seated animation or a full garage transition. Evidence:
 `assets/validation/driver-mask/after.txt`. No production Java/native API change.
 
 
+### Driver head in the cockpit camera (#320)
+
+- `src/resources/part_runtime.cpp:pose_driver` aims the seated driver's neck
+  at the car's first cfg camera, 7.2 cm below it, so camera 0 sits in the
+  head. The cockpit camera also leans with acceleration (`cockpit_offset`, in
+  `part_camera_pose`), and the face then filled the view (seen in a bench
+  drive: the driver's face from the front at full throttle).
+- While this car's `_hostCockpitCamera` is camera 0 and is the scene camera
+  (`fullscreen_script_camera`), `pose_driver` shrinks `Bip01 Head` to 1/1000
+  about its joint with `src/resources/character.cpp:character_scale_bone`.
+  Hair and face follow the head bone; neck, body and hands stay. The pose is
+  rebuilt from bind every frame, so the head is back in every other view,
+  for other cars and for the other internal cameras.
+- Not checked: whether the original exe hides the head the same way (the
+  view flag `+0x3C` of #301 is a candidate). The head is also missing from
+  the car's shadow and mirrors while in the cockpit view.
+- In game (`--bench-drive`, ValoCity, Baiern, F1 with #318): before, the face
+  in front of the camera on six shots at full throttle; after, none. F3 back to
+  the chase view runs unchanged.
+
+### Driver hands on the wheel (#302, P2)
+
+- `src/resources/part_runtime.cpp:pose_driver` aims each hand at the rim at
+  ±1 rad from the top (radius = rim radius − 1.5 cm). It used to put the wrist
+  7.8 cm behind that point along the seat's +Z and leave the hand on the
+  forearm's bind orientation.
+- Measured on stock Baiern and Enula, wheel centred and at both locks (bench
+  drive, temporary log; the "palm" is the wrist plus 8 cm along the hand
+  bone's X axis): the wrist target was always reached (reach 44–52 cm for a
+  62 cm arm, no clamping), but the palm sat 2–3 cm inside the rim, 0.5 cm at
+  Enula's right lock. On a raked column the seat's +Z is not the wheel axis,
+  so the wrist landed 4.1 cm (Baiern) or 6.5 cm (Enula) out of the wheel
+  plane instead of 7.8 cm.
+- First fix (06610f4): the wrist on the elbow-to-palm line and the hand's X
+  axis pointed at the rim. The palm point then sat within 1.2 mm of the rim,
+  but in game the fists only rested on the wheel: the stock driver
+  (`humans\drivers\vin.SCX`, 20 bones) has a single `Bip01 L/R Hand` bone and
+  no finger bones; the fist is modelled closed.
+- Grip: in hand space (bind pose, vertices weighted to the hand bone) the
+  fist spans x 1.7–12.1 cm, palm toward -Z, and its grip hole is at about
+  (9.5, 0, -1.2) cm, open along the hand's Y axis (both hands; the left one
+  is mirrored in Y). `pose_driver` now puts that hole on the rim's centreline
+  with Y along the rim, the palm (-Z) toward the wheel's centre and X as
+  close to the forearm as that allows, solves the arm to the resulting wrist
+  (two passes) and turns the hand with two `character_align_axis` calls (X,
+  then Y, which is a twist about X).
+- In game (cockpit view, Baiern, with #318 and #320 applied): the rim now
+  runs into both fists. Not checked: steering locks in game, other drivers
+  (the grip-hole numbers are for `vin.SCX`), P3 (gear-shift gesture).
+
+### Gear-shift gesture (#302, P3)
+
+- Build 606 (read-only disassembly of `StreetLegal_Redline.exe`): the chassis
+  cfg line `shifter x y z [yaw pitch roll]` (handler 0x00444990) stores the
+  lever knob at car+0x9AC. No stock racer has the line (only
+  `cars\traffic\Wreck_data`), so the knob stays at the chassis origin.
+- On a gear change (0x0044D0C0, gear at +0x1DF8, 0 = N, 1-6, 7 = R) the exe
+  plays `sfx_gearchange`, sets two timers to now + 0.3 s and now + 0.7 s,
+  and re-targets the console-side hand (right when the seat x < 0, otherwise
+  left) to the knob plus an H-pattern offset per gear (table 0x0063C6B0,
+  metres): N 0, 1 (-0.05, 0, -0.05), 2 (-0.05, 0, 0.05), 3 (0, 0, -0.05),
+  4 (0, 0, 0.05), 5 (0.05, 0, -0.05), 6 (0.05, 0, 0.05), R (-0.09, 0, -0.05).
+  When both timers have run out, 0x0044D260 puts the hand back on the wheel.
+  The driver setup (0x00449200) reads the bone names `lfbone`, `rfbone`,
+  `lhbone`, `rhbone`, `sthbone` and `gsbone` from the human, with Biped
+  defaults; no stock human overrides them.
+- OpenSLRR: `PartConfig::shifter` (parsed in
+  `src/resources/part_config.cpp:parse_part_config`), and
+  `src/resources/part_runtime.cpp:pose_driver` keeps the last gear per
+  `DriverSeat`. A change starts a 0.7 s gesture counted in physics ticks (a
+  pause holds it; releasing the seat cancels it). The console-side fist moves
+  to the knob over 0.15 s, closes across the car with the palm down, and
+  eases back over the last 0.15 s. The exe switches the hand at once.
+- Tests: `cockpit_needles` case `parse_shifter_line`. In game (bench drive,
+  Baiern, cockpit view): on the 1 to 2 shift the right hand leaves the rim for
+  about 0.7 s and returns. With the knob at the chassis origin it goes below
+  the view, as the stock data implies.
+
 ### File texture replacement and hidden preview viewports
 
 The MWM DriverSelect chain uses ResourceRef.makeTexture, duplicate,
@@ -2124,6 +2231,49 @@ Mechanic.flushInventory and Garage.osdCommand/exit with isolated presentation
 callbacks. The original records zero transferred items at save and three after
 exit; the patched handler records all three before save, with one exit/enter.
 This verifies call ordering, not a complete career file round-trip or gameplay.
+
+## Car Lot save ordering (#315)
+
+MWM saves before entering the Car Lot: in the installed `Garage.class`,
+`GameLogic.autoSaveQuiet()` is at source line 1520 and
+`changeActiveSection(player.carlot)` at line 1521. The decompiled `sources/` Garage
+has them the other way round, and since #235 the shipped class is compiled from
+that order. The save then ran after `CarLot.enter` had parked the current car.
+`GameLogic.save` brackets its car save with `carlot.lockPlayerCar()` and
+`releasePlayerCar()`. The lock found no `player.car` and did nothing, and the
+release handed the parked car back to the player (`setParent(player)`, outside
+the lot's world) and cleared `carSlots[curcar]`. The lot drew every other car,
+and the header still named the current one. Choosing another car then ran
+`saveCar(old_curcar)` on a slot marked empty, which deletes
+`save/temp/PlayerCar<n>` without writing it.
+
+The fix restores the MWM order for this command only, and first flushes the
+mechanic strip (`mechanic.flushInventory()`), so the save still holds what the
+#59/#235 order protects. `Garage.exit` flushes again and finds nothing. This is
+a script fix. The host's `setParent` keeps its meaning: a car parented to a
+`Player` belongs to no world and is not drawn.
+
+Lessons:
+
+- A decompiled `sources/` class is not proof of stock call order. Before
+  reordering or relying on statement order in a patched class, read the
+  installed class's TREE. The source line of each node gives the order
+  (`scripts/patch_garage_save_order.py` shows the TREE layout). MWM saves
+  before the transition for the main menu, Choose Track, both dealers and Car Lot.
+- A blank Car Lot slot whose header still names a car means the car left the
+  lot's world after `CarLot.enter`. Look for a `releasePlayerCar` between enter
+  and the first frame, not for a load failure.
+- It was not caused by the JSON saves (#291): it reproduces at `5b002e4` with an
+  SDAT career, and the stock MWM `Garage.class` shows the car on the current host.
+
+Validation: `shipped_carlot_save_order` in `tests/test_inventory_transition.cpp`
+runs the shipped `osdCommand(CMD_CARLOT)` with the real `GameLogic` transition
+and `Mechanic.flushInventory`: three items are moved before the save, with one
+exit and one enter. The recording probe expects `flush,save,change`. In game
+(OpenSLRR host, scripted `--bench-career ... --auto-cmd 111`, not interactive):
+a one-car JSON career and a four-car SDAT career both show the current car in
+its slot. Before/after captures are in `assets/validation/carlot-current-car/`.
+Picking another car in the lot afterwards was not played through.
 The suite also checks generic interface dispatch; no class-specific VM workaround
 is needed. In-game validation must buy parts, leave via Main Menu, reload and
 check the inventory, then repeat with normal Exit Game saving.
@@ -2159,6 +2309,42 @@ build and driver_selector regression pass; visual in-game validation is pending.
 Check M in Valo: map tiles/roads and available markers, bottom-right driving
 view, then M again; repeat, drive to move the GPS and check garage/catalog
 previews. Evidence is in assets/validation/map-views/{before,after}.txt.
+
+### Cockpit camera as the scene camera (#318)
+
+- Stock `Track.changeCamInternal` (F1) hides the follow camera on the OSD
+  viewport, then calls `car.command("render <viewport> <controller> <cam>")`.
+  The host answers with a `_hostCockpitCamera` per chassis
+  (`src/resources/part_runtime.cpp:part_command`, verb `render`) that has
+  `cockpit_index >= 0`, follows the car and has no parent.
+- The ancestry check above then rejected it: the camera is not under the
+  selected world, so no world camera remained and only the clear colour and
+  the OSD were drawn. `src/resources/gameref.cpp:fullscreen_script_camera` now
+  checks the followed car's ancestry for a cockpit camera, so a car stored in a
+  local world (inventory, preview) still never supplies the scene camera.
+- Tests: `map_views` case `cockpit_camera_is_scene_camera` fails on `main`
+  (84517db) and passes with the fix. In game (`--bench-drive`, ValoCity,
+  Baiern, F1 posted as WM_KEYDOWN): before, an empty world; after, the city
+  seen from the car's first cfg camera.
+
+### OSD plates over preview cameras (#348)
+
+- `src/render/bgfx_osd.cpp` draws OSD plates either on `kOsdUnder` (view 7,
+  below the preview cameras that start at view 8) or on `kOsdView` (70, above
+  everything). A non-fullscreen plate that overlapped a preview used to go
+  under it unconditionally, for the garage parts bar whose slot cameras live
+  in the same viewport (InventoryPanel, priority 15).
+- That put the driving GPS frame (`Player` Osd, priority 18, `frontend:0x0083`)
+  under the navigator map (`Navigator.show`, viewport priority 12): the map
+  covered the bezel's top and left edges and its glass. A plate now goes
+  under a preview only when the preview's viewport priority is >= the plate's
+  layer (its Osd viewport priority). A plate above a lower-priority preview
+  stays on `kOsdView`, even when it is the lowest page-background layer.
+- Catalog (Osd 10 / CarViewport 12) and MultiPlayer (Osd 10 / car viewports
+  12) keep their plates under the cars.
+- Validation: bench drive in ValoCity (Baiern, `--bench-shots`). Before, the
+  map covered the frame; after, the frame is drawn over it. No automated test
+  covers the OSD view choice.
 
 ## Authored map alpha versus colour mixing (#50)
 
@@ -2431,6 +2617,10 @@ Sources and host limits: EXTERNAL_RESEARCH v221 section and SCRIPT_RUNTIME share
 race section. Tests: road_routes, race_brain, traffic_runtime and race_vehicle.
 A real assembled Baiern moves under original Bot.startRace commands in an
 isolated fixture; this is not proof of finished career day/night/ROC sessions.
+A brain outside traffic finds its ground through the car's parents
+(`src/resources/race_brain.cpp:car_ground`): nothing tags a script GroundRef or
+native map with the GroundRef kind at run time, so before #226 day, quick and
+night race opponents and pursuing police got no route and never moved.
 The original issues and #179 were closed for consolidation, not gameplay acceptance;
 #197 retains the remaining work. The [current audit](TRAFFIC_RACE_AUDIT.md)
 records the baseline's missing chassis pairs/player-only movable contacts, the
@@ -2847,7 +3037,8 @@ inventing new Java classes.
     ceiling up to 8.80 m). Exactly the 12-fixture budget.
   - ROC (`misc/garage/g4`, ground 0x2f, stuff 0x51): an open-air scene
     (sand ground, tents, containers, stands); no ceiling fittings and no
-    emissive lamp group. No lights are created there.
+    emissive lamp group. No lights are created there; since #330 the sun
+    lights it (see "ROC garage: tent canvas and sunlight").
   - Dark tubes in g2/g3 (user test at `bc2f8aa`): only
     `include/slrr/legacy_neon.hpp:adapt_legacy_neon_fixtures` turns tube faces
     into `self_illuminated` groups, and it matched only g1's `garazs1.dds`
@@ -2894,7 +3085,9 @@ inventing new Java classes.
   dealer closed). The shipped #59 class does not save there; it saves before the
   transition when they are accepted (`save,change`). The patch saves inside the
   success branch after `changeActiveSection` (`change,save`), so a refused
-  command never saves a garage whose mechanic strip was not flushed. With a local
+  command never saves a garage whose mechanic strip was not flushed. Car Lot
+  is the exception since #315: it flushes the strip, saves, then changes
+  section (`flush,save,change`), see "Car Lot save ordering (#315)". With a local
   `build/garage-59.class` (`git cat-file blob 6171aa2:patch/sl/Scripts/game/Garage.class`) the test also compares all 43 `CMD_*` commands: none
   differs from the #59 class in whether it saves.
   Validated in game by the user in the g1 garage at `df7117f` (20 November
@@ -3139,7 +3332,8 @@ city at night.
   removed part has no record; a torn-off loose part, `detach_panel`, has no
   parent), and lit ones only when `part_lamp_lit` is true for their group.
 - Gates (`part_lamp_lit`, shared with the lamp glass): engine running;
-  headlights in the stock night window (before 06:00, from 21:00, on the
+  headlights before 06:00 and from 17:00 (#313; the stock night starts at
+  21:00, moved earlier because dusk is already dark), on the
   `GameLogic.time` clock); brake lights while `dynamics.drive.brake` >
   0.05 (`kBrakeLampMin`), day or night, never in the showroom preview.
   Wear: condition c = wear × tear (the `getConditionNoAttach` product of
@@ -3935,3 +4129,223 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
   `tests/test_vehicle_dynamics.cpp`, `tests/test_script_lights.cpp` and the
   `scene_shadow_gpu` nitrous case. Compilation and actual gameplay captures
   must still be reported separately; these sources alone are not pixel acceptance.
+
+### Anti-roll bars: stock data behind the catalog branch (#300, PR #307)
+
+Read-only scan of `game/parts.rpk` (RPAK TOC; the 16-byte TOC header sits after
+the dependency table, as in `src/resources/rpk_index.cpp:RpkIndex::parse_rpak`):
+
+- The stock RPK already holds 48 bar resources. They hang under
+  `0x0220 "anti-roll"` → `0x021F "_hidden_"` → `0x0019 "runinggear"`, in nine
+  brand folders `0x00DC..0x00E4` (Baiern … Shimutshibu). The stock Catalog only
+  browses `0xF229` (Suspensions), so the hidden branch never showed. PR #307
+  adds `parts:0x0220r` as a second root of the Running Gear/Suspension page;
+  no RPK byte changes. `0xF232 "anti-roll"` under Shocks is an empty folder.
+- The brand folders live in parts.rpk, so the Catalog's car-pack filter
+  (`id() >> 16` against car packs) never hides them: every car sees all 48 bars,
+  as it already does for the Suspensions brand folders.
+- Each bar RSD is `script parts\running_gear\scripts\sways\swaybar_*.class` +
+  `native part parts\running_gear\scripts\swaybar.cfg`. That CFG has
+  `compatible 0x00004000 1`; `parts:0x4000` is the base class node
+  `Swaybar` (`script java.game.parts.rgearpart.Swaybar`). Car mounts use
+  `attach 0x00044000 1`, dependency 4 = parts.rpk. Fit is therefore generic:
+  any bar fits any 701 (front) / 702 (rear) mount; the front/rear in the name
+  is not a restriction.
+- Only ten stock chassis CFGs author mounts: Duhen ×4 (701+702), Focer ×3
+  (701+702), Einvagen ×3 (701 only). Other cars can buy a bar but cannot fit it.
+- All 48 scripts set `force = 25000`, `damping = 2500`: every bar is
+  functionally identical. Stock data also gives the six Ishima bars and the
+  Duhen 1.8/2.0/2.2 bars `name_prefix = "Duhen SunStrip 1.5 DVC"`, which the
+  patched `Swaybar.calcStuffs` now shows in their names.
+- The Java `updatevariables` still has its `addrollbar` commands commented
+  out; the host reads `force`/`damping` from the installed part instead
+  (`src/resources/part_runtime.cpp:configure_anti_roll`).
+- Every stock racer script lists its bars in commented-out
+  `stock_parts_list_RGear_sways` lines (Focer RC 300 also `stg_1_`). `Chassis`
+  already pushes that list with the other running-gear lists, and
+  `src/resources/part_runtime.cpp:add_part` destroys a part no slot accepts, so
+  a listed bar without a mount adds nothing. #311 adds the missing mounts to
+  the 17 other racer chassis CFGs (Einvagen gets 702 only) and uncomments all
+  24 lists. Stock lists that named the wrong bar are corrected: Duhen 1.5 rear
+  `0x41FF` to `0x017C`, Ishima Enula WRZ `0x41FF` to `0x0195/0x0196` (stage 1
+  `0x0197/0x0198`), WR SuperTurizmo `0x41FF` to `0x0197/0x0198`.
+- **The installed MWM 2.2.1 car classes are not built from `sources/`.** MWM
+  added stock neons to the NOS branches: five `addPart( parts:0xD2xxr, "<color>" )`
+  after the canisters of each branch (`parts:0xD273` Red, `0xD285` Green,
+  `0xD288` Blue, `0xD291` Cyan, `0xD294` Aqua, `0xD279` Pink, `0xD276` Purple,
+  `0xD282` Orange, `0xD267` Yellow, `0xD270` White; neon RSDs under
+  `parts:0xF24B`). The count per branch varies (5, 7 or 8). The SuperDuty top
+  branch replaces the four canisters with two bottles (`parts:0xD215` Botle,
+  `0xD339` Double Botle), ten neons and `cars.racers.SuperDuty:0xD1` rollbar
+  (the RID form must match the `stg_` list one exactly, or the constant pool
+  differs). No MWM car
+  source ships, and recompiling `sources/` would drop them. The bundled compiler
+  reproduces original classes byte for byte (only header bytes 9-11 differ;
+  source line numbers are encoded in the tree), so a reconstruction is proven
+  by an identical output. The reconstructed sources are in
+  `patch/cars/racers/*_data/scripts/src/`; see SCRIPT_COMPILER.md.
+- **The local `game/` may hold an installed patch.** On 2026-11-22 the patch
+  (sl, parts and ten car classes) was copied into `game/` for in-game tests, so
+  tests that expect stock classes failed there. To test against stock, build a
+  hard-linked view whose changed files come from the untouched MWM 2.2.1 copy
+  and run the test executable from it; `tests/test_swaybars.cpp` builds its
+  patched game view the same way (patched files replace their link, never
+  written through).
+
+### Dashboard pins: CFG `cockpit_rpm` / `cockpit_speed` (#301)
+
+- Format, from the MWM executable (SHA-256 `b284a7a5…2b03`, read-only
+  disassembly): `cockpit_rpm` (0x00444B60) and `cockpit_speed` (0x00444CB0)
+  scan `x y z yaw pitch roll render offset factor low high` with
+  `%f %f %f %f %f %f %d %f %f %f %f`. The game's own scanner (0x00553890)
+  reads `0x` hex for `%d`, so stock ids parse. Defaults (constructor
+  0x004467D1): offset 2.2, factor -0.0005 rpm / -0.02 speed, low -2.2,
+  high 2.2. The render is resolved as type 14 against the owning pack.
+- Update (0x0043C0A0, mode 1): `angle = value * factor + offset`; below `low`
+  it becomes `low`, otherwise above `high` it becomes `high` (no swap). The
+  pin is posed at `(yaw, pitch, roll + angle)`, which with
+  `src/resources/part_config.cpp:part_pose_matrix` (yaw, pitch, then roll) is
+  a turn about the posed local Z axis. Values (0x0045283C): rpm is
+  `|engine rad/s| * 9.5493` (0x005F0C14), speed `|velocity| * 3.6`
+  (0x005F0C04), the same sources as `osd_rpmpin` / `osd_spdpin`.
+- The modding tool's `needles.ts` description (field order, defaults, Z spin,
+  km/h) matches the binary. Its "SLRR units, pi = 3.147" remark has no
+  counterpart in the engine: the angle goes straight into the roll in radians.
+- Stock data: 17 racer cfgs in `patch/` and 24 in `game/` carry both lines,
+  all with pin `0x00020037` = `cars:0x37` (`cars\meshes\pin_small.SCX`).
+  Enula, Nonus, SuperDuty pitch their pins; Einvagen rests at its `high` 1.5
+  because its offset 2.2 is above it.
+- OpenSLRR: `include/slrr/part_config.hpp:CockpitNeedle`, parsed in
+  `src/resources/part_config.cpp:parse_part_config` (a line without pose and
+  render, or with a bad number, goes to `unknown` and does not invalidate the
+  cfg), angle in `src/resources/part_config.cpp:cockpit_needle_angle`. The
+  chassis (`native_kind == "car"`) gets one RenderRef child per defined pin in
+  `src/resources/part_runtime.cpp:render_part`, kept in `Record::needles`, not
+  in `renders` (deformation, lamp snapping and HUD bounds must not see a part
+  that turns). `src/resources/part_runtime.cpp:pose_cockpit_needles` sets
+  their matrix every `part_physics_advance` after the steering column;
+  `part_destroy` removes them and `part_visit_gc_roots` marks them.
+- Build 606 only updates the pins in a view whose flag `+0x3C` is set and
+  destroys them otherwise (0x00452836, view record `car + idx * 0x2B8 +
+  0x11C`); the flag is not decoded (probably the internal camera). OpenSLRR
+  keeps them on every car with the lines, in every view.
+- Tests: `tests/test_cockpit_needles.cpp` (suite `cockpit_needles`): parse
+  defaults and limits, stock Baiern (flat) and Enula (pitched) at rest and
+  driving, pivot and axis fixed, pins removed with the car.
+- Pin material: `cars\meshes\pin_small.SCX` is SCX3 with one group of flags
+  `0x101` (SCX3 blend) on `cars	extures\Pin.dds`, a DXT5 card that is clear
+  except for the needle. The vehicle path
+  (`src/render/bgfx_lighting.cpp:draw_instance`) only sent the SCX4
+  transparent bit `0x40000000` and flag-256 flames to its blended pass, so the
+  card was drawn opaque: a black square behind each needle. SCX3 blend now
+  blends on any vehicle mesh without `light_flags`. In the MWM `cars/` and
+  `parts/`, the other SCX3 blend groups are lamp glows (`lampglow.SCX`,
+  Focer and Enula light meshes), drawn with `light_flags`, so unchanged.
+- In game (`--bench-drive`, ValoCity, Baiern, F1 with the #318 fix): both pins
+  show on the dashboard dials at rest, thin needles with no card. The chase
+  view and the overlay pins are unchanged.
+
+### Pointer gestures and race cameras: review notes on PR #308 (#295-#299)
+
+Verified on the PR branch (f422ebb), by reading the code; not run in game.
+
+- The loading dialog's click/Enter to continue does not use window messages:
+  `src/boot/mainloop.cpp:mainloop_frame` polls `GetAsyncKeyState`
+  (VK_LBUTTON, RETURN, SPACE, ESCAPE) with its own armed/held edge. Gating
+  `WM_LBUTTONDOWN` under the plate therefore cannot break the skip.
+- Stock `ControlSet.java` binds look keys only in group 3 (`CAMTURNSET`):
+  arrows at 0.005 (yaw) and 0.003 (pitch), the same constants the host had
+  hard-coded. No group binds axes 7/8 on a gamepad, so routing the look
+  through `host_input_camera_axis(controller, axis)` keeps stock speed.
+- `angle offset gain rate` is used beyond ROC: `City.java` night races
+  (start orbit around the bot, finish orbit) call `angle 0 4.0 0.7853` then
+  `dist 5.5 6.5`, and `angle 0 0` with `dist 8.0 16.0` at the start. These
+  paths were not run in game by the PR.
+- A held follow camera (`follow_hold`, set by `setMatrix` on the bound
+  follow camera or by a positive `angle` gain) is clamped to the `dist`
+  range every frame and released only when gain is 0 and the eye is more
+  than `dist max + 0.5` from the car, or on a right-drag. A staging point
+  beyond `dist max` is pulled in at once; City day races stage at about
+  7.2 m with the default `dist 1 10`, so they hold.
+- `zoom` keeps `aov_goal`; the camera constructor (`natives_osd.cpp`) and
+  the cockpit camera rebind (`part_runtime.cpp`) set `half_aov` directly but
+  not `aov_goal`, so a reused camera eases back to an older zoom goal.
+- `host_input_cancel_pointer_gestures` turns a held world button into a
+  `world_release`, which `dispatch_world_pointer` emits as cursor event 2
+  in the frame after the boundary, without a matching press in that scene.
+
+### Doors and hoods open with build 606's spring (#327, from #204)
+
+- Before: a script open/close (`Part.flap`, `flap_toggle`) drove the hinge
+  with a critically damped servo (9 rad/s): the panel glided to its stop like
+  an interpolation. In the original game it visibly shakes.
+- Build 606 (read-only disassembly): `flap_toggle` (0x00474B00, switch on the
+  command) only sets flag 2 (open) or 4 (close) at joint+0x88, bit 1 being
+  the latch (0x0043F280 releases it). The flap solver (0x0043F850; the drive
+  at 0x0044030D) adds `gain * (target - edge) * dt` to the free edge's
+  velocity, with no damping term there: open targets the edge at
+  `0.05 lo + 0.95 hi` of the CFG travel and close the `lo` pose, both with
+  gain 60 (0x42700000); otherwise the gain is a per-joint value at +0x34,
+  used only above 0.1. Gravity acts on the same edge, so a heavy hood sags
+  about 9.81 / 60 m below the target. Not decoded: the term scaled by
+  joint+0x7C at 0x0043FF05 (likely a damping), and the CFG field order of
+  +0x24 / +0x28 / +0x34.
+- OpenSLRR (`src/physics/flap_hinge.cpp:flap_step`, `FlapTuning`): the open
+  hold is `script_spring * (0.95 upper - angle) - script_damping * rate`
+  (60 s⁻², 2.3 s⁻¹, a host damping ratio near 0.15 in place of the undecoded
+  term), the close drive the same spring aimed 0.35 rad through the closed
+  pose. The opening counts as finished once the panel has been free for 1 s
+  and moves under 0.05 rad/s; the weaker door-check limit applies only then.
+- Simulated (Baiern door, 1.134 rad travel): it reaches the stop at 0.25 s,
+  falls back to 0.95, returns to the stop at 0.8 s and rests near 1.05-1.08
+  by about 1.2 s. The Baiern hood rests near 0.66 of its 0.873 travel. A close
+  latches in 0.2 s. Tests: `tests/test_flap_hinge.cpp` (12/12), including the
+  overshoot onto the stop and the fall back below the target.
+
+### ROC garage: tent canvas and sunlight (#330)
+
+- Canvas. The ROC stuff mesh (`misc/garage/g4/roc_g_egyeb.SCX`, stuff 0x51)
+  is a script `RenderRef`, so `instance.cull_backfaces` is false and the map
+  rules for authored SCX4 coverage do not apply. That path cut every SCX4
+  section at half alpha. The canvas section `satorteto` is ColorMixTex with
+  specular (type 7, flags 0, diffuse 0.70/0.06/0.06); its
+  `maps/textures/satortetoanyag.dds` (DXT5) has alpha 0.13-0.33 on the canvas
+  and 255 on the letters, so only the letters stayed. Now
+  `include/slrr/scx_mesh.hpp:scx_legacy_cutout` keeps the half-alpha cutout
+  for plain Tex sections and drops it for ColorMixTex families
+  (`scx_color_mix_function`, the ten kinds the vehicle path already treated as
+  colour mix) unless the alpha-test flag 0x20000000 is set. The canvas is
+  drawn opaque with its texture colour, like the map object
+  `objects/meshes/sator/sator.scx` (same section, flags 0x80000000).
+- Why not authored coverage for all script RenderRefs: a runtime log of the
+  SCX4 sections drawn by script RenderRefs with neither coverage flag (G1,
+  G2 club garage, ROC, city) found 38 sections; only two have texels under
+  half alpha: the canvas, and a plain Tex brace in the ROC (`1 - Default`,
+  `tabmatte1_alphas.dds`, 70 % transparent, a diagonal strip) that needs the
+  cutout. ColorMixTex colour mixing (diffuse red under the canvas alpha) is
+  not applied to script RenderRefs or to type 7 map sections; the stock look of
+  that red is unverified.
+- Sunlight. Stock `Garage` sets `internalScene = 1` in its constructor, so
+  `Scene.addSceneElements` creates no sun, and it instances the
+  `misc.garage:0x001D` neon, which the host turns into a point light 3.3 m above
+  the map origin (`update_local_light`). In the open-air ROC that lit almost
+  nothing. Worse, a valid neon point record puts `draw_instance` in point-light
+  mode (`u_sunDir.w = -1`), so a sun alone would not have lit it either. The
+  patched `Garage.enter` sets `internalScene = 0` when `roc` is set (1
+  otherwise) before `addSceneElements`, and creates no neon in the ROC
+  (`exit` destroys it only if present). `exit` and the one-second `refresh`
+  reuse the value set by `enter`. Effects in the ROC: the day-cycle sun,
+  procedural sky, sun shadows and the time-of-day fog and envmap of
+  `Scene.addSceneElements` (the envmap replaces `garageEnvMaps[3]` at the first
+  refresh). At night it is as dark as an outdoor map, with no lamp.
+- Validation: `map_alpha` 5/5 (new `roc_tent_canvas_is_not_cut`),
+  `inventory_transition` 6/6 and `script_lights` 5/5 with the shipped class.
+  In game (`--bench-career ... --auto-cmd 128`, a temporary env hook setting
+  the hour and taking renderer screenshots, removed): canvas and valance
+  visible, sunlit sand and shadows at 13:00; club garage unchanged;
+  `osdCommand(CMD_ROCINFO)` leaves the ROC garage without error. At 20:00 the
+  lower car body looks lit from below; not investigated, it may be the general
+  dusk sun or reflection rather than this change.
+- Rebuild of the shipped class: `build/issue315-compile-root` (a game copy)
+  reproduced the previous `patch/sl/Scripts/game/Garage.class` byte for byte
+  before the edit; see SCRIPT_COMPILER.md "Shipped patch classes (#235)".

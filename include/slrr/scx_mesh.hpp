@@ -72,6 +72,31 @@ inline ScxSurface scx_surface(int version, const ScxGroup& group) {
   return surface;
 }
 
+// SCX4 ColorMixTex functions (plain, specular, spheremap and their
+// variants): texture alpha weighs the texture against COLOR_DIFFUSE. It is a
+// colour weight, not coverage, unless the alpha-test flag says otherwise.
+inline bool scx_color_mix_function(uint32_t type) {
+  switch (type) {
+    case 0x03u: case 0x07u: case 0x0bu: case 0x0fu: case 0x13u:
+    case 0x17u: case 0x1bu: case 0x1fu: case 0x23u: case 0x27u:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Alpha testing for meshes drawn without authored SCX4 coverage (script
+// RenderRefs such as garage stuff; map placements use scx_surface alone).
+// Plain Tex sections keep the legacy half-alpha cutout, which some rely on
+// without the alpha-test flag. A ColorMixTex section's alpha is a colour
+// weight and is never a hole unless the flag is set (#330, ROC tent canvas).
+inline bool scx_legacy_cutout(int version, const ScxGroup* group, uint32_t flags) {
+  if (version == 4)
+    return !group || scx_surface(version, *group).cutout ||
+           !scx_color_mix_function(group->material_type);
+  return version != 3 || (flags & 1u);
+}
+
 // Blended SCX4 surfaces still carry material opacity. A deliberately absent
 // diffuse map uses COLOR_DIFFUSE, not an opaque white fallback. Textured Tex
 // families may have black COLOR_DIFFUSE and must keep their sampled RGB.

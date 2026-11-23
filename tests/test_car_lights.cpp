@@ -258,6 +258,16 @@ void stock_baiern_lights() {
               count(lit, CarLightKind::Brake));
   SLRR_REQUIRE(count(day, CarLightKind::Headlight) == 0);
   SLRR_REQUIRE(count(lit, CarLightKind::Headlight) == 2 && count(lit, CarLightKind::Brake) == 0);
+  // #313: headlights from 17:00 to 06:00.
+  set_time(f.vm, 17 * 3600.f - 1);
+  SLRR_REQUIRE(count(part_car_lights(true), CarLightKind::Headlight) == 0);
+  set_time(f.vm, 17 * 3600.f);
+  SLRR_REQUIRE(count(part_car_lights(true), CarLightKind::Headlight) == 2);
+  set_time(f.vm, 6 * 3600.f - 1);
+  SLRR_REQUIRE(count(part_car_lights(true), CarLightKind::Headlight) == 2);
+  set_time(f.vm, 6 * 3600.f);
+  SLRR_REQUIRE(count(part_car_lights(true), CarLightKind::Headlight) == 0);
+  set_time(f.vm, 23 * 3600.f);
   // Braking: the brake light parts light up (day or night), and their
   // lamp glass with them.
   race_brain_command(f.packs, &brain, "AI_stop");

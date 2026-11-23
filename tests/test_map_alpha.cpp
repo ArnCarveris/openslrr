@@ -80,4 +80,36 @@ void storefront_material_opacity(){
  SLRR_REQUIRE(tint[0]==.5f && tint[3]==.8f);
  std::puts("PASS 5 real storefront glasses: material opacity, untextured tint and black-diffuse textured RGB; opaque/legacy unchanged");
 }
-int main(){const standalone::Test tests[]={cutout_assets,dealer_rail_alpha,opaque_paint_and_legacy,storefront_material_opacity};return standalone::run("map_alpha",tests);}
+// #330: the ROC garage stuff is a script RenderRef, drawn with the legacy
+// cutout. Its tent canvas is ColorMixTex (type 7, no coverage flag) with
+// texture alpha 0.13-0.33, so the half-alpha cutout dropped the canvas.
+void roc_tent_canvas_is_not_cut(){
+ const auto mesh=load_scx_geometry("game/misc/garage/g4/roc_g_egyeb.SCX");
+ SLRR_REQUIRE(mesh.info.ok && mesh.info.version==4);
+ size_t canvas=0,plain=0;
+ for(const auto& group:mesh.groups){
+  const auto surface=scx_surface(4,group);
+  if(group.name=="satorteto"){
+   SLRR_REQUIRE(group.material_type==7 && !surface.blend && !surface.cutout);
+   SLRR_REQUIRE(scx_color_mix_function(group.material_type));
+   SLRR_REQUIRE(!scx_legacy_cutout(4,&group,group.material_flags));++canvas;
+  }else if(group.material_type==0 && !surface.blend && !surface.cutout){
+   // Plain Tex sections such as the tabmatte1_alphas brace keep the cutout.
+   SLRR_REQUIRE(scx_legacy_cutout(4,&group,group.material_flags));++plain;
+  }
+ }
+ SLRR_REQUIRE(canvas==1 && plain>0);
+ // The map tent object has the same canvas section.
+ const auto object=load_scx_geometry("game/objects/meshes/sator/sator.scx");
+ bool found=false;
+ for(const auto& group:object.groups)
+  if(group.name=="satorteto"){SLRR_REQUIRE(group.material_type==7 && !scx_surface(4,group).cutout);found=true;}
+ SLRR_REQUIRE(found);
+ ScxGroup flagged;flagged.material_type=7;flagged.material_flags=0xa0000000u;
+ SLRR_REQUIRE(scx_legacy_cutout(4,&flagged,flagged.material_flags));
+ SLRR_REQUIRE(scx_legacy_cutout(4,nullptr,0) && !scx_legacy_cutout(3,nullptr,0) && scx_legacy_cutout(3,nullptr,1));
+ for(uint32_t kind:{0x03u,0x07u,0x0bu,0x0fu,0x13u,0x17u,0x1bu,0x1fu,0x23u,0x27u})SLRR_REQUIRE(scx_color_mix_function(kind));
+ for(uint32_t kind:{0x00u,0x04u,0x0cu,0x30u,0x31u,0x33u})SLRR_REQUIRE(!scx_color_mix_function(kind));
+ std::printf("PASS ROC tent canvas (ColorMixTex) is not cut; %zu plain Tex sections keep the legacy cutout\n",plain);
+}
+int main(){const standalone::Test tests[]={cutout_assets,dealer_rail_alpha,opaque_paint_and_legacy,storefront_material_opacity,roc_tent_canvas_is_not_cut};return standalone::run("map_alpha",tests);}

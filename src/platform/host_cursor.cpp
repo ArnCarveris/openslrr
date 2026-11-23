@@ -23,6 +23,7 @@ int32_t g_shape = 0;
 char g_letter = 'J';
 char g_saved_letter = 'J';
 bool g_camera_drag = false;
+bool g_visible = true;
 
 // Soft PE cursor_shape_of @ jump table 0x4b83d4.
 int32_t cursor_shape_of(char c) {
@@ -123,6 +124,7 @@ void host_cursor_set_search_roots(const std::string& game_root) {
   g_letter = 'J';
   g_saved_letter = 'J';
   g_camera_drag = false;
+  g_visible = true;
 #endif
 }
 
@@ -141,7 +143,7 @@ void host_cursor_set_pointer(char letter) {
   if (!g_camera_drag) g_saved_letter = letter;
   g_shape = cursor_shape_of(letter);
   HCURSOR c = shape_handle(g_shape);
-  SetCursor(c);
+  if (g_visible) SetCursor(c);
   std::printf("[cursor] pointer='%c' shape=%d file=%d.cur\n", g_letter, g_shape,
               g_shape + 2);
 }
@@ -160,6 +162,23 @@ void host_cursor_end_camera_drag() {
   g_camera_drag = false;
   host_cursor_set_pointer(g_saved_letter ? g_saved_letter : 'J');
 }
+
+void host_cursor_set_visible(bool visible) {
+  if (g_visible == visible) return;
+  g_visible = visible;
+  std::printf("[cursor] %s\n", visible ? "shown" : "hidden");
+  // WM_SETCURSOR only comes with the next move. Apply it now when the
+  // pointer is over this process's client area.
+  POINT at;
+  HWND under = GetCursorPos(&at) ? WindowFromPoint(at) : nullptr;
+  DWORD owner = 0;
+  if (under) GetWindowThreadProcessId(under, &owner);
+  if (owner == GetCurrentProcessId() &&
+      SendMessageA(under, WM_NCHITTEST, 0, MAKELPARAM(at.x, at.y)) == HTCLIENT)
+    SetCursor(visible ? shape_handle(g_shape) : nullptr);
+}
+
+bool host_cursor_visible() { return g_visible; }
 #endif
 
 }  // namespace slrr

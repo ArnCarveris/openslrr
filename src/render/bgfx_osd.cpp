@@ -486,7 +486,10 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       return;
     const auto& path = mesh.textures.front();
     const auto texture = tex_for_osd_icon(path);
-    if (texture.idx == white_tex_.idx) return;
+    // Build 606 binds a 4x4 0x80808080 texture for a texture it could not
+    // load (0x4B9788, SetTexture wrapper 0x4C0180): the item still draws,
+    // as half-transparent grey times its colour.
+    const bool missing = texture.idx == white_tex_.idx;
     bgfx::TransientVertexBuffer vb;
     bgfx::TransientIndexBuffer ib;
     bgfx::allocTransientVertexBuffer(&vb, static_cast<uint32_t>(count), layout_);
@@ -509,11 +512,12 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     for (char& c : extension)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const bool premultiplied = !opaque && extension != ".dds";
-    const float opacity = float(color >> 24) / 255.f;
+    const float opacity = float(color >> 24) / 255.f * (missing ? .5f : 1.f);
     const float rgb_scale = premultiplied ? opacity / 255.f : 1.f / 255.f;
-    const float tint[] = {float((color >> 16) & 255) * rgb_scale,
-                          float((color >> 8) & 255) * rgb_scale,
-                          float(color & 255) * rgb_scale, opacity};
+    const float grey = missing ? .5f : 1.f;
+    const float tint[] = {float((color >> 16) & 255) * rgb_scale * grey,
+                          float((color >> 8) & 255) * rgb_scale * grey,
+                          float(color & 255) * rgb_scale * grey, opacity};
     const float alpha[] = {0.f, 1.f, opaque ? 0.f : 1.f,
                            color_mix && premultiplied ? 2.f : 0.f};
     enc()->setTransform(identity);
@@ -569,31 +573,15 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     const HudElement& item = override.defined ? override : stock[i];
     if (!item.resource || (slot == HudSlot::Handbrake && !hud.handbrake)) continue;
 
-    std::shared_ptr<const ScxGeometry> resource;
-    const ScxGeometry *mesh = nullptr;
-    bool opaque = false;
-    if (hud.preview_directory && override.defined) {
-      // The loose OSDPACK fixture has no RPK entries for its two custom
-      // render IDs. Resolve those from the SCX and PNG beside cfg.txt.
-      const bool font = item.resource == 0x0002baa4 && slot == HudSlot::Rpm;
-      const bool pin = item.resource == 0x0002baa5 && slot == HudSlot::RpmPin;
-      if (font || pin) {
-        opaque = pin; // The loose fixture's fff.PNG has zero alpha everywhere.
-        const std::filesystem::path dir(*hud.preview_directory);
-        const auto path = (dir / "meshes" / (font ? "font.scx" : "osdpin.SCX")).string();
-        auto [entry, fresh] = hud_preview_meshes_.try_emplace(path);
-        if (fresh) {
-          entry->second = load_scx_geometry(path);
-          entry->second.textures = {(dir / "textures" / (font ? "font.png" : "fff.PNG")).string()};
-        }
-        mesh = &entry->second;
-      } else if ((item.resource >> 16) == 2) {
-        resource = scene_instances_geometry(cars_resource(item.resource & 0xffff));
-      }
-    } else {
-      resource = scene_instances_geometry(item.resource);
-    }
-    if (!mesh) mesh = resource.get();
+    // A loose --vehicle-osd cfg has no owning RPK. Car packs list cars.rpk as
+    // dependency slot 2, so qualify those ids exactly as an installed car cfg
+    // would; custom renders then come from the installed (pack) cars.rpk.
+    const uint32_t render = hud.preview_directory && override.defined
+        ? ((item.resource >> 16) == 2 ? cars_resource(item.resource & 0xffff) : 0)
+        : item.resource;
+    if (!render) continue;
+    const std::shared_ptr<const ScxGeometry> resource = scene_instances_geometry(render);
+    const ScxGeometry *mesh = resource.get();
     if (!mesh || !mesh->info.ok) continue;
     if (slot == HudSlot::Damage || slot == HudSlot::Nitro || slot == HudSlot::Turbo) {
       const bool damage = slot == HudSlot::Damage;
@@ -670,8 +658,11 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       }
       continue;
     }
-    if (slot == HudSlot::Rpm || slot == HudSlot::Speed ||
-        slot == HudSlot::Gear || slot == HudSlot::Mileage) {
+    // Only a font render (RSD flags bit 4) spells the readout; any other render
+    // on these slots falls through and is drawn whole like osd_gauge.
+    if ((slot == HudSlot::Rpm || slot == HudSlot::Speed ||
+         slot == HudSlot::Gear || slot == HudSlot::Mileage) &&
+        hud_render_draws_text(rpk_payload_prop(render, "flags"))) {
       char buffer[128]{};
       if (slot == HudSlot::Gear) {
         const std::string labels = item.format.empty() ? "N123456R" : item.format;
@@ -685,12 +676,19 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       }
       float x = item.position[0];
       float y = override.defined ? item.position[1] : stock_y(i);
-      if (std::abs(x) > 1.f || item.position[2] != 0.f) {
+      // Build 606 draws CFG font readouts in screen space (0x526D10 ->
+      // 0x4F4D80 -> 0x4F4DE0): the glyph cell's top-left sits at NDC (x, y),
+      // y down, glyph c is SCX quad c*4 at 1 pixel per 10 SCX units at any
+      // resolution, and the pen advances by the glyph width only. The stock
+      // table keeps its own 16:9 calibration.
+      if (!override.defined && (std::abs(x) > 1.f || item.position[2] != 0.f)) {
         x *= .42f;
         y *= -.82f;
       }
-      const float sy = .00024f * (override.defined ? 1.f : stock_scale);
-      const float sx = sy * pixel_aspect;
+      const float sy = override.defined ? .2f / static_cast<float>(height_)
+                                        : .00024f * stock_scale;
+      const float sx = override.defined ? .2f / static_cast<float>(width_)
+                                        : sy * pixel_aspect;
       for (const unsigned char ch : std::string(buffer)) {
         const size_t start = size_t(ch) * 4;
         if ((start + 4) * 3 > mesh->positions.size()) continue;
@@ -698,7 +696,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         const float w = p[3] - p[0], h = p[7] - p[1];
         if (w <= 0 || h <= 0 || w > 2000 || h > 2000) continue;
         draw(*mesh, start, 4, quad, 6, x, y, sx, sy, 0, p[0], p[1], item.color);
-        x += (w + 20.f) * sx;
+        x += (override.defined ? w : w + 20.f) * sx;
       }
       continue;
     }
@@ -713,14 +711,19 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     const size_t count = mesh->positions.size() / 3;
     if (count > 65535) continue;
     const std::vector<uint16_t> indices(mesh->indices.begin(), mesh->indices.end());
-    const float yscale = override.defined ? -.82f : -.406f * stock_scale;
+    // CFG mesh items sit in the Osd scene: camera at z = 5.48 (Osd.CAM_OFFSET),
+    // 30 deg vertical view, so the z = 0 plane spans +-1.469 (Osd.SCALE_3D)
+    // vertically and +-1.469*aspect horizontally; items nearer (z > 0) grow.
+    const float depth = override.defined
+        ? 5.48f / std::max(5.48f - item.position[2], .1f) : 1.f;
+    const float yscale = override.defined ? -depth / 1.469f : -.406f * stock_scale;
     const float xscale = -yscale * pixel_aspect;
     const float x = override.defined ? item.position[0] * xscale : item.position[0];
     const float y = override.defined ? item.position[1] * yscale : stock_y(i);
     draw(*mesh, 0, count, indices.data(), indices.size(),
          x, y,
          xscale * mesh->position_scale, yscale * mesh->position_scale,
-         angle, 0, 0, item.color, opaque,
+         angle, 0, 0, item.color, false,
          slot == HudSlot::Gauge && !override.defined && !mesh->groups.empty() &&
              mesh->groups.front().material_type == 3u);
   }
@@ -825,20 +828,27 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     // above the slot cameras and the cans disappear. A plate that only covers
     // a preview slot stays under that camera. A fullscreen plate still covers
     // the preview, so a dialog does not open a hole onto the car.
-    auto plate_behind_preview = [&](const OsdWidget& w) {
-      if (w.half_w > 0.9f && w.half_h > 0.9f) return false;
+    // Viewport priority still decides between the plate and the camera:
+    // the GPS frame (Player Osd, priority 18) must cover the navigator
+    // (viewport 12), while the slot cameras share the parts bar's viewport.
+    enum class PreviewOverlap { None, Behind, Above };
+    auto plate_preview_overlap = [&](const OsdWidget& w) {
+      if (w.half_w > 0.9f && w.half_h > 0.9f) return PreviewOverlap::None;
       const float left = (w.x - w.half_w + 1.f) * 0.5f;
       const float top = (w.y - w.half_h + 1.f) * 0.5f;
       const float right = (w.x + w.half_w + 1.f) * 0.5f;
       const float bot = (w.y + w.half_h + 1.f) * 0.5f;
+      PreviewOverlap overlap = PreviewOverlap::None;
       for (const auto& p : previews_) {
         const float x0 = std::max(left, p.viewport.vp_x);
         const float y0 = std::max(top, p.viewport.vp_y);
         const float x1 = std::min(right, p.viewport.vp_x + p.viewport.vp_w);
         const float y1 = std::min(bot, p.viewport.vp_y + p.viewport.vp_h);
-        if (x1 - x0 > 0.01f && y1 - y0 > 0.01f) return true;
+        if (x1 - x0 <= 0.01f || y1 - y0 <= 0.01f) continue;
+        if (p.viewport.vp_pri >= w.layer) return PreviewOverlap::Behind;
+        overlap = PreviewOverlap::Above;
       }
-      return false;
+      return overlap;
     };
 
     struct IconDraw { const OsdWidget* widget; bool glow, color_chip; };
@@ -892,8 +902,11 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
           continue;
         // A modal dialog (BUY PART) overlaps the catalog previews. Sending
         // that plate to view 2 put it under the parts and under their names.
+        const PreviewOverlap overlap = plate_preview_overlap(w);
         osd_view_ = (!osd_owner_modal(w.owner) &&
-                     (layer == page_background_layer || plate_behind_preview(w)))
+                     overlap != PreviewOverlap::Above &&
+                     (layer == page_background_layer ||
+                      overlap == PreviewOverlap::Behind))
                         ? kOsdUnder
                         : kOsdView;
         draw_osd_quad(w);

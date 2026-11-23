@@ -127,10 +127,6 @@ void host_input_poll_keys() {
   if (!focused) host_input_clear_keys();
   frame_pressed = pressed;
   pressed.fill(false);
-  in.keys_left = keys[0xcb];
-  in.keys_right = keys[0xcd];
-  in.keys_up = keys[0xc8];
-  in.keys_down = keys[0xd0];
   in.keys_pgup = keys[0xc9];
   in.keys_pgdn = keys[0xd1];
 
@@ -197,13 +193,37 @@ int host_input_active_axis(int device) {
   return -1;
 }
 
-float host_input_camera_axis(int axis) {
+float host_input_camera_axis(const Object* controller, int axis) {
   const auto& in = g_input;
   switch (axis) {
-    case 7: return in.look_yaw + (float(in.keys_left) - float(in.keys_right)) * .005f;
-    case 8: return in.look_pitch + (float(in.keys_up) - float(in.keys_down)) * .003f;
+    // Arrow-key look is ControlSet CAMTURNSET (group 3), read through the
+    // player controller, so it stops when a script resets to DRIVERSET
+    // (garage engine test). Mouse look bindings are the host drag instead.
+    case 7:
+    case 8:
+      if (!controller || !controller->input) return 0.f;
+      return input_mapping::mapped_axis(
+          *controller->input, axis,
+          [](int device, int physical) {
+            return device == 1 ? 0.f : host_input_physical_axis(device, physical);
+          },
+          pad, physical_available);
     case 10: return in.look_zoom + (float(in.keys_pgup) - float(in.keys_pgdn)) * .010f;
     default: return 0.f;
+  }
+}
+
+void host_input_cancel_pointer_gestures() {
+  auto& in = g_input;
+  ++in.pointer_epoch;
+#ifdef _WIN32
+  in.pointer_cancel_ms = GetTickCount();
+#endif
+  in.part_click = false;
+  in.world_press = false;
+  if (in.world_button) {
+    in.world_button = false;
+    in.world_release = true;
   }
 }
 

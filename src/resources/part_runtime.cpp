@@ -17,6 +17,7 @@
 #include "slrr/jvm.hpp"
 #include "slrr/light_resource.hpp"
 #include "slrr/rpk_index.hpp"
+#include "slrr/scene_ambience.hpp"
 #include "slrr/scene_instances.hpp"
 #include "slrr/scene_collision.hpp"
 #include "slrr/scx_mesh.hpp"
@@ -91,6 +92,13 @@ struct Record {
     double spin = 0;
   };
   std::vector<InlineWheel> inline_wheels;
+  // Chassis `cockpit_rpm` / `cockpit_speed` pins (#301). Not in `renders`:
+  // they turn every frame, so deformation, lamp snapping and bounds skip them.
+  struct Needle {
+    Object *node = nullptr;
+    CockpitGauge gauge = CockpitGauge::Rpm;
+  };
+  std::vector<Needle> needles;
   std::unique_ptr<physics::DeformationCage> deformation;
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
@@ -224,6 +232,12 @@ struct Record {
   physics::Quaternion render_from_orientation;
   PartMatrix render_parent{};
   std::array<Object *, 3> sfx{};
+  // Host engine loop of a native (script-less) car: one voice per diesel
+  // sample, cross-faded by a speed-modelled RPM. See update_traffic_engine_audio.
+  std::array<int32_t, 3> traffic_voice{};
+  int32_t radio_voice = 0; // CFG `sfx_loop` of a native car (its radio)
+  float traffic_rpm = 0;
+  uint32_t traffic_audio_epoch = 0;
 };
 std::unordered_map<Object *, std::vector<SfxItem>> sfx_items;
 std::unordered_map<Object *, Record> records;
@@ -272,6 +286,10 @@ struct DriverSeat {
   // Other copies of the same driver (the bind-pose Mitch parented to the map)
   // are hidden while this seat is active, then shown again on release.
   GameRefRenderMask duplicate_mask;
+  // Gear-shift gesture: last gear seen and the physics tick it changed.
+  int gear = -1;
+  uint64_t shift_tick = 0;
+  bool shifting = false;
 };
 std::unordered_map<Object*, DriverSeat> drivers;
 
@@ -686,6 +704,14 @@ void snap_lamp_glass(Record &rec) {
     node->deformed_type = node->type_id;
   }
 }
+// The pin's pose with the gauge angle added to its roll, as build 606 does
+// (0x0043C0A0): with part_pose_matrix's yaw-pitch-roll order this turns it
+// about its own posed Z axis.
+PartMatrix cockpit_needle_matrix(const CockpitNeedle &needle, double value) {
+  PartPose pose = needle.pose;
+  pose.rotation[2] += cockpit_needle_angle(needle, value);
+  return part_pose_matrix(pose);
+}
 void render_part(Jvm &jvm, Object *self, Record &rec) {
   rec.inline_wheels.clear();
   collect_lamps(rec);
@@ -699,16 +725,15 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
       pick += count;
     return colors[static_cast<size_t>(pick)];
   };
-  auto add = [&](uint32_t resource, const PartMatrix &local,
-                 const std::vector<PartLink> *rules,
-                 const std::vector<uint32_t> *colors,
-                 uint32_t light_flags = 0) {
+  auto create = [&](uint32_t resource, const PartMatrix &local,
+                    const std::vector<uint32_t> *colors,
+                    uint32_t light_flags) -> Object * {
     if (!resource ||
         !index
              ->model_for_resource(RpkIndex::pack_from_full(resource),
                                   resource & 0xffff)
              .ok)
-      return;
+      return nullptr;
     Object *render = jvm.new_object("java.util.resource.RenderRef");
     auto *node = gameref_upsert(render, GameRefKind::RenderRef);
     gameref_set_type(*node, static_cast<int32_t>(resource));
@@ -724,6 +749,15 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
     std::copy(local.begin(), local.end(), node->local_matrix);
     node->matrix_override = true;
     render->fields["id"] = Value::make_int(resource);
+    return render;
+  };
+  auto add = [&](uint32_t resource, const PartMatrix &local,
+                 const std::vector<PartLink> *rules,
+                 const std::vector<uint32_t> *colors,
+                 uint32_t light_flags = 0) {
+    Object *render = create(resource, local, colors, light_flags);
+    if (!render)
+      return;
     rec.renders.push_back(render);
     if (rules && !rules->empty())
       rec.links.push_back({render, resource, *rules, local});
@@ -789,6 +823,18 @@ void render_part(Jvm &jvm, Object *self, Record &rec) {
     }
   }
   snap_lamp_glass(rec);
+  for (const auto &needle : rec.needles)
+    gameref_remove(needle.node);
+  rec.needles.clear();
+  if (rec.config->native_kind == "car")
+    for (size_t i = 0; i < rec.config->cockpit.size(); ++i) {
+      const auto &cfg = rec.config->cockpit[i];
+      if (!cfg.defined)
+        continue;
+      const auto gauge = static_cast<CockpitGauge>(i);
+      if (Object *pin = create(cfg.resource, cockpit_needle_matrix(cfg, 0), nullptr, 0))
+        rec.needles.push_back({pin, gauge});
+    }
 }
 void stock_parts(Jvm &jvm, Object *part, Object *descriptor, int depth = 0) {
   if (depth > 48 || records.size() > 2000)
@@ -862,6 +908,12 @@ Object *add_part(Jvm &jvm, Object *parent, uint32_t resource,
 void release_side(Record &rec) {
   host_sfx_stop(rec.nitro_voice);
   rec.nitro_voice = 0;
+  for (auto &voice : rec.traffic_voice) {
+    host_sfx_stop(voice);
+    voice = 0;
+  }
+  host_sfx_stop(rec.radio_voice);
+  rec.radio_voice = 0;
   for (Object *tab : rec.sfx) {
     auto table = sfx_items.find(tab);
     if (table == sfx_items.end()) continue;
@@ -880,6 +932,29 @@ float comp(Object *o, const char *name) {
   if (it->second.tag == ValueTag::Int)
     return static_cast<float>(it->second.v.i);
   return 0;
+}
+// Stock Swaybar fields belong to the currently installed part, not an
+// accumulating add/remove command. Mount IDs choose the axle; CFG compatibility
+// remains authoritative, including the absence of a mount on some chassis.
+void configure_anti_roll(Record &rec) {
+  rec.dynamics.anti_roll = {};
+  if (!runtime || rec.config->native_kind != "car") return;
+  for (size_t axle = 0; axle < rec.dynamics.anti_roll.size(); ++axle) {
+    const int slot = 701 + static_cast<int>(axle);
+    const auto found = rec.children.find(slot);
+    const auto *bar = found == rec.children.end() ? nullptr : record(found->second);
+    if (!bar || bar->state.parent != rec.state.object || bar->state.parent_slot != slot ||
+        !runtime->tree_instance_of(bar->state.object, "java.game.parts.rgearpart.Swaybar"))
+      continue;
+    const double stiffness = comp(bar->state.object, "force");
+    const double damping = comp(bar->state.object, "damping");
+    const double wear = bar->state.wear, tear = bar->state.tear;
+    if (!std::isfinite(stiffness) || stiffness < 0 || !std::isfinite(damping) || damping < 0 ||
+        !std::isfinite(wear) || !std::isfinite(tear))
+      continue;
+    const double health = std::clamp(wear, 0., 1.) * std::clamp(tear, 0., 1.);
+    rec.dynamics.anti_roll[axle] = {stiffness * health, damping * health};
+  }
 }
 double nitro_capacity(Object *chassis) {
   const float capacity = comp(chassis, "tank_nitro");
@@ -1563,8 +1638,9 @@ void refresh_chassis(Object *chassis) {
     return;
   chassis = canonical(chassis);
   auto *rec = record(chassis);
-  if (!rec || field_int(chassis, "suspend_update"))
-    return;
+  if (!rec) return;
+  configure_anti_roll(*rec);
+  if (field_int(chassis, "suspend_update")) return;
   ++refresh_depth;
   // Only installed parts write spring and damper settings during this pass.
   // Clear the old contributions so removing a part cannot leave it active.
@@ -1576,6 +1652,7 @@ void refresh_chassis(Object *chassis) {
                           {Value::make_obj(chassis)}, false);
   record(chassis)->physics_dirty = true;
   clamp_nitro(chassis, *record(chassis));
+  configure_anti_roll(*record(chassis));
   --refresh_depth;
 }
 // A native car with no script (traffic, fake racers) is finished by its cfg:
@@ -1716,9 +1793,11 @@ bool part_lamp_lit(void *part, uint32_t flags, bool preview) {
   sec = std::fmod(sec, 86400.f);
   if (sec < 0.f)
     sec += 86400.f;
-  // Stock night: outside 6:00..21:00. The selector starts at midnight and
-  // LIGHTS ON/OFF adds twelve hours.
-  return sec < 21600.f || sec >= 75600.f;
+  // Headlights from 17:00 to 6:00 (#313). The stock night starts at 21:00,
+  // but dusk is already dark on the default sun cycle. The selector starts at
+  // midnight and LIGHTS ON/OFF adds twelve hours.
+  constexpr float kLampOn = 17 * 3600.f, kLampOff = 6 * 3600.f;
+  return sec < kLampOff || sec >= kLampOn;
 }
 
 Object *part_create(Jvm &jvm, RpkIndex &resources, Object *parent,
@@ -1954,6 +2033,7 @@ bool part_command(Object *part, const std::string &command) {
     if (auto* target = gameref_find_live(id); target && target->kind == GameRefKind::Camera) {
       target->camera_free = verb == "controllable";
       target->cam_pose_init = false;
+      target->follow_hold = false;
       return true;
     }
     if (verb == "controllable") {
@@ -1990,6 +2070,8 @@ bool part_command(Object *part, const std::string &command) {
       cam->aim_look = cam->aim_move = cam->camera_attached = cam->camera_free = false;
       cam->camera_autozoom = false;
       cam->cam_pose_init = false;
+      // A rebind is a fresh chase pose; native "control" keeps the angle.
+      cam->follow_hold = false;
     }
     return true;
   }
@@ -2251,6 +2333,8 @@ bool part_destroy(Object *part) {
     parent->children.erase(rec->state.parent_slot);
   for (auto *render : rec->renders)
     gameref_remove(render);
+  for (const auto &needle : rec->needles)
+    gameref_remove(needle.node);
   release_side(*rec);
   records.erase(part);
   gameref_remove(part);
@@ -3256,6 +3340,157 @@ void update_engine_audio(Record &rec, bool active) {
         item.voice = 0;
       }
     }
+  }
+}
+
+// Native stock cars (traffic, fake racers) have no Java engine or SfxTables, so
+// their loop is a host model: the three diesel samples shipped with the traffic
+// pack, cross-faded by an RPM derived from speed through a stepped gearbox,
+// attenuated by the distance to the world camera and panned by its side. Pitch
+// follows the car's mass plus a fixed per-car offset, so a bus and a hatchback,
+// or two identical cars, do not sound the same. A CFG `sfx_loop` is the car's
+// radio. Only the nearest few cars hold voices because the host mixer has a
+// small loop budget.
+void update_traffic_engine_audio() {
+  constexpr size_t kNearest = 4;
+  constexpr float kRange = 80.f, kRefDistance = 5.f, kVolume = .5f, kRadioRange = 40.f;
+  constexpr std::array<float, 3> kSampleRpm = {1000.f, 2200.f, 3300.f};
+  constexpr std::array<const char *, 3> kSampleFile = {"1000rpm.wav", "2200rpm.wav", "3300rpm.wav"};
+  constexpr std::array<float, 4> kGearTop = {8.f, 14.f, 22.f, 34.f}; // m/s
+  static std::array<std::string, 3> paths;
+  static bool resolved = false;
+  static uint32_t epoch = 0;
+  if (!resolved && index) {
+    resolved = true;
+    const auto dir = std::filesystem::path(index->game_root()) / "cars" / "traffic" / "sounds" /
+                     "engines" / "diesel_5.0L";
+    std::error_code ec;
+    bool all = true;
+    for (size_t i = 0; i < paths.size(); ++i) {
+      const auto file = dir / kSampleFile[i];
+      all = all && std::filesystem::is_regular_file(file, ec);
+      paths[i] = file.string();
+    }
+    if (!all) paths = {};
+  }
+  float eye[3]{}, at[3]{}, up[3] = {0.f, 1.f, 0.f}, right[3]{};
+  bool listener = !paths[0].empty() && gameref_world_camera(eye, at, nullptr, nullptr, nullptr, up);
+  if (listener) {
+    // The renderer flips Z and uses a left-handed look-at, so script-space
+    // right is forward x up (ped_view's up x forward only uses |side|).
+    float f[3] = {at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]};
+    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    right[0] = f[1] * up[2] - f[2] * up[1];
+    right[1] = f[2] * up[0] - f[0] * up[2];
+    right[2] = f[0] * up[1] - f[1] * up[0];
+    const float rl = std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+    listener = fl > 1e-4f && rl > 1e-4f;
+    if (listener)
+      for (float &c : right) c /= rl;
+  }
+  struct Candidate {
+    float distance_squared;
+    Record *rec;
+  };
+  std::array<Candidate, kNearest> chosen;
+  size_t count = 0;
+  if (listener)
+    for (auto &[key, rec] : records) {
+      if (!rec.native_vehicle || !rec.engine_running || rec.state.parent) continue;
+      const auto &p = rec.dynamics.body.position;
+      const float dx = float(p.x) - eye[0], dy = float(p.y) - eye[1], dz = float(p.z) - eye[2];
+      const float d2 = dx * dx + dy * dy + dz * dz;
+      if (!std::isfinite(d2) || d2 > kRange * kRange) continue;
+      if (count < kNearest) {
+        chosen[count++] = {d2, &rec};
+      } else {
+        auto farthest = std::max_element(chosen.begin(), chosen.end(), [](const auto &a, const auto &b) {
+          return a.distance_squared < b.distance_squared;
+        });
+        if (d2 < farthest->distance_squared) *farthest = {d2, &rec};
+      }
+    }
+  ++epoch;
+  for (size_t n = 0; n < count; ++n) {
+    Record &rec = *chosen[n].rec;
+    rec.traffic_audio_epoch = epoch;
+    const auto &body = rec.dynamics.body;
+    const auto forward = body.orientation.rotate({0, 0, -1});
+    const float speed = std::abs(static_cast<float>(body.velocity.dot(forward)));
+    size_t gear = 0;
+    while (gear + 1 < kGearTop.size() && speed >= kGearTop[gear]) ++gear;
+    const float low = gear ? kGearTop[gear - 1] : 0.f;
+    const float fraction = std::clamp((speed - low) / (kGearTop[gear] - low), 0.f, 1.f);
+    const float throttle = std::clamp(std::abs(static_cast<float>(rec.dynamics.drive.throttle)), 0.f, 1.f);
+    const float target = std::clamp(
+        std::lerp(gear ? 1900.f : 1000.f, 3100.f, fraction) + throttle * 200.f, 1000.f, 3300.f);
+    rec.traffic_rpm = rec.traffic_rpm > 0 ? std::lerp(rec.traffic_rpm, target, .2f) : target;
+    const float rpm = rec.traffic_rpm;
+    const float distance = std::sqrt(chosen[n].distance_squared);
+    const float level = scene_ambience_gain(kVolume * (.7f + .3f * throttle), kRefDistance, kRange,
+                                            distance);
+    const auto &position = body.position;
+    const float side = (float(position.x) - eye[0]) * right[0] + (float(position.y) - eye[1]) * right[1] +
+                       (float(position.z) - eye[2]) * right[2];
+    const float pan = std::clamp(side / std::max(distance, kRefDistance), -1.f, 1.f);
+    // Heavier cars run lower; the offset is stable per car, within about +-6 %.
+    const float mass = rec.config->mass > 100.f ? rec.config->mass : 1300.f;
+    const uint32_t hash = static_cast<uint32_t>(
+        (reinterpret_cast<uintptr_t>(&rec) >> 4) * 2654435761u + rec.state.resource * 40503u);
+    const float character = std::clamp(std::pow(1300.f / mass, .2f), .75f, 1.25f) *
+                            (.94f + .12f * float((hash >> 8) & 255u) / 255.f);
+    for (size_t i = 0; i < paths.size(); ++i) {
+      float weight = 0;
+      if (i == 0 && rpm <= kSampleRpm[0]) weight = 1;
+      else if (i + 1 == paths.size() && rpm >= kSampleRpm[i]) weight = 1;
+      else if (rpm >= kSampleRpm[i] && i + 1 < paths.size() && rpm < kSampleRpm[i + 1])
+        weight = (kSampleRpm[i + 1] - rpm) / (kSampleRpm[i + 1] - kSampleRpm[i]);
+      else if (i > 0 && rpm >= kSampleRpm[i - 1] && rpm < kSampleRpm[i])
+        weight = (rpm - kSampleRpm[i - 1]) / (kSampleRpm[i] - kSampleRpm[i - 1]);
+      const float gain = level * weight;
+      auto &voice = rec.traffic_voice[i];
+      if (gain > .002f) {
+        const float pitch = rpm / kSampleRpm[i] * character;
+        if (voice && host_sfx_is_playing(voice)) host_sfx_update_loop(voice, pitch, gain);
+        else voice = host_sfx_play_file(paths[i], pitch, gain, true);
+        host_sfx_set_loop_pan(voice, pan);
+      } else if (voice) {
+        host_sfx_stop(voice);
+        voice = 0;
+      }
+    }
+    // The car's own radio, only close by.
+    const uint32_t radio = rec.config->sfx_loop;
+    const float radio_gain = radio && index
+        ? scene_ambience_gain(.35f, 3.f, kRadioRange, distance) : 0.f;
+    if (radio_gain > .005f && distance < kRadioRange) {
+      if (!rec.radio_voice || !host_sfx_is_playing(rec.radio_voice)) {
+        auto file = index->payload_prop(radio, "sourcefile");
+        std::replace(file.begin(), file.end(), '\\', '/');
+        rec.radio_voice = file.empty() ? 0 : host_sfx_play_file(
+            (std::filesystem::path(index->game_root()) / file).string(), 1.f, radio_gain, true);
+      } else {
+        host_sfx_update_loop(rec.radio_voice, 1.f, radio_gain);
+      }
+      host_sfx_set_loop_pan(rec.radio_voice, pan);
+    } else if (rec.radio_voice) {
+      host_sfx_stop(rec.radio_voice);
+      rec.radio_voice = 0;
+    }
+  }
+  // Cars that left the nearest set, went out of range or stopped.
+  for (auto &[key, rec] : records) {
+    if (rec.traffic_audio_epoch == epoch) continue;
+    for (auto &voice : rec.traffic_voice)
+      if (voice) {
+        host_sfx_stop(voice);
+        voice = 0;
+      }
+    if (rec.radio_voice) {
+      host_sfx_stop(rec.radio_voice);
+      rec.radio_voice = 0;
+    }
+    rec.traffic_rpm = 0;
   }
 }
 
@@ -5159,6 +5394,7 @@ SimBatch prepare_batch(unsigned ticks) {
           continue;
         }
         dynamics_wheels(rec);
+        configure_anti_roll(rec);
         car.drive = configure_drive(chassis, rec, chassis == controlled);
         car.configured = true;
         if (rec.body_support_dirty) {
@@ -5649,6 +5885,30 @@ void pose_steering_wheels() {
   }
 }
 
+// Instrument values, shared by the overlay HUD and the dashboard pins.
+// Without an engine the tachometer rests at zero.
+double gauge_rpm(const Record& rec) {
+  return rec.dynamics.drive.torque ? rec.dynamics.engine_omega * 9.54929658551372 : 0;
+}
+double gauge_speed(const Record& rec) {
+  return rec.dynamics.body.velocity.length() * 3.6;
+}
+// Dashboard pins follow their chassis every frame (#301), like the column.
+void pose_cockpit_needles() {
+  for (auto& entry : records) {
+    auto& rec = entry.second;
+    for (const auto& needle : rec.needles) {
+      auto* node = gameref_get(needle.node);
+      if (!node) continue;
+      const auto& cfg = rec.config->cockpit[static_cast<size_t>(needle.gauge)];
+      const double value = needle.gauge == CockpitGauge::Rpm ? gauge_rpm(rec) : gauge_speed(rec);
+      const auto local = cockpit_needle_matrix(cfg, value);
+      std::copy(local.begin(), local.end(), node->local_matrix);
+      node->matrix_override = true;
+    }
+  }
+}
+
 float wheel_rim_radius(Object* wheel) {
   const auto* rec = record(wheel);
   if (!rec) return 0.15f;
@@ -5676,6 +5936,8 @@ void release_driver(DriverSeat& seat) {
     gameref_remove(seat.render);
   seat.render = nullptr;
   seat.owned = false;
+  seat.gear = -1;
+  seat.shifting = false;
 }
 
 Object* player_render() {
@@ -5755,6 +6017,17 @@ void pose_driver() {
   const auto bone = [&](const char* name) {
     return character_find_bone(seat.render, type, *index, name);
   };
+  // The first cockpit camera sits where the head is, and it leans back
+  // with acceleration: from inside the car, the head would fill the view.
+  // Shrink it to its joint while this car's camera 0 draws the world.
+  if (const auto cockpit = chassis->fields.find("_hostCockpitCamera");
+      cockpit != chassis->fields.end() && cockpit->second.v.o) {
+    const GameRefState* camera = gameref_get(cockpit->second.v.o);
+    if (camera && camera->cockpit_index == 0 && camera == fullscreen_script_camera()) {
+      const int head = bone("Bip01 Head");
+      if (head >= 0) character_scale_bone(seat.render, type, *index, head, 1e-3f);
+    }
+  }
   if (!rec->config->cameras.empty()) {
     const auto& camera = rec->config->cameras[0].position;
     float target[3];
@@ -5786,17 +6059,60 @@ void pose_driver() {
       std::copy(wheel_node->local_matrix, wheel_node->local_matrix + 16, wheel_m.begin());
       const float grip_r = std::max(0.04f, wheel_rim_radius(wheel) - 0.015f);
       const char* sides[2] = {"L", "R"};
+      // Gear-shift gesture (build 606, 0x0044D0C0 and 0x0044D260): on each
+      // gear change the hand on the console side (the right one when the
+      // seat is left of centre) goes to the lever knob, `shifter` plus an H
+      // offset for the new gear, and returns to the wheel 0.7 s later. The
+      // exe re-targets the hand at once; here it eases over 0.15 s each way.
+      // Physics ticks, so a pause holds the gesture.
+      static constexpr float kShiftGrid[8][3] = {
+          {0.f, 0.f, 0.f},     {-.05f, 0.f, -.05f}, {-.05f, 0.f, .05f}, {0.f, 0.f, -.05f},
+          {0.f, 0.f, .05f},    {.05f, 0.f, -.05f},  {.05f, 0.f, .05f},  {-.09f, 0.f, -.05f}};
+      const int gear = std::clamp(rec->dynamics.gear, 0, 7);
+      if (seat.gear >= 0 && gear != seat.gear) {
+        seat.shift_tick = rec->dynamics.ticks;
+        seat.shifting = true;
+      }
+      seat.gear = gear;
+      float lever_weight = 0.f;
+      if (seat.shifting) {
+        const double t = double(rec->dynamics.ticks - seat.shift_tick) *
+                         physics::VehicleDynamics::timestep;
+        if (t >= .7) seat.shifting = false;
+        else lever_weight = float(std::clamp(std::min(t, .7 - t) / .15, 0., 1.));
+      }
+      const int shift_side = rec->config->seat.position[0] < 0.f ? 1 : 0;
+      float lever[3], lever_x[3], lever_down[3];
+      {
+        const float* knob = rec->config->shifter;
+        const float* cell = kShiftGrid[gear];
+        const float p[3] = {knob[0] + cell[0], knob[1] + cell[1], knob[2] + cell[2]};
+        to_cm(p[0], p[1], p[2], lever);
+        to_cm(p[0] + .01f, p[1], p[2], lever_x);
+        to_cm(p[0], p[1] - .01f, p[2], lever_down);
+        for (int i = 0; i < 3; ++i) {
+          lever_x[i] -= lever[i];
+          lever_down[i] -= lever[i];
+        }
+      }
       for (int side = 0; side < 2; ++side) {
         const float sign = side == 0 ? -1.f : 1.f;
         const float grip_angle = sign;
         float chassis_point[3];
         transform_point(wheel_m, std::sin(grip_angle) * grip_r, std::cos(grip_angle) * grip_r,
                         0.f, chassis_point);
+        // `palm` is the rim's centreline at the grip. Start with the wrist
+        // 7.8 cm behind it along the wheel's axis toward the driver (the
+        // seat's +Z is not that axis on a raked column); refined below.
+        float palm[3];
+        to_cm(chassis_point[0], chassis_point[1], chassis_point[2], palm);
+        physics::Vec3 axis{wheel_m[8], wheel_m[9], wheel_m[10]};
+        const physics::Vec3 to_seat{seat_m[12] - wheel_m[12], seat_m[13] - wheel_m[13],
+                                    seat_m[14] - wheel_m[14]};
+        if (axis.x * to_seat.x + axis.y * to_seat.y + axis.z * to_seat.z < 0) axis = axis * -1.;
         float target[3];
-        to_cm(chassis_point[0], chassis_point[1], chassis_point[2], target);
-        // Closed fist: the wrist joint is ~8 cm behind the palm on the rim,
-        // toward the driver (+Z in the seat frame).
-        target[2] += 7.8f;
+        to_cm(chassis_point[0] + float(axis.x) * 0.078f, chassis_point[1] + float(axis.y) * 0.078f,
+              chassis_point[2] + float(axis.z) * 0.078f, target);
         const std::string prefix = std::string("Bip01 ") + sides[side] + " ";
         const int upper = bone((prefix + "UpperArm").c_str());
         const int lower = bone((prefix + "Forearm").c_str());
@@ -5807,6 +6123,73 @@ void pose_driver() {
           character_aim_bone(seat.render, type, *index, clavicle, upper, target, 0.8f);
         const float pole[3] = {sign * 0.5f, -1.f, 0.f};
         character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
+        // Hold the rim: the stock fist (one hand bone, no fingers) has its grip
+        // hole at about (9.5, 0, -1.2) cm in hand space, open along the hand's
+        // Y axis, palm toward -Z. Put that hole on the rim's centreline, its
+        // axis along the rim, the palm toward the wheel's centre and the hand
+        // as straight with the forearm as that allows; re-solve the arm to the
+        // resulting wrist (two passes converge to under a millimetre).
+        float rim_ahead[3], centre[3];
+        {
+          float p[3];
+          transform_point(wheel_m, std::sin(grip_angle) * grip_r + std::cos(grip_angle) * 0.01f,
+                          std::cos(grip_angle) * grip_r - std::sin(grip_angle) * 0.01f, 0.f, p);
+          to_cm(p[0], p[1], p[2], rim_ahead);
+          to_cm(wheel_m[12], wheel_m[13], wheel_m[14], centre);
+        }
+        const auto unit = [](float* v) {
+          const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+          if (n > 1e-6f) for (int i = 0; i < 3; ++i) v[i] /= n;
+          return n > 1e-6f;
+        };
+        float tangent[3] = {rim_ahead[0] - palm[0], rim_ahead[1] - palm[1], rim_ahead[2] - palm[2]};
+        float inward[3] = {centre[0] - palm[0], centre[1] - palm[1], centre[2] - palm[2]};
+        if (side == shift_side && lever_weight > 0.f) {
+          // On the knob the fist closes across the car (hole along X), palm
+          // down. Blend the hole, its axis and the palm direction.
+          const float w = lever_weight;
+          float across[3], down[3];
+          std::copy(lever_x, lever_x + 3, across);
+          std::copy(lever_down, lever_down + 3, down);
+          unit(tangent);
+          unit(inward);
+          unit(across);
+          unit(down);
+          for (int i = 0; i < 3; ++i) {
+            palm[i] += (lever[i] - palm[i]) * w;
+            tangent[i] += (across[i] - tangent[i]) * w;
+            inward[i] += (down[i] - inward[i]) * w;
+          }
+        }
+        float hand_x[3] = {}, hand_y[3] = {};
+        bool oriented = false;
+        const bool frame = unit(tangent) && unit(inward);
+        for (int pass = 0; frame && pass < 2; ++pass) {
+          float elbow[16];
+          if (!character_bone_metres(seat.render, lower, elbow)) break;
+          float f[3] = {palm[0] - elbow[12] * 100.f, palm[1] - elbow[13] * 100.f,
+                        palm[2] - elbow[14] * 100.f};
+          const float ft = f[0] * tangent[0] + f[1] * tangent[1] + f[2] * tangent[2];
+          for (int i = 0; i < 3; ++i) hand_x[i] = f[i] - ft * tangent[i];
+          if (!unit(hand_x)) break;
+          std::copy(tangent, tangent + 3, hand_y);
+          float hand_z[3] = {hand_x[1] * hand_y[2] - hand_x[2] * hand_y[1],
+                             hand_x[2] * hand_y[0] - hand_x[0] * hand_y[2],
+                             hand_x[0] * hand_y[1] - hand_x[1] * hand_y[0]};
+          // The palm (-Z) faces the wheel's centre.
+          if (hand_z[0] * inward[0] + hand_z[1] * inward[1] + hand_z[2] * inward[2] > 0)
+            for (int i = 0; i < 3; ++i) { hand_y[i] = -hand_y[i]; hand_z[i] = -hand_z[i]; }
+          for (int i = 0; i < 3; ++i)
+            target[i] = palm[i] - hand_x[i] * 9.5f + hand_z[i] * 1.2f;
+          character_solve_limb(seat.render, type, *index, upper, lower, hand, target, pole);
+          oriented = true;
+        }
+        if (oriented) {
+          // X first, then Y: Y is already perpendicular to X, so the second
+          // turn is a twist about X and keeps it.
+          character_align_axis(seat.render, type, *index, hand, 0, hand_x);
+          character_align_axis(seat.render, type, *index, hand, 1, hand_y);
+        }
       }
     }
   }
@@ -6551,6 +6934,10 @@ void part_pause_engine_audio(bool paused) {
   for (const auto& [table, items] : sfx_items)
     for (const auto& item : items)
       if (item.voice) host_sfx_pause_loop(item.voice, paused);
+  for (const auto &[part, rec] : records)
+    for (const int32_t voice : {rec.traffic_voice[0], rec.traffic_voice[1], rec.traffic_voice[2],
+                                rec.radio_voice})
+      if (voice) host_sfx_pause_loop(voice, paused);
 }
 
 namespace {
@@ -6679,12 +7066,14 @@ void part_physics_end() {
       if (rec.config->native_kind == "car")
         update_engine_audio(rec, rec.engine_running);
     }
+    update_traffic_engine_audio();
   }
   // After the batch, so the hinges see this frame's carrier motion.
   advance_flaps(physics_frame_seconds);
   publish_render_poses(physics_elapsed / kPhysicsTick);
   // After the solver, so a flap or a wheel placement cannot put the column back.
   pose_steering_wheels();
+  pose_cockpit_needles();
   pose_driver();
   {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(physics_frame_seconds);}
 }
@@ -6905,8 +7294,8 @@ bool part_vehicle_hud(VehicleHudState &state) {
   if (!rec) return true; // The GPS frame also belongs to the empty HUD.
   state.layout = hud_preview_directory.empty() ? &rec->config->hud : &hud_preview;
   state.preview_directory = hud_preview_directory.empty() ? nullptr : &hud_preview_directory;
-  state.rpm = rec->dynamics.drive.torque ? rec->dynamics.engine_omega * 9.54929658551372 : 0;
-  state.speed = rec->dynamics.body.velocity.length() * 3.6;
+  state.rpm = gauge_rpm(*rec);
+  state.speed = gauge_speed(*rec);
   state.mileage = rec->mileage * .01;
   state.unit_scale = 1000.f / host_game_options().unit_meters;
   const double capacity = nitro_capacity(rec->state.object);
@@ -6962,6 +7351,10 @@ bool part_physics_state(Object *key, PartPhysicsState &state) {
   state.nitro_capacity = nitro_capacity(rec->state.object);
   state.nitro_active = rec->nitro_active;
   state.nitro_flame = rec->nitro_flame;
+  for (size_t axle = 0; axle < rec->dynamics.anti_roll.size(); ++axle) {
+    state.anti_roll_stiffness[axle] = rec->dynamics.anti_roll[axle].stiffness;
+    state.anti_roll_damping[axle] = rec->dynamics.anti_roll[axle].damping;
+  }
   state.active = rec->physics_ready && !rec->physics_suspended &&
                  scene_instances_script_matrix(as_part(key), world.data());
   if (!rec->physics_ready)
@@ -8267,6 +8660,7 @@ void part_visit_gc_roots(const GcRootVisitor& visit) {
     visit(entry.first); visit(r.state.object); visit(r.state.parent); visit(r.physics_parent);
     for (const auto& child : r.children) visit(child.second);
     for (auto* render : r.renders) visit(render);
+    for (const auto& needle : r.needles) visit(needle.node);
     for (const auto& link : r.links) visit(link.node);
     for (auto* sfx : r.sfx) visit(sfx);
   }

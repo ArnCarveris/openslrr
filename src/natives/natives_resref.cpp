@@ -189,7 +189,9 @@ std::vector<uint32_t> catalog_siblings(Jvm& jvm, const RpkIndex& rpk,
   for (uint32_t id : kids) {
     const int pack = RpkIndex::pack_from_full(id);
     if (pack == car) mine.push_back(id);
-    else if (vehicles.count(pack)) continue;
+    // The Java collector accepts scripted children from any car pack;
+    // only unscripted model folders are restricted to the current car.
+    else if (vehicles.count(pack) && rpk.payload_prop(id, "script").empty()) continue;
     else keep.push_back(id);
   }
   keep.insert(keep.end(), mine.begin(), mine.end());

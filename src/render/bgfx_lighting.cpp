@@ -608,18 +608,20 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
         // 5 = ColorMixTex with a spheremap (headlight lens).
         // 4 = ColorMixTex. 3 = glass. 2 = chrome (0x33, no color map, or a
         // 0x0c cap whose color slot never loaded). A bare pipe is flags 0.
-        // Flag-256 exhaust overlays can be SCX3 (Flame: flags 0x101),
-        // whose blend bit is not SCX4's transparent-group bit.
-        const bool flame_blend = (instance.light_flags & 256u) &&
-            scx_surface(part.geo.info.version, group).blend;
-        const bool transparent = (group.material_flags & 0x40000000u) != 0 || flame_blend;
+        // SCX3 blend (flags 0x101) is not SCX4's transparent-group bit, but
+        // it blends too: flag-256 exhaust flames and the cockpit_rpm /
+        // cockpit_speed pins (pin_small, a needle on a clear DXT5 card).
+        // Lamp glows keep their own lamp path.
+        const bool scx3_blend = scx_surface(part.geo.info.version, group).blend;
+        const bool flame_blend = (instance.light_flags & 256u) && scx3_blend;
+        const bool transparent = (group.material_flags & 0x40000000u) != 0 || flame_blend ||
+            (scx3_blend && part.geo.info.version == 3 && !instance.light_flags);
         if (transparent != (pass == 1)) continue;
         const uint32_t kind_id = group.material_type;
         const bool glass = transparent && kind_id == 0x33u;
         const bool color_mix_env = kind_id == 0x0bu || kind_id == 0x13u || kind_id == 0x23u ||
                                    kind_id == 0x0fu || kind_id == 0x17u || kind_id == 0x27u;
-        const bool color_mix = color_mix_env || kind_id == 0x03u || kind_id == 0x1bu ||
-                               kind_id == 0x07u || kind_id == 0x1fu;
+        const bool color_mix = scx_color_mix_function(kind_id);
         const bool tex_missing = group.texture_index != 0xffff &&
             (group.texture_index >= part.tex.size() || !bgfx::isValid(part.tex[group.texture_index]));
         const bool chrome = !glass && kind_id == 0x33u && group.texture_index == 0xffff;
@@ -782,9 +784,11 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       const bool material_mix = group && instance.cull_backfaces &&
           part.geo.info.version == 4 && surface.color_mix;
       const bool authored_alpha = instance.cull_backfaces && part.geo.info.version == 4;
+      // Script RenderRefs (garage stuff) keep the legacy half-alpha cutout,
+      // except on ColorMixTex sections (the ROC tent canvas, #330).
       const bool cut = !material_mix && !blend && !preview && !instance.sky &&
           (authored_alpha ? surface.cutout
-                          : part.geo.info.version != 3 || (flags & 1));
+                          : scx_legacy_cutout(part.geo.info.version, group, flags));
       // V4 map foliage specifies GREATER with an 8-bit reference (default 0x38).
       const float alpha_test = !cut ? 0.f : authored_alpha && group
           ? -(1.f + group->alpha_reference) / 255.f : 1.f;

@@ -110,9 +110,35 @@ cp $R/sl/Scripts/game/Garage.class patch/sl/Scripts/game/
 The render package compiles first so Garage resolves `java.render.SpotLight`.
 Moving `OptionsDialog.java` aside keeps the second run to Garage alone; the
 directory argument compiles every `src/*.java` below it. Results: 4/4 render
-units, and 1/1 Garage unit producing three classes (94,397 bytes with the three garage tables), with two
+units, and 1/1 Garage unit producing three classes (94,397 bytes with the three garage tables; 94,435 since the #315 Car Lot save order, 94,595 since the #330 ROC sunlight), with two
 `W_UNVERIFIED` warnings for constructs already in the MWM source (a final
 static method, an empty `else ;`).
+
+### Patched car classes: stock anti-roll bars
+
+The installed MWM 2.2.1 car classes differ from the `sources/` tree (MWM added
+stock neons), and MWM ships no car source. The 24 patched racer sources under
+`patch/cars/racers/*_data/scripts/src/` were first rebuilt to the installed
+bytecode, then edited. A copied game root has no `src/` folder for cars, so
+only the files placed there compile:
+
+```bash
+R=build/swaybar-compile-root   # copy of game/ as above
+for f in patch/cars/racers/*/scripts/src/*.java; do
+  mkdir -p "$(dirname "$R/${f#patch/}")"; cp "$f" "$R/${f#patch/}"; done
+for d in Baiern_data Duhen_data Einvagen_data Enula_data Focer_data MC_data Nonus_data Prime_data SuperDuty_data; do
+  ./build/Release/compile_game_sources.exe "$(cygpath -w $R)" cars/racers/$d/scripts; done
+```
+
+Check: compiling the sources with the bar lines still commented must give the
+installed `game/` classes byte for byte, apart from header bytes 9-11
+(`cmp -l a b | awk '$1>11'` prints nothing). Source line numbers are part of the
+bytecode, so blank lines matter, and a resource literal must use the form the
+file already uses (the SuperDuty rollbar matches its `stg_` list entry).
+Results: 24/24 units identical before the edit (the first commit of #311 holds
+that state); afterwards each class grows only by its bar lists. To locate MWM
+additions, list the source line of every `addPart` in both class trees (the
+TufaDecompiler `tufa.py` parser reads them) and diff the two lists.
 
 Reference projects consulted: SLRR-JVM, SLRR-JVM-compiler,
 SLRR-JVM-decompiler and slrr-reverse. The bundled compiler's exact provenance

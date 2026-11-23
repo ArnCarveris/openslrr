@@ -594,6 +594,51 @@ void solve_rest_contacts(RigidBody& body, std::array<RestContact, 12>& contacts,
   }
 }
 
+// Host approximation following the bounded paired chassis couple in
+// SLRR_rev 77b0fb6, suspension-3d.ts (not recovered MWM physics). Reimplemented
+// mathematically, with per-corner rest offsets removed to avoid a static
+// preload from unequal spring rest lengths. Tyre loads have already been used.
+void solve_anti_roll(RigidBody& body, const std::array<WheelConfig, 4>& wheels,
+                     const std::array<WheelState, 4>& state,
+                     const std::array<AntiRollConfig, 2>& config) {
+  for (size_t axle = 0; axle < config.size(); ++axle) {
+    const auto coefficient = [](double value) {
+      return std::isfinite(value) && value > 0 ? value : 0.0;
+    };
+    const double stiffness = coefficient(config[axle].stiffness);
+    const double damping = coefficient(config[axle].damping);
+    const double scale = std::max(stiffness, damping);
+    if (!(scale > 0)) continue; // Preserve the unconfigured force path exactly.
+    const size_t left = axle * 2, right = left + 1;
+    if (!wheels[left].enabled || !wheels[right].enabled ||
+        wheels[left].rigid_contact || wheels[right].rigid_contact ||
+        !state[left].contact || !state[right].contact)
+      continue;
+    const auto hardpoint = [&](size_t corner) {
+      const auto& w = wheels[corner];
+      return body_point(body, w.center - w.down.normalized() * w.anchor_length());
+    };
+    const Vec3 a = hardpoint(left), b = hardpoint(right);
+    if (!a.finite() || !b.finite()) continue;
+    const double deflection = (state[right].length - wheels[right].rest) -
+                              (state[left].length - wheels[left].rest);
+    const double speed = body.point_velocity(a).y - body.point_velocity(b).y;
+    const double limit = body.mass * (.5 * 9.81);
+    if (!std::isfinite(deflection) || !std::isfinite(speed) ||
+        !std::isfinite(limit) || !(limit > 0))
+      continue;
+    // Scale before combining: even finite DBL_MAX coefficients must not
+    // overflow two products into an indeterminate infinity-minus-infinity.
+    const double response = (stiffness / scale) * deflection -
+                            (damping / scale) * speed;
+    if (response == 0) continue;
+    const double force = std::abs(response) >= limit / scale
+        ? std::copysign(limit, response) : response * scale;
+    body.add_force({0, force, 0}, a);
+    body.add_force({0, -force, 0}, b);
+  }
+}
+
 constexpr double rpm_per_rad = 9.54929658551372;
 constexpr double wheel_inertia = 1.6;
 
@@ -1023,44 +1068,6 @@ void VehicleDynamics::step(const Terrain &terrain) {
       rest_contacts[rest_count++] = {c.point, c.normal, {}, .4 * c.impulse, .4 * c.impulse, {}};
   }
 
-  /*
-  // =========================================================================
-  // BARRE ANTIROULIS (Sway Bar / Anti-Roll Bar)
-  // À décommenter dès que la raideur antiroulis sera exposée dans la config
-  // d'essieu ou de roue (ex: w.anti_roll_stiffness en N/m).
-  // =========================================================================
-  for (size_t left = 0; left + 1 < wheels.size(); left += 2) {
-    const size_t right = left + 1;
-    if (!wheels[left].enabled || !wheels[right].enabled)
-      continue;
-    if (!state[left].contact && !state[right].contact)
-      continue;
-
-    // Différence d'enfoncement entre la roue gauche et la roue droite
-    const double travel_diff = state[left].length - state[right].length;
-    const double arb_stiffness = 0.0; // Remplacer par wheels[left].anti_roll
-    const double arb_force = travel_diff * arb_stiffness;
-
-    const auto apply_arb = [&](size_t idx, double delta_force) {
-      if (!state[idx].contact)
-        return;
-      const Vec3 local_down = wheels[idx].down.normalized();
-      const Vec3 hard = body_point(
-          body, wheels[idx].center - local_down * wheels[idx].anchor_length());
-      const double clamped =
-          std::clamp(state[idx].force + delta_force, 0.0, body.mass * 9.81 * 3.0);
-      const double applied = clamped - state[idx].force;
-      state[idx].force = clamped;
-      body.add_force(state[idx].normal * applied, hard);
-    };
-
-    // Si la roue gauche est plus comprimée (length plus petit -> travel_diff < 0),
-    // on augmente la charge à gauche et on déleste à droite.
-    apply_arb(left, -arb_force);
-    apply_arb(right, +arb_force);
-  }
-  */
-
   if (drive.torque && drive.inertia > 0)
     step_drive();
   if (drive.native_traffic) {
@@ -1089,6 +1096,9 @@ void VehicleDynamics::step(const Terrain &terrain) {
       s.spin = speed / wheels[i].radius;
     }
   }
+  // Bars also work without an engine/drive, and never feed back into the tyre
+  // forces already evaluated above. Always apply both sides as one couple.
+  solve_anti_roll(body, wheels, state, anti_roll);
   const bool parked = !drive.torque && !drive.native_traffic;
   for (size_t i = 0; i < wheels.size(); ++i) {
     const auto& s = state[i];
