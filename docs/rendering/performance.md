@@ -579,3 +579,52 @@ Findings:
   6.51 and 7.47 ms on three runs), so they are not reported; their worker
   submission and render thread fell like the others (2.74 → 2.24 ms,
   2.74 → 2.15 ms). Night has no sun cascades and is unaffected.
+
+## CPU occlusion culling of map props (#361, parked)
+
+Prototyped and parked (not merged): correct, but it
+costs more CPU than it saves. Read this before retrying occlusion culling.
+
+- Potential, measured by testing the main view's prop placements against
+  the AO prepass depth (day replay): in the dense start of the drive about
+  75 % of prop-batch submits and 88 % of placements are fully hidden; the
+  large instances (ground sections) almost never are.
+- GPU depth readback is not usable as is: bgfx's D3D11 `readTexture` copies
+  and maps the staging texture at once (`renderer_d3d11.cpp`), so the render
+  thread waits for the GPU frame. An asynchronous readback would need a
+  bgfx patch, works only with AO on (the low preset has no depth prepass)
+  and lags 2–3 frames.
+- The prototype rasterised large opaque polygons (4 m² and more, walls only,
+  triangle pairs merged into quads) into a 256 x 144 view-depth buffer on
+  the job pool, with inner coverage and the farthest depth per texel, then
+  removed hidden placements from the opaque world and the AO prepass only
+  (lamp tiles keep them: a hidden prop still casts).
+- Lessons for a retry:
+  - Most Valo City buildings are batched map props, not instances: the
+    instances in view are mostly traffic car parts and walkers. Occluders
+    must include the prop placements.
+  - Many SCX4 sections carry the alpha-test flag on fully opaque textures;
+    without reading the texture's smallest alpha (DXT1 3-colour blocks,
+    DXT3/5 alpha) almost nothing occludes.
+  - The two Valo City ground meshes hold 450,000 triangles, about 26,000
+    polygons after the filter.
+- Correctness: the harness city captures and the in-game start frame (about
+  50 % of placements culled) were byte-identical with culling on and off.
+- Cost against saving (same session,
+  `assets/validation/perf-baseline/issue361-occlusion/`): culling took 0.8 to
+  1.1 ms a frame (mesh cache lookup 0.1–0.25, raster 0.4–0.7, tests
+  0.1–0.25) and saved about 0.2 ms of render thread and 0.2–0.3 ms of worker
+  submission. A draw goes only when a whole batch is hidden, so draws fell
+  about 10 %:
+
+| Run | Frame | Draws |
+| --- | --- | --- |
+| day, all | 5.86 → 6.37 ms | 2,515 → 2,271 |
+| day, e4 | 8.25 → 9.21 ms | 2,524 → 2,285 |
+| night, all, low | 3.73 → 4.62 ms | 1,623 → 1,443 |
+| night, e4, low | 5.27 → 6.32 ms | 1,622 → 1,449 |
+
+- Spatial clusters for the ground meshes changed nothing. A 128-texel
+  buffer, three jobs and occluders within 200 m cut the cost to about
+  0.47 ms but also the saving (2,350 draws). Paying off would need a cost
+  near 0.1–0.2 ms: a SIMD rasteriser and precomputed simplified occluders.
