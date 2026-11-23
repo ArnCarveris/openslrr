@@ -18,7 +18,7 @@ struct RenderDebugOverrides {
   bool ambient_occlusion = true;
   std::array<bool, 4> sun_cascades{true, true, true, true};
   bool shadow_caching = true;      // false redraws cached shadow maps every frame
-  // AO prepass, car tiles, reflections on worker encoders (#270). On by
+  // AO prepass, car tiles, sun cascades (#359), reflections on worker encoders (#270). On by
   // default since the in-game A/B (Valo City night, 2560x1440): renderer
   // host time 5.80 -> 5.13 ms, frame 8.15 -> 7.35 ms. Fewer than 3 pool
   // threads still submit on the host.

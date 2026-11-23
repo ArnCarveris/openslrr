@@ -433,3 +433,36 @@ Findings:
 - The heaviest stretch is downtown by day: about 9 ms per second on all
   cores, 15 ms on four E-cores, with 4,300–5,800 draws. No frame went above
   33 ms in any run.
+
+## Sun cascades on worker encoders (#359, first increment)
+
+- `LibBgfxBackend::update_static_shadow_inner` queues one job per sun cascade
+  through `queue_or_run`, like the car lamp tiles (#270). The host keeps the
+  outer-frustum collection (`scene_instances_collect`,
+  `scene_instances_collect_batches`), `cache_scene_mesh`, the cache stamps
+  and every `bgfx::setView*` call. Each job tests each caster against its
+  cascade frustum, filters the prop batches and submits on its own encoder.
+  The collected casters live in a `shared_ptr` the jobs share; they read the
+  mesh cache only after the host has filled it, pass the shadow-local flag to
+  `draw_prop_batches` explicitly, and use a copied shadow origin and cascade
+  radius. A cascade turned off in the debug menu is touched on the host and
+  queues nothing.
+- Harness (`scene_shadow_gpu`, new `city_submission` day + workers case,
+  crowd street at noon, 1280x720, 24 threads): threaded and one-thread images
+  are byte-identical over 40 frames; host shadow time 6.23 → 3.23 ms, worker
+  submission 3.93 ms, host wait 0.31 ms.
+- Replay of the #358 drive by day (`assets/validation/perf-baseline/issue359-cascades/`):
+
+| Run | Frame before → after | Host shadows | Worker submission |
+| --- | --- | --- | --- |
+| all, saved | 6.33 → 5.27 ms (−17 %) | 2.56 → 1.09 ms | 0.40 → 2.33 ms |
+| p4, saved | 6.79 → 5.68 ms (−16 %) | 2.63 → 1.18 ms | 0.37 → 2.06 ms |
+| e4, saved | 10.32 → 8.56 ms (−17 %) | 4.50 → 2.05 ms | 0.55 → 3.31 ms |
+| all, low | 6.12 → 4.99 ms (−18 %) | 2.54 → 1.07 ms | 0 → 1.85 ms |
+| e4, low | 9.89 → 8.16 ms (−17 %) | 4.33 → 1.95 ms | 0 → 2.73 ms |
+
+  GPU time and draws are unchanged. World submission rises by 0.05–0.15 ms,
+  the cost of sharing bgfx's submit state with the cascade encoders.
+- Still on the host: about 1.1 ms (2 ms on four E-cores) of cascade
+  preparation, mostly the outer-frustum collection, plus the world view and
+  the serial part of collection (the rest of #359).

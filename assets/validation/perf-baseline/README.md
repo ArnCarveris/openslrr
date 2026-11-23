@@ -21,3 +21,5 @@ powershell -File scripts\perf_baseline.ps1 -SourceRoot game -Out <dir> -ReplayPa
 Two replays of the same build differ by about ±2 % in draws and by less than
 0.4/255 mean pixel difference: traffic and pedestrians still move a little
 differently. The route and camera path are identical.
+- `issue359-cascades/`: the same replay by day after the sun cascades moved
+  to worker encoders (#359), saved and low presets on every CPU profile.
