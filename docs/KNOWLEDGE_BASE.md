@@ -80,6 +80,15 @@ current gaps to SLRR_rev code are in
   (`src/main.cpp:main`, `src/platform/game_root.cpp:find_game_root`).
 - `data/` is gitignored and holds the local install and reference sources.
   Never commit game data.
+- Asset test suites (`car_lights`, `swaybars`, `race_vehicle`, `nitrous`)
+  read the stock install from `game/` (else `data/game`) relative to the repo
+  root. If `patch/` has been copied into that `game/`, they fail: patched
+  racer classes install sway bars and the headlight checks differ. To run
+  them on stock, start the compiled `build/<suite>-tests/<suite>-after.exe`
+  from a short folder (MAX_PATH) holding a `game` junction to a stock install
+  and a `patch` junction to the repo's `patch/`. `port_flow` instead needs
+  `data/game` = stock with `patch/parts` (minus `src/`) installed over it.
+  On 2026-11-23 the merged #215 branch passed all of them this way.
 - Stock Java sources, when present, follow this layout:
 
   | Layer | Path in the install or source tree |

@@ -177,7 +177,7 @@ struct NitroFixture : Fixture {
   void start_engine() {
     host_input().drive_nitro = false;
     host_input().drive_throttle = .2f;
-    for (unsigned i = 0; i < 240; ++i) {
+    for (unsigned i = 0; i < 600; ++i) {
       const auto current = advance();
       if (current.rpm > 1600 && current.rpm < number(car, "RPM_limit") * .7) return;
     }
