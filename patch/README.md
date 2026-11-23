@@ -168,7 +168,7 @@ This is a dimensional correction inside the legacy pressure-relaxation model,
 not a complete pressure-dependent compressible valve solver. Existing nonzero
 closed lifts now imply area-based leakage too; SuperDuty's authored 1.27-mm
 minimum therefore changes noticeably. Outputs and tuning behavior change.
-See [derivation, provenance and numeric examples](../docs/PHYSICS_TICK_SPIKE.md#derived-correction-now-shipped).
+See [derivation, provenance and numeric examples](../docs/vehicles/physics-tick.md#derived-correction-now-shipped).
 
 To reproduce the included TUFA with the embedded Windows compiler, first follow
 the [build recipe](../README.md#build) and build target `compile_game_sources`.

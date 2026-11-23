@@ -595,7 +595,7 @@ class LibBgfxBackend final : public IRenderBackend {
   // Car lights (#279) lead the unshadowed part of scenery_lamps_: at most
   // kCarLights, the followed car's first, then by distance to the eye.
   static constexpr size_t kCarLights=16;
-  // Tuned in scene_shadow_gpu case car_lights; see KNOWLEDGE_BASE #279.
+  // Tuned in scene_shadow_gpu case car_lights; see docs/rendering/lighting.md #279.
   static constexpr float kCarLightMaxDistance=150.f;
   static constexpr float kHeadlightIntensity=3.f, kHeadlightRange=60.f;
   static constexpr float kHeadlightInnerDegrees=14.f, kHeadlightOuterDegrees=30.f;

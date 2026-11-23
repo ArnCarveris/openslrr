@@ -33,7 +33,7 @@ execution, `notifyAll` wakes all. MessagePort waits return immediately if a
 message is already queued. Waking a message port never clears dialog modal
 flags; dialog completion removes only its own modal shield. VM/GC depth counters are switched with each stack;
 scoped roots retain suspended locals, operands, arguments and construction
-state. See [VM_GC.md](VM_GC.md).
+state. See [scripting/vm-gc.md](vm-gc.md).
 
 The mechanic/time-display compatibility ticks are skipped while their Java
 threads run. The showroom retains host camera selection, but the pose comes
@@ -155,7 +155,7 @@ across repeated adoption. Requires local `game` assets; it opens no window
 and does not request a new career. With `-BaselineRef a5184d2`, the same test
 fails with two timers; the corrected build passes with one. Existing
 `inventory_transition` tests pass 4/4. Windowed FMV/splash visual continuity
-still requires user validation. See [evidence](../assets/validation/splash-boot/results.txt).
+still requires user validation. See [evidence](../../assets/validation/splash-boot/results.txt).
 
 ### Track presentation without a menu plate
 
@@ -502,7 +502,7 @@ body/wheel frames published together. Hidden ancestor chains, other worlds and
 stale incarnations are excluded. Parked bodies can wake on contact while Java
 retains car/driver ownership. Promoted props and free bodies query all active
 physical cars; pair damage carries actual impulse and pre-hit motion rather than
-reusing the wall-relative speed assumption. See [the #197 audit](TRAFFIC_RACE_AUDIT.md)
+reusing the wall-relative speed assumption. See [the #197 audit](../world/traffic-races.md)
 for limits. AI tuning, population and streaming radii are host models, not
 original-engine parity. Native bindings are not race completion.
 

@@ -1,6 +1,6 @@
 # Save JSON schema (version 2)
 
-Implemented 21 November 2026 (#291). Contract: [ENGINE_CONTRACT.md §15](ENGINE_CONTRACT.md#15-saves-and-transitions).
+Implemented 21 November 2026 (#291). Contract: [ENGINE_CONTRACT.md §15](../core/ENGINE_CONTRACT.md#15-saves-and-transitions).
 Code: `src/natives/save_json.cpp` (schema, encoder, decoder) and
 `src/natives/natives_io.cpp` (files, packs, blobs, conversion).
 
