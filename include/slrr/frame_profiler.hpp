@@ -44,6 +44,7 @@ enum class Zone : uint8_t {
   WorkerSubmit,     // AO prepass, car tiles and reflection faces, summed over workers
   SubmitWait,       // host thread waiting for those workers after the world
   Interpolation,    // render-pose publication, nested inside Physics
+  SunCollect,       // sun cascade outer-frustum collection, inside SunShadows (#359)
   Count
 };
 

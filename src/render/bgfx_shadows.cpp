@@ -1293,8 +1293,11 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     std::vector<float> skinned_distance;
   };
   const auto sun_casters=std::make_shared<SunCasters>();
-  sun_casters->casters=scene_instances_collect(&outer_frustum,nullptr,false);
-  scene_instances_collect_batches(&outer_frustum,sun_casters->batches);
+  {
+    perf::Scope collect_scope(perf::Zone::SunCollect);
+    sun_casters->casters=scene_instances_collect(&outer_frustum,nullptr,false);
+    scene_instances_collect_batches(&outer_frustum,sun_casters->batches);
+  }
   const auto& casters=sun_casters->casters;
   const auto& outer_batches=sun_casters->batches;
   for(const auto& instance:casters) {

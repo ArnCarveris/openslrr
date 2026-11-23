@@ -466,3 +466,34 @@ Findings:
 - Still on the host: about 1.1 ms (2 ms on four E-cores) of cascade
   preparation, mostly the outer-frustum collection, plus the world view and
   the serial part of collection (the rest of #359).
+
+## Sun caster collection and the parallel batch merge (#359, second increment)
+
+- New profiler zone `sun_collect` (`perf::Zone::SunCollect`, inside
+  `sun_shadows`): the outer-frustum collection of the sun cascades. After the
+  first increment it was 0.94 of the 1.02 ms left in `sun_shadows` (1.87 of
+  2.01 ms on four E-cores), and three quarters of it was
+  `scene_instances_collect_batches` over the outer frustum.
+- Probing every `scene_instances_collect_batches` call of a frame (temporary
+  zones, removed): serial setup 0.39 ms, parallel placement loop 0.36 ms,
+  serial merge 0.51 ms (0.73 / 1.06 / 0.88 ms on four E-cores). The merge
+  copied each placement's matrix and colour into its batch one by one.
+- `src/resources/scene_instances.cpp:scene_instances_collect_batches` now
+  numbers every hit within its batch in run order (one counter per slot),
+  sizes each batch once, and copies the instances on the pool. Each batch
+  lists its placements in exactly the serial order, so the output is
+  unchanged: the `scene_shadow_gpu` reference-capture differences are the
+  same as on `main` and threaded against one-thread stays byte-identical.
+- Replay of the #358 drive by day (`assets/validation/perf-baseline/issue359-batch-merge/`),
+  frame time #358 → first increment → this change:
+
+| Run | Frame | p95 | `sun_collect` |
+| --- | --- | --- | --- |
+| all, saved | 6.33 → 5.27 → 4.96 ms | 6.13 → 5.67 ms | 0.94 → 0.70 ms |
+| p4, saved | 6.79 → 5.68 → 5.44 ms | 6.69 → 6.41 ms | → 0.80 ms |
+| e4, saved | 10.32 → 8.56 → 8.13 ms | 9.65 → 8.99 ms | 1.87 → 1.40 ms |
+| all, low | 6.12 → 4.99 → 4.84 ms | 5.75 → 5.69 ms | → 0.72 ms |
+| e4, low | 9.89 → 8.16 → 7.22 ms | 9.04 → 7.95 ms | → 1.20 ms |
+
+  The main view's `collect_batches` is unchanged within noise (0.52 →
+  0.57 ms): it merges far fewer placements than the outer frustum.

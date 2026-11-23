@@ -186,6 +186,7 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     {perf::Zone::LampSelect, "Street lamp selection"},
     {perf::Zone::Shadows, "Shadow updates (all)"},
     {perf::Zone::SunShadows, "  sun cascades / point"},
+    {perf::Zone::SunCollect, "    sun caster collection"},
     {perf::Zone::CarDepth, "  vehicle depth (sun)"},
     {perf::Zone::LampShadows, "  lamp + car lamp tiles"},
     {perf::Zone::FixtureShadows, "Garage fixture shadows"},
