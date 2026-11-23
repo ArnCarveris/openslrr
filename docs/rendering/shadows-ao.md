@@ -31,6 +31,18 @@ Contract: [contract.md](contract.md#shadows).
   the separate short-range vehicle-caster path and scene-detection limits.
 - `tests/test_scene_shadow_gpu.cpp` checks distinct atlas clears/selection,
   blends and the 1 km fade through actual shaders, plus projection stability.
+- Far cascades alternate while the camera moves (#361, renderer debug option
+  "Far cascades on alternate frames while moving",
+  `render_debug().cascade_alternation`). When the projections changed this
+  frame, cascade 2 (320 m) redraws on even frames and cascade 3 (1,000 m) on
+  odd ones. The skipped tile keeps its depth and its
+  `shadow_cascade_matrices_` entry, so receivers sample it with the matrix
+  it was drawn with; the 10 % extent margin in `cascadeVisibility` covers
+  one frame of camera motion. A still camera draws all four (the caster
+  cache needs it), and `cascade_tile_valid_` drops every tile after an
+  atlas re-creation, an origin rebase or a frame that did not reach the sun
+  cascades (no sun, point light in the same atlas, shadows off). Consequence
+  for later work: a far tile may hold casters one frame old.
 
 ## Cascade CPU cost, filtering and anisotropy (#201)
 

@@ -3667,6 +3667,45 @@ struct SceneShadowRegression {
     b.update_static_shadow(eye, video);
     bgfx::frame();
     SLRR_REQUIRE(b.shadow_atlas_revision_ == revision + 1);
+    {
+      // #361: a moving camera redraws the far cascades (2, 3) on alternate
+      // frames; the skipped one keeps the matrix its tile was drawn with.
+      // A still camera, a gap of one frame or alternation off draws all.
+      const bool saved = render_debug().cascade_alternation;
+      float moving[3] = {eye[0], eye[1], eye[2]};
+      const auto step = [&](float dx) {
+        moving[0] += dx;
+        ++b.frames_;
+        const auto before = b.shadow_cascade_matrices_;
+        b.update_static_shadow(moving, video);
+        bgfx::frame();
+        std::array<bool, 4> drawn{};
+        for (size_t c = 0; c < 4; ++c) drawn[c] = b.shadow_cascade_matrices_[c] != before[c];
+        return drawn;
+      };
+      render_debug().cascade_alternation = true;
+      step(3.f);  // continuity starts here: everything is drawn
+      size_t far_draws = 0;
+      for (int frame = 0; frame < 6; ++frame) {
+        const auto drawn = step(3.f);
+        SLRR_REQUIRE(drawn[0] && drawn[1]);
+        SLRR_REQUIRE(drawn[2] != drawn[3]);
+        far_draws += size_t(drawn[2]) + size_t(drawn[3]);
+      }
+      SLRR_REQUIRE(far_draws == 6);
+      b.frames_ += 2;  // a frame without the sun cascades: all tiles stale
+      {
+        const auto drawn = step(3.f);
+        SLRR_REQUIRE(drawn[0] && drawn[1] && drawn[2] && drawn[3]);
+      }
+      render_debug().cascade_alternation = false;
+      for (int frame = 0; frame < 2; ++frame) {
+        const auto drawn = step(3.f);
+        SLRR_REQUIRE(drawn[0] && drawn[1] && drawn[2] && drawn[3]);
+      }
+      render_debug().cascade_alternation = saved;
+      std::puts("PASS far sun cascades alternate while the camera moves (#361)");
+    }
     for (auto child : children)
       gameref_remove(child);
     gameref_remove(root);

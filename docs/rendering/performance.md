@@ -542,3 +542,40 @@ Findings:
   The gains are small: the four opaque jobs together take longer than the
   host did alone (worker submission 2.28 → 3.16 ms by day), the cost of
   bgfx's shared submit state that #270 already measured.
+
+## Far sun cascades on alternate frames (#361, first increment)
+
+- Per-view draws on the #358 replay (600-frame averages, dense start of
+  the drive → open road): opaque prop batches (view 151) 1,100 → 230;
+  opaque instances (152–154) 580 → 270; sun cascades (0, 2–4) 1,500 → 500,
+  800 of them in the 1,000 m cascade alone; AO prepass (140) 610 → 210;
+  lamp tiles (136, night) 630 → 330; reflections (72) about 200.
+- Tried and dropped: merging map sections on the fields `fs_mesh` reads
+  (ignoring specular, shininess, reflection and lightmap slots in
+  `same_material`) removed 0.5 % of prop-batch draws; the remaining sections
+  differ by texture. About 40 % of prop batches hold one placement.
+- Also measured for #360 and set aside: routing `u_color` and `u_alphaTest`
+  through the uniform cache. bgfx re-uploads the whole vertex and fragment
+  constant buffers for any draw that sets a uniform, and 69 % of world draws
+  change none, but the replay showed no change (render thread 2.54 ms by
+  day before and after): the world view is about 290 of 3,000 draws.
+- `update_static_shadow_inner` now redraws cascades 2 and 3 on alternate
+  frames while the camera moves (shadows-ao.md). Harness
+  (`scene_shadow_gpu`): the still-camera captures are byte-identical to
+  main; a new case checks the alternation, the invalidation after a gap and
+  the option. In game (day replay, 2560x1440), the start frame, where two
+  runs without alternation differ by 55 pixels, differs by 486,000 pixels
+  with it: 98.5 % by at most 2/255, 1,001 by more than 16/255, scattered
+  over distant foliage. Later frames differ between runs anyway (traffic).
+- Day replay, same session
+  (`assets/validation/perf-baseline/issue361-cascade-alternation/`):
+
+| Run | Draws | Frame | p95 | Worker submission | Render thread |
+| --- | --- | --- | --- | --- | --- |
+| day, all | 3,002 → 2,515 | 4.60 → 4.29 ms | 5.16 → 4.86 ms | 3.12 → 2.45 ms | 2.46 → 2.09 ms |
+| day, e4 | 3,012 → 2,523 | 7.89 → 7.10 ms | 8.79 → 7.83 ms | 4.48 → 3.42 ms | 4.02 → 3.38 ms |
+
+  The p4 runs were unstable in this session for the unchanged build (5.46,
+  6.51 and 7.47 ms on three runs), so they are not reported; their worker
+  submission and render thread fell like the others (2.74 → 2.24 ms,
+  2.74 → 2.15 ms). Night has no sun cascades and is unaffected.

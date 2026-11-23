@@ -1262,6 +1262,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     }
     static_shadow_tex_ = depth;
     static_shadow_size_ = size;
+    cascade_tile_valid_.fill(false);
   }
   const auto *caps = bgfx::getCaps();
   const float focus[3] = {eye[0], eye[1], -eye[2]};
@@ -1354,12 +1355,25 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
       stamps.back().revision^=skin_palette_hash(instance->skin);
     }
   }
+  // A frame that did not reach the sun cascades (no sun, point light in the
+  // same atlas, shadows off) or a rebased origin leaves no reusable tile.
+  if(sun_cascade_frame_!=frames_-1 || shadow_cached_origin_!=shadow_origin_)
+    cascade_tile_valid_.fill(false);
+  sun_cascade_frame_=frames_;
   const bool unchanged=shadow_cache_valid_ && same_projection && stamps==shadow_cached_casters_ &&
                        render_debug().shadow_caching;
   if(unchanged) {
     static_shadow_active_=true;shadow_cascades_active_=true;return;
   }
+  // #361: while the camera moves, the two far cascades (320 m and 1000 m by
+  // default) redraw on alternate frames. The skipped one keeps its tile and
+  // the matrix it was drawn with; receivers sample it with that matrix, and
+  // its 10 % extent margin covers the camera's motion in one frame. A still
+  // camera (same_projection) draws them all, as the caster cache expects.
+  const bool alternate=render_debug().cascade_alternation && !same_projection;
   for (size_t cascade = 0; cascade < size_t(4); ++cascade) {
+    if(alternate && cascade>=2 && cascade_tile_valid_[cascade] && ((size_t(frames_)+cascade)&1u))
+      continue;
     const auto& projection=projections[cascade];
     shadow_cascade_matrices_[cascade] = projection.sample;
     auto world_view=projection.view;
@@ -1377,8 +1391,10 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     // Debug toggle (#243): an off cascade stays cleared (fully lit).
     if (!render_debug().sun_cascades[cascade]) {
       enc()->touch(view_id);
+      cascade_tile_valid_[cascade]=false;
       continue;
     }
+    cascade_tile_valid_[cascade]=true;
     // One job per cascade view (#359): culling and submission may run on a
     // worker encoder, like the car lamp tiles (#270). The view setup above
     // stays on the API thread; the job only reads the shared casters, the
