@@ -3239,9 +3239,12 @@ DriveRefresh configure_drive(Object *chassis, Record &rec, bool controlled) {
   drive.engaged = rec.physics_released;
   drive.reverse = autonomous ? ai.reverse : controls && in.drive_reverse;
   drive.shift = autonomous || !controls ? 0 : in.drive_shift > .5f ? 1 : in.drive_shift < -.5f ? -1 : 0;
-  drive.automatic_shift = autonomous || rec.transmission == 1;
+  // The benchmark drive shifts automatically whatever the player's saved
+  // transmission, so every run covers the same street (#358).
+  const bool bench = controls && in.bench_throttle >= 0.f;
+  drive.automatic_shift = autonomous || bench || rec.transmission == 1;
   drive.automatic_first = autonomous || rec.transmission == 5;
-  drive.auto_clutch = autonomous || rec.transmission != 2;
+  drive.auto_clutch = autonomous || bench || rec.transmission != 2;
   drive.starter = engine ? std::max(0.f, comp(chassis, "starter_torque")) : 0.f;
   const double brake_inertia = std::max(.01f, rec.config->brake_inertia);
   drive.bearing_scale = .1 / brake_inertia;
@@ -7340,6 +7343,54 @@ void part_set_external_motion(Object *car, bool external) {
     rec->external_motion = external;
     rec->physics_ready = false;
   }
+}
+bool part_published_local(Object *car, float *local16) {
+  auto *rec = record(as_part(car));
+  auto *node = gameref_get(car);
+  if (!rec || !node || rec->external_motion || !rec->physics_ready ||
+      rec->physics_suspended || !node->matrix_override)
+    return false;
+  std::copy_n(node->local_matrix, 16, local16);
+  return true;
+}
+bool part_set_external_pose(Object *car, const float *local16, double dt) {
+  auto *rec = record(as_part(car));
+  auto *node = gameref_get(car);
+  if (!rec || !node || !rec->external_motion)
+    return false;
+  for (int i = 0; i < 16; ++i)
+    if (!std::isfinite(local16[i]))
+      return false;
+  const float previous[3] = {node->pos[0], node->pos[1], node->pos[2]};
+  const float previous_yaw = node->ypr[0];
+  std::copy_n(local16, 16, node->local_matrix);
+  node->matrix_override = true;
+  std::copy_n(local16 + 12, 3, node->pos);
+  // Same Euler extraction as dynamics_sync, so readers of pos/ypr agree.
+  const double pitch = std::asin(std::clamp(-double(local16[9]), -1.0, 1.0));
+  node->ypr[1] = static_cast<float>(pitch);
+  if (std::fabs(std::cos(pitch)) > 1e-6) {
+    node->ypr[0] = static_cast<float>(std::atan2(local16[8], local16[10]));
+    node->ypr[2] = static_cast<float>(std::atan2(local16[1], local16[5]));
+  } else {
+    node->ypr[0] = static_cast<float>(std::atan2(-local16[2], local16[0]));
+    node->ypr[2] = 0;
+  }
+  if (dt > 0) {
+    const float d[3] = {node->pos[0] - previous[0], node->pos[1] - previous[1],
+                        node->pos[2] - previous[2]};
+    for (int i = 0; i < 3; ++i)
+      node->vel[i] = static_cast<float>(d[i] / dt);
+    // Signed travel along the car's forward (z) axis turns the wheels; the
+    // yaw change per metre gives a plausible steering angle, as for
+    // transform-driven traffic.
+    const float advance = d[0] * local16[8] + d[1] * local16[9] + d[2] * local16[10];
+    const float turn = std::remainder(node->ypr[0] - previous_yaw, 6.2831853f);
+    part_animate_external_wheels(
+        car, advance,
+        std::fabs(advance) > .001f ? std::atan(2.5f * turn / advance) : 0.f);
+  }
+  return true;
 }
 bool part_physics_state(Object *key, PartPhysicsState &state) {
   auto *rec = record(as_part(key));

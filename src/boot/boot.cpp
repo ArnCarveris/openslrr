@@ -1,4 +1,5 @@
 #include "slrr/boot.hpp"
+#include "slrr/drive_path.hpp"
 #include "slrr/frame_profiler.hpp"
 
 #include "slrr/gameref.hpp"
@@ -223,6 +224,7 @@ int boot_probe(Jvm& jvm, const BootOptions& opt) {
 int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
   jvm.set_game_root(opt.game_root);
   if (!jvm.bootstrap_classpath()) return 2;
+  natives_fix_random_seed(opt.random_seed);
 
   host_sfx_set_game_root(opt.game_root);
   host_music_set_root(opt.game_root);
@@ -536,15 +538,45 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
     // A track without ground props (Test Track, drag strip) never reports
     // them; there the car resting on all its wheels for 5 s is the cue.
     int bench_supported_frames = 0;
+    // --auto-cmd demo: MainMenu.CMD_DEMO once the main menu is up; the race
+    // is then measured like the benchmark drive (#358).
+    constexpr int kMainMenuDemo = 59;
+    bool demo_requested = false;
+    // Recorded drives (#358): --record-path writes the player car's pose
+    // every frame of normal play; --replay-path moves the benchmark car
+    // along a recording, so every build renders the same drive.
+    DrivePathWriter path_writer;
+    if (!opt.record_path.empty()) {
+      if (path_writer.open(opt.record_path))
+        std::printf("[path] recording to %s\n", opt.record_path.c_str());
+      else
+        std::fprintf(stderr, "[path] cannot write %s\n", opt.record_path.c_str());
+    }
+    DrivePath replay;
+    float bench_seconds = opt.bench_drive_seconds;
+    if (!opt.replay_path.empty()) {
+      std::string error;
+      if (replay.load(opt.replay_path, &error)) {
+        if (bench_seconds <= 0.f) bench_seconds = static_cast<float>(replay.duration());
+        std::printf("[path] replay %s: %zu samples, %.1f s\n", opt.replay_path.c_str(),
+                    replay.samples().size(), replay.duration());
+      } else {
+        std::fprintf(stderr, "[path] %s\n", error.c_str());
+      }
+    }
     while (until_quit || frames < opt.max_frames) {
       // Soft PollWindowQuit adjacency — pump before Input/sim like stock
       // neighbors (Input_tick still inside mainloop_frame).
       render.pump(16);
       mainloop_sync_section_render(render, sections);
       const double real_dt = elapsed();
-      MainLoopFrameResult fr = mainloop_frame(
-          jvm, render, sections,
-          bench_running && !opt.bench_realtime ? 1.0 / kBenchRate : real_dt);
+      const double frame_dt = bench_running && !opt.bench_realtime ? 1.0 / kBenchRate : real_dt;
+      MainLoopFrameResult fr = mainloop_frame(jvm, render, sections, frame_dt);
+      if (path_writer.is_open() && !bench_running) {
+        float local[16];
+        if (Object* car = part_controlled_chassis(); car && part_published_local(car, local))
+          path_writer.write(frame_dt, local);
+      }
       {
         perf::Scope scope(perf::Zone::Gc);
         jvm.gc_safe_point();
@@ -593,7 +625,30 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
           std::fprintf(stderr, "[bench] no MapBox track matches %s\n", opt.bench_map.c_str());
         }
       }
-      if (opt.bench_drive_seconds > 0.f) {
+      if (opt.auto_demo && !demo_requested && sections.actual() &&
+          sections.actual()->class_name.find("MainMenu") != std::string::npos) {
+        demo_requested = true;
+        std::printf("[demo] MainMenu.osdCommand(%d)\n", kMainMenuDemo);
+        jvm.invoke("java.game.MainMenu", "osdCommand", "(I)V",
+                   {Value::make_obj(sections.actual()), Value::make_int(kMainMenuDemo)},
+                   false);
+      }
+      if (demo_requested && !bench_running && bench_seconds > 0.f && sections.actual() &&
+          sections.actual()->class_name.find("Valocity") != std::string::npos &&
+          !scene_transition_active() && !osd_loading_dialog() &&
+          osd_loading_overlay().empty()) {
+        // The demo picks a random hour; --bench-time replaces it.
+        bench_running = true;
+        bench_frames = -kBenchSettle;
+        if (opt.bench_hour >= 0.f) {
+          const float seconds = std::fmod(opt.bench_hour, 24.f) * 3600.f;
+          jvm.invoke("java.game.GameLogic", "setTime", "(F)V",
+                     {Value::make_float(seconds)}, true);
+          scene_sun_set_time(seconds);
+        }
+        std::printf("[demo] measuring %.1f s\n", bench_seconds);
+      }
+      if (bench_seconds > 0.f) {
         auto& input = host_input();
         Object* bench_car = part_controlled_chassis();
         PartPhysicsState resting;
@@ -615,7 +670,7 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
             scene_sun_set_time(seconds);
           }
           std::printf("[bench] drive start: %.1f s full throttle\n",
-                      opt.bench_drive_seconds);
+                      bench_seconds);
         }
         if(bench_running&&bench_frames>=0&&!bench_profile_started&&opt.perf_log){perf::restart(opt.bench_realtime?0:kBenchRate);bench_profile_started=true;}
         input.bench_throttle = !bench_running ? -1.f : bench_frames >= 0 ? 1.f : 0.f;
@@ -634,7 +689,15 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
           render.request_screenshot(opt.bench_shots + name);
           ++bench_shot;
         }
-        if (bench_running && bench_frames >= opt.bench_drive_seconds * kBenchRate) {
+        if (bench_running && bench_car && !replay.empty()) {
+          // From the settle on, the car follows the recording: held at its
+          // first pose while the drive settles, then at the fixed step.
+          if (bench_frames == -kBenchSettle) part_set_external_motion(bench_car, true);
+          const double t = (bench_frames > 0 ? bench_frames : 0) / double(kBenchRate);
+          const auto pose = replay.at(t);
+          part_set_external_pose(bench_car, pose.data(), 1.0 / kBenchRate);
+        }
+        if (bench_running && bench_frames >= bench_seconds * kBenchRate) {
           std::printf("[bench] drive done\n");
           break;
         }

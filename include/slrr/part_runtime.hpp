@@ -121,6 +121,12 @@ void part_physics_set_threaded(bool threaded);
 void part_set_wind(double speed, double heading_degrees);
 // External traffic motion owns pose/velocity; physics resumes from that pose on release.
 void part_set_external_motion(Object*,bool);
+// The chassis local matrix physics published last; false before physics
+// runs, while suspended, or for a car in external motion (#358).
+bool part_published_local(Object* car, float* local16);
+// Poses a car in external motion from a local matrix and turns its wheels by
+// the travel since the previous pose, dt seconds ago (#358 drive replay).
+bool part_set_external_pose(Object* car, const float* local16, double dt);
 // Metres travelled and road-wheel steering angle for externally driven traffic.
 void part_animate_external_wheels(Object*,float metres,float steer);
 // GroundRef pedestrian natives. Density is people per square metre after the

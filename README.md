@@ -225,6 +225,15 @@ To measure frame time on a repeatable Valo City drive (the same street, frame by
   --perf-log city.csv
 ```
 
+That straight run leaves the road after about 12 s. For measurements, replay a
+recorded drive instead: play normally with `--record-path drive.path`, then
+run the benchmark with `--replay-path drive.path` (no `--bench-drive`; the
+drive lasts the recording). `scripts/perf_baseline.ps1 -SourceRoot game -Out
+DIR -ReplayPath assets\validation\perf-baseline\drive.path` replays the
+reference drive by day and night, on all cores, four P-cores and four
+E-cores, with the saved settings and a low preset, and writes a summary.
+`--seed N` fixes the script random numbers.
+
 For career-only performance issues, use `--bench-career save/carrer/NAME`
 instead of `--spawn-car`, with `--bench-map ValoCity`. This invokes the original
 career loader; use a copied game/save root for repeatable measurements because
