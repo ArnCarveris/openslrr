@@ -16,6 +16,9 @@
     saved the options already in the source root
     low   1920x1080, no MSAA, no AO, low shadows, no dynamic reflections or
           volumetric clouds
+  Single-setting variants of saved, for the GPU pass costs (#362):
+    msaa4  MSAA 4x            noao    AO off
+    hard   shadow smoothing 0 norefl  dynamic reflections off
   The first and second CSV rows (warm-up) are left out of the averages.
 
 .EXAMPLE
@@ -46,8 +49,19 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $out = (Resolve-Path $Out).Path
 $work = Join-Path (Split-Path $exe) "perf-roots"
 
+function Set-Options([string] $root, [hashtable] $set) {
+  $file = Join-Path $root "save\game\openslrr_options"
+  $lines = Get-Content $file | ForEach-Object {
+    $k = ($_ -split "=")[0]; if ($set.ContainsKey($k)) { "$k=$($set[$k])" } else { $_ } }
+  $lines | Set-Content $file -Encoding ascii
+}
+
 function Write-Preset([string] $root, [string] $preset) {
   if ($preset -eq "saved") { return }
+  $variants = @{ msaa4 = @{ msaa = 2 }; noao = @{ ao_method = 0 }; hard = @{ shadow_smoothing = 0 };
+                 norefl = @{ dynamic_reflections = 0 } }
+  if ($variants.ContainsKey($preset)) { Set-Options $root $variants[$preset]; return }
+  if ($preset -ne "low") { throw "unknown preset $preset" }
   $raw = Join-Path $root "save\game\options"
   # values[3] and values[4] are the resolution. Edit the text, not the parsed
   # JSON: in a values list 1.0 is a float and 1 an int, and a JSON round trip
@@ -56,12 +70,8 @@ function Write-Preset([string] $root, [string] $preset) {
   $fixed = [regex]::Replace($text, '("values":\s*\[\s*-?\d+,\s*-?\d+,\s*-?\d+,\s*)\d+(,\s*)\d+', '${1}1920${2}1080')
   if ($fixed -eq $text) { throw "resolution not found in $raw" }
   [IO.File]::WriteAllText($raw, $fixed)
-  $file = Join-Path $root "save\game\openslrr_options"
-  $set = @{ msaa = 0; ao_method = 0; shadow_quality = 0; shadow_smoothing = 0;
-            dynamic_reflections = 0; volumetric_clouds = 0 }
-  $lines = Get-Content $file | ForEach-Object {
-    $k = ($_ -split "=")[0]; if ($set.ContainsKey($k)) { "$k=$($set[$k])" } else { $_ } }
-  $lines | Set-Content $file -Encoding ascii
+  Set-Options $root @{ msaa = 0; ao_method = 0; shadow_quality = 0; shadow_smoothing = 0;
+                       dynamic_reflections = 0; volumetric_clouds = 0 }
 }
 
 $drive = if ($ReplayPath) { @("--replay-path", (Resolve-Path $ReplayPath).Path) } else { @("--bench-drive", "$DriveSeconds") }
@@ -93,10 +103,10 @@ foreach ($preset in $Presets) {
       $speed = (Select-String -Path (Join-Path $out "$name.out.txt") -Pattern "\[bench\] t=\S+ speed=(\S+)" |
         Select-Object -Last 1).Matches.Groups[1].Value
       $avg = [ordered]@{ run = $name; end_kmh = $speed }
-      foreach ($c in "fps", "frame_avg_ms", "frame_p95_ms", "frame_max_ms", "scripts_ms", "physics_ms",
+      foreach ($c in @("fps", "frame_avg_ms", "frame_p95_ms", "frame_max_ms", "scripts_ms", "physics_ms",
                      "flush_ms", "collect_ms", "collect_batches_ms", "collect_instances_ms", "shadows_ms",
                      "refl_ms", "world_ms", "worker_submit_ms", "present_ms", "render_thread_ms",
-                     "gpu_ms", "draws") {
+                     "gpu_ms", "draws") + @($data[0].PSObject.Properties.Name | Where-Object { $_ -like "gpu_*_ms" })) {
         # Windows PowerShell 5.1: Measure-Object takes no script block, and
         # the CSV fields are strings.
         $sum = 0.0; foreach ($r in $data) { $sum += [double]::Parse($r.$c, [Globalization.CultureInfo]::InvariantCulture) }

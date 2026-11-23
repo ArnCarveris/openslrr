@@ -628,3 +628,52 @@ costs more CPU than it saves. Read this before retrying occlusion culling.
   buffer, three jobs and occluders within 200 m cut the cost to about
   0.47 ms but also the saving (2,350 draws). Paying off would need a cost
   near 0.1–0.2 ms: a SIMD rasteriser and precomputed simplified occluders.
+
+## GPU time per pass (#362)
+
+- `--perf-log` now writes `gpu_<pass>_ms` columns: map shadows, car depth,
+  interior sun, world (views 5 and 151–154), AO prepass, AO, reflections,
+  lamp tiles, headlight tiles, previews, OSD and other. The bgfx profiler
+  supplies per-view GPU times; it is on while the debug menu is open or
+  `--perf-log` is active (`LibBgfxBackend::flush`; it used to switch only
+  while the menu was drawn). `render_debug.hpp:render_gpu_pass` maps a view to
+  its pass and `render_debug_view_name` now names the opaque world views.
+- Profiler cost (same session): render thread 2.08 → 2.11 ms by day, frame
+  4.37 → 4.33 ms; within the noise.
+- GPU times swing between two levels (about 3.8 and 5.8 ms for the same
+  build) when another 3D application runs. Measure with nothing else
+  rendering.
+- Day replay, 2560x1440, saved settings (MSAA 8x, AO method 1 High, shadow
+  quality High, smoothing 2), RTX 4080, all cores
+  (`assets/validation/perf-baseline/issue362-gpu-passes/`):
+
+| Pass | Day | Night |
+| --- | --- | --- |
+| World | 1.80 ms | 2.17 ms |
+| Map shadows (sun cascades) | 0.76 ms | — |
+| AO prepass | 0.20 ms | 0.17 ms |
+| AO (geometry, AO, two filters) | 0.67 ms | 0.63 ms |
+| Reflections | 0.12 ms | 0.12 ms |
+| Lamp tiles | — | 0.14 ms |
+| Total GPU | 3.89 ms | 3.30 ms |
+
+- The GPU is below the CPU frame on this machine (day 3.9 ms against a
+  4.7 ms frame), so it does not limit the frame. Against #358's baseline
+  (another session) the day GPU frame fell from 4.19 to 3.6–3.9 ms, mostly
+  from the far-cascade alternation (#361).
+- Single-setting variants by day (GPU total, world / AO with its prepass /
+  shadows):
+  saved 3.81 (1.79 / 0.91 / 0.79), MSAA 4x 3.69 (1.75 / 0.91 / 0.77),
+  AO off 2.77 (1.64 / 0 / 0.84), smoothing 0 3.71 (1.70 / 0.87 / 0.83),
+  reflections off 3.66 (1.76 / 0.92 / 0.81).
+- Findings:
+  - MSAA 8x costs about the same as 4x at 1440p on the RTX 4080
+    (0.04 ms of world time); keep 8x as the saved default here.
+  - AO is the largest optional pass: 0.87–1.0 ms with the prepass, a quarter
+    of the GPU frame. Its screen-space passes (0.67 ms) are the candidate for
+    a GPU optimisation, as the open note above says (pass 1 reads the
+    full-resolution D32F prepass).
+  - The Very soft kernel costs about 0.1 ms; reflections 0.12 ms. Neither is
+    an outlier.
+  - Weaker GPUs are not measured: the same columns and variants should be
+    run there before changing any default.

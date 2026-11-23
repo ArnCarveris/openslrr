@@ -48,6 +48,25 @@ enum class Zone : uint8_t {
   Count
 };
 
+// GPU time per renderer pass (#362): bgfx views grouped by what they draw.
+// render_debug.hpp:render_gpu_pass maps a view to its pass.
+enum class GpuPass {
+  MapShadows,      // sun cascades, or the six point-light faces in a garage
+  CarDepth,        // vehicle depth map for the sun
+  InteriorSun,     // interior sun map and aperture
+  World,           // opaque world views and the world view
+  AoPrepass,       // AO depth prepass (geometry)
+  AmbientOcclusion, // AO geometry, AO and the two filters
+  Reflections,     // dynamic reflection cube faces
+  LampTiles,       // fixture, street lamp and car lamp shadow tiles
+  HeadlightTiles,  // headlight shadow tiles
+  Previews,        // script viewport previews (garage part views)
+  Osd,             // FMV, OSD and debug overlay
+  Other,
+  Count
+};
+const char *gpu_pass_name(GpuPass pass);
+
 // Renderer-side numbers for the frame bgfx finished last.
 struct RenderSample {
   double render_thread_ms = 0.; // bgfx render thread (API submission)
@@ -56,6 +75,8 @@ struct RenderSample {
   uint32_t draws = 0;
   uint32_t instances = 0;       // individually submitted scene instances
   uint32_t batch_instances = 0; // instanced prop placements
+  // Per-pass GPU times from the bgfx profiler, on while profiling (#362).
+  std::array<double, static_cast<size_t>(GpuPass::Count)> gpu_pass_ms{};
 };
 
 struct Snapshot {

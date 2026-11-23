@@ -11,6 +11,8 @@
 
 #include <bgfx/bgfx.h>
 
+#include "slrr/frame_profiler.hpp"
+
 namespace slrr {
 
 struct RenderDebugOverrides {
@@ -155,6 +157,8 @@ inline const char *render_debug_view_name(uint16_t view) {
   case 3: return "Sun cascade 2 / point face 3";
   case 4: return "Sun cascade 3 / point face 4";
   case 5: return "World";
+  case 151: return "World opaque (sky, prop batches)";
+  case 152: case 153: case 154: return "World opaque (instances)";
   case 6: return "FMV layer";
   case 7: return "OSD under world";
   case 64: return "Point face 5";
@@ -175,5 +179,23 @@ inline const char *render_debug_view_name(uint16_t view) {
   if (view >= 128 && view < 136) return "Fixture / lamp shadow tile";
   if (view >= 145 && view < 151) return "Headlight shadow tile";
   return "Other";
+}
+
+// The --perf-log GPU pass of a bgfx view (#362), in the view layout above.
+inline perf::GpuPass render_gpu_pass(uint16_t view) {
+  using perf::GpuPass;
+  if (view <= 4 && view != 1) return GpuPass::MapShadows;
+  if (view == 64) return GpuPass::MapShadows;
+  if (view == 1) return GpuPass::CarDepth;
+  if (view == 65 || view == 66) return GpuPass::InteriorSun;
+  if (view == 5 || (view >= 151 && view <= 154)) return GpuPass::World;
+  if (view == 140) return GpuPass::AoPrepass;
+  if (view >= 141 && view <= 144) return GpuPass::AmbientOcclusion;
+  if (view >= 72 && view < 84) return GpuPass::Reflections;
+  if (view >= 128 && view <= 136) return GpuPass::LampTiles;
+  if (view >= 145 && view <= 150) return GpuPass::HeadlightTiles;
+  if (view >= 8 && view < 64) return GpuPass::Previews;
+  if (view == 6 || view == 7 || view == 70 || view == 71) return GpuPass::Osd;
+  return GpuPass::Other;
 }
 } // namespace slrr
