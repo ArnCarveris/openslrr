@@ -7,6 +7,7 @@
 #include "slrr/sl2_pacejka.hpp"
 #include "slrr/natives_boot.hpp"
 #include "slrr/gameref.hpp"
+#include "slrr/part_runtime.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,7 +32,8 @@ void usage() {
       "           [--perf-log CSV|-] [--bench-map TRACK] [--bench-drive SECONDS]\n"
       "           [--bench-career SAVE_DIRECTORY] [--bench-realtime]\n"
       "           [--bench-time HOUR] [--bench-shots DIR]\n"
-      "           [--no-vsync] [--debug-overlay]\n"
+      "           [--wind M/S[,HEADING]]\n"
+      "           [--no-vsync] [--debug-overlay] [--physics-inline]\n"
       "           [PlayerName]\n"
       "\n"
       "Default --game: FMV intros → Init(int) (Soft splash / menu).\n"
@@ -125,6 +127,11 @@ int main(int argc, char** argv) {
       opt.vsync = false;
       continue;
     }
+    if (std::strcmp(a, "--physics-inline") == 0) {
+      // Step physics on the host thread instead of the physics thread.
+      part_physics_set_threaded(false);
+      continue;
+    }
     if (std::strcmp(a, "--debug-overlay") == 0) {
       opt.debug_overlay = true;
       continue;
@@ -145,6 +152,13 @@ int main(int argc, char** argv) {
     }
     if (std::strcmp(a, "--bench-drive") == 0 && i + 1 < argc) {
       opt.bench_drive_seconds = static_cast<float>(std::atof(argv[++i]));
+      continue;
+    }
+    if (std::strcmp(a, "--wind") == 0 && i + 1 < argc) {
+      char* rest = nullptr;
+      opt.wind_speed = std::strtof(argv[++i], &rest);
+      if (!(opt.wind_speed >= 0)) opt.wind_speed = 0;
+      if (rest && *rest == ',') opt.wind_heading = std::strtof(rest + 1, nullptr);
       continue;
     }
     if (std::strcmp(a, "--root") == 0 && i + 1 < argc) {

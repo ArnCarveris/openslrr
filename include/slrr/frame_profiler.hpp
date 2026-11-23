@@ -12,7 +12,7 @@ namespace slrr::perf {
 
 enum class Zone : uint8_t {
   Scripts,     // script threads, messages, callbacks and GameType timers
-  Physics,     // part_physics_advance
+  Physics,     // part_physics_begin/end on the host: prepare, wait, publish
   Flush,       // render.flush(), all of it
   Collect,     // scene collection and GPU residency (sync_instances)
   Shadows,     // map and vehicle shadow maps
@@ -21,7 +21,7 @@ enum class Zone : uint8_t {
   Osd,         // interface and debug overlay submission
   Present,     // bgfx::frame(): waits for the render thread
   Traffic,     // traffic streaming and notifications, separate from physics
-  Vehicles,    // vehicle/free-body substeps, nested inside Physics
+  Vehicles,    // the physics thread's batch (#203), added on the host; not nested
   Pedestrians, // pedestrian publication/stepping, nested inside Physics
   Collision,   // scene collision preparation, nested inside Physics
   Gc,          // end-of-frame VM collection
@@ -43,6 +43,7 @@ enum class Zone : uint8_t {
   // Worker encoders (#270), inside Flush.
   WorkerSubmit,     // AO prepass, car tiles and reflection faces, summed over workers
   SubmitWait,       // host thread waiting for those workers after the world
+  Interpolation,    // render-pose publication, nested inside Physics
   Count
 };
 

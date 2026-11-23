@@ -922,10 +922,6 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
           jvm, static_cast<float>(std::min(sim_seconds, 4.0 / 60.0)),
           std::isfinite(dt) && dt > 0 ? dt * jvm.time_warp() : 0.0);
     }
-    {
-      perf::Scope scope(perf::Zone::Physics);
-      part_physics_advance(sim_seconds);
-    }
   }
   scene_ambience_tick(sim_seconds);
   scene_triggers_tick(jvm);
@@ -941,11 +937,22 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
   dispatch_mechanic_pointer(jvm);
   dispatch_world_pointer(jvm);
 
+  // The physics thread steps this frame's ticks while the frame is drawn
+  // from the poses the previous frame published (#203). Nothing between the
+  // two calls runs scripts; part_physics_end publishes before the next frame.
+  {
+    perf::Scope scope(perf::Zone::Physics);
+    part_physics_begin(sim_seconds);
+  }
   // --- Present: AltPresentGate (FMV) else PresentFrame ---
   // Soft: backend flush pumps FMV SampleGrabber + Present (libbgfx path).
   {
     perf::Scope scope(perf::Zone::Flush);
     if (!render.quit_requested()) render.flush();
+  }
+  {
+    perf::Scope scope(perf::Zone::Physics);
+    part_physics_end();
   }
 
   // --- PollWindowQuit @ 0x5522A0 ---

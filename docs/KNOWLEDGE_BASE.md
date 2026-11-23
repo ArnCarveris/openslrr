@@ -80,6 +80,15 @@ current gaps to SLRR_rev code are in
   (`src/main.cpp:main`, `src/platform/game_root.cpp:find_game_root`).
 - `data/` is gitignored and holds the local install and reference sources.
   Never commit game data.
+- Asset test suites (`car_lights`, `swaybars`, `race_vehicle`, `nitrous`)
+  read the stock install from `game/` (else `data/game`) relative to the repo
+  root. If `patch/` has been copied into that `game/`, they fail: patched
+  racer classes install sway bars and the headlight checks differ. To run
+  them on stock, start the compiled `build/<suite>-tests/<suite>-after.exe`
+  from a short folder (MAX_PATH) holding a `game` junction to a stock install
+  and a `patch` junction to the repo's `patch/`. `port_flow` instead needs
+  `data/game` = stock with `patch/parts` (minus `src/`) installed over it.
+  On 2026-11-23 the merged #215 branch passed all of them this way.
 - Stock Java sources, when present, follow this layout:
 
   | Layer | Path in the install or source tree |
@@ -121,8 +130,9 @@ current gaps to SLRR_rev code are in
 - Command-line flags are parsed in `src/main.cpp:main`: `--help`/`-h`,
   `--game`, `--window`, `--root DIR`, `--spawn-car pack.rpk:0xID` (implies
   `--auto-new`), `--auto-new`, `--no-wait` (`--auto-new` plus a three-frame
-  limit), `--auto-cmd mainmenu|street|escape|N`, `--vehicle-osd PATH`, a
-  positional player name, and the headless probes `--probe`, `--probe-gc`,
+  limit), `--auto-cmd mainmenu|street|escape|N`, `--vehicle-osd PATH`,
+  `--wind M/S[,HEADING]` (ENGINE_CONTRACT §11), a positional player name,
+  and the headless probes `--probe`, `--probe-gc`,
   `--probe-dyno`, `--probe-pacejka`. `escape` is accepted but missing from
   the usage text.
 - Performance flags: `--perf-log CSV|-` prints one `[perf]` line per second
@@ -218,14 +228,22 @@ music, options update (Config re-read every 100 ms, debounced save), sun time,
 GameType thread is not alive), controller and hotkeys,
 `script_callbacks_tick`, world camera, `dispatch_due_timers`, credits and
 loading-screen special cases, the fallback clock, mechanic inventory,
-`part_physics_advance`, `scene_ambience_tick`, camera follow, mechanic
-pointer, `render.flush()` and the quit check. Do not move an event delivery
-or add a second pump for the same port.
+traffic, `scene_ambience_tick`, triggers, camera follow, mechanic and world
+pointers, `part_physics_begin`, `render.flush()`, `part_physics_end` and the
+quit check. Do not move an event delivery or add a second pump for the same
+port.
 
-Inside `src/resources/part_runtime.cpp:part_physics_advance`:
-`scene_instances_prepare_physics`, then N chassis ticks, engine audio, hinged
-panels (`src/resources/part_runtime.cpp:advance_flaps`), steering wheels,
-driver pose and pedestrians.
+Physics (#203): `src/resources/part_runtime.cpp:part_physics_begin` counts
+the 60 Hz host ticks owed, runs `scene_instances_prepare_physics` and
+`src/resources/part_runtime.cpp:prepare_batch` on the host, then starts the
+batch on the physics thread (`src/resources/part_runtime.cpp:simulate_batch`).
+The frame is drawn meanwhile, from the poses the previous frame published.
+`src/resources/part_runtime.cpp:part_physics_end` waits for the batch,
+publishes it (`src/resources/part_runtime.cpp:commit_batch`), then runs
+engine audio, hinged panels (`src/resources/part_runtime.cpp:advance_flaps`),
+render poses, steering wheels, driver pose and pedestrians. Scripts of the
+next frame therefore see the ticked state, as before; the drawn frame is one
+frame behind it. `part_physics_advance` does both halves at once (tests).
 
 Inside `src/render/bgfx_lib_backend.cpp:flush`: camera, `sync_instances`,
 static shadow, car depth, reflections, sky, dynamic world, garage shell,
@@ -274,10 +292,13 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    `Record`.
 2. Installation goes through `part_install` and `place_child` with slot
    matrices from `src/resources/part_config.cpp:part_slot_matrix`.
-3. Each 60 Hz host tick runs `advance_chassis_tick`, which configures the
-   dynamics and calls `VehicleDynamics::advance` for two 120 Hz substeps
+3. Each 60 Hz host tick configures the dynamics and calls
+   `VehicleDynamics::advance` for two 120 Hz substeps
    (`include/slrr/vehicle_dynamics.hpp:VehicleDynamics`). At most four host
-   ticks run per frame; excess time is dropped.
+   ticks run per frame; excess time is dropped. The ticks of a frame form one
+   batch on the physics thread: `prepare_batch` configures each car for the
+   first tick (`configure_drive`) and copies its body; the later ticks of the
+   batch refresh only the steering (`src/resources/part_runtime.cpp:sim_refresh_drive`).
 4. Wall contact is `collide_chassis`: four 0.18 m sphere probes plus oriented
    chassis-box contacts against the static index. A released car enters it
    when `drive.torque`, `engine_lost` or `drive.native_traffic` is set.
@@ -285,8 +306,10 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    engine-lost car's zero-torque neutral drive, and the distinct native
    traffic force path. Wall collision, impact damage and mileage are no
    longer player-only; damage options still distinguish the player
-   (`src/resources/part_runtime.cpp:advance_chassis_tick`,
-   `src/resources/part_runtime.cpp:configure_drive`).
+   (`src/resources/part_runtime.cpp:sim_step_car`,
+   `src/resources/part_runtime.cpp:configure_drive`). On the physics thread
+   impacts are only recorded; `commit_batch` applies them with
+   `damage_chassis` in solver order, with the chassis as it was when hit.
 5. Impacts feed `damage_chassis` and the XPBD cage
    (`src/physics/deformation_cage.cpp`). `dynamics_sync` publishes poses.
 6. Mass, centre of mass and inertia come from the installed parts' CFG bodies,
@@ -327,6 +350,20 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
    The renderer, chase and cockpit cameras and car shadows draw that pose;
    scripts and physics still read the ticked one
    (`src/resources/scene_instances.cpp:chain_matrix`).
+11. Aerodynamics are real-life `½ρCAv²` forces: body drag, side force and
+   lift over the chassis bounds, `Chassis.C_drag` at `drag_center` (read by
+   `src/resources/part_runtime.cpp:configure_drive`), and wing faces from the
+   installed parts' CFG `wing` lines
+   (`src/resources/part_config.cpp:parse_part_config`,
+   `src/resources/part_config.cpp:part_wing_area`), collected in chassis
+   coordinates by `src/resources/part_runtime.cpp:rebuild_aerodynamics`. All
+   act in `src/physics/vehicle_dynamics.cpp:VehicleDynamics::apply_aero`, on
+   the car's velocity relative to the wind that
+   `src/resources/part_runtime.cpp:sim_step_car` sets on released cars from
+   `src/physics/vehicle_dynamics.cpp:wind_velocity`, with the wind and clock
+   `src/resources/part_runtime.cpp:prepare_batch` copies into the batch
+   (`--wind`, `src/resources/part_runtime.cpp:part_set_wind`).
+   ENGINE_CONTRACT §11 has the coefficients and the original formulas.
 
 ### 5.6 Maps and world
 
@@ -378,7 +415,7 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   pose. The GroundRef a prop is parented to comes from the shell that woke it:
   each city visit builds a new GroundRef while the prop map stays cached.
 - `PhysicsRef.setStatic(0)` releases a script body to the free-body solver
-  (`src/resources/part_runtime.cpp:advance_free_bodies`), which reuses the
+  (`src/resources/part_runtime.cpp:sim_free_bodies`), which reuses the
   loose-body car and scene contacts and publishes pose and velocities.
 - Trigger volumes (`GameRef.RID_TRIGGER`, `java.game.Trigger`) are parsed by
   `src/resources/trigger_volume.cpp:trigger_volume_parse` and raise
@@ -522,12 +559,50 @@ this section is the working guide.
 
 | Thread | Owner | Runs |
 | --- | --- | --- |
-| Host thread | `src/boot/boot.cpp:boot_game` | VM and script fibers, frame pump, physics, scene collection, bgfx submission, every GameRef and cache mutation |
+| Host thread | `src/boot/boot.cpp:boot_game` | VM and script fibers, frame pump, physics preparation and publication, scene collection, bgfx submission, every GameRef and cache mutation |
+| Physics thread | `src/resources/part_runtime.cpp:PhysicsWorker` | The bodies of one frame's physics batch (#203), while the host draws the frame |
 | bgfx render thread | bgfx (`src/render/bgfx_lib_backend.cpp:open`) | Graphics API calls for the frame the host submitted |
 | Worker pool, one per logical CPU minus one | `src/platform/job_system.cpp:jobs_parallel_for` | Data-parallel batches started by the host thread |
 | Exterior map parser | `src/natives/natives_resref.cpp:spawn_ground_shell` (`std::async`) | `scene_instances_ground_map` for the next chained map file |
 | Pedestrian stepper | `src/resources/part_runtime.cpp:PedSim` | Walker steering on copies of the walker records |
 | Audio and video | FMOD Core (effects/music/Cinepak PCM), optional VLC/Windows codecs | Their own decode and output threads |
+
+**Physics thread (#203).** `part_physics_begin` prepares a batch on the host
+and starts it; `part_physics_end`, after `render.flush()`, waits for it and
+publishes it. A batch (`SimBatch`) holds copies of every car (`SimCar`),
+loose body (`SimLoose`) and free PhysicsRef body (`SimFree`) it steps, with
+the inputs they need: drive and steering set up by `configure_drive`, input
+and options, the crush cage's shift of the wall probes, nitrous capacity and
+rate, car shells for loose-body contacts, and dyno curves as immutable copies
+(`include/slrr/dyno_model.hpp:dyno_torque_function`). On the physics thread
+it reads only those and the scene collision `scene_instances_prepare_physics`
+built for it. It never touches the VM, GameRef, `records`, audio or bgfx; it
+records impacts, props to wake, loose bodies to settle or remove, and
+diagnostics, which `commit_batch` applies in solver order.
+
+Rules for host code:
+
+- Between `part_physics_begin` and `part_physics_end` only rendering runs.
+  Code that may run there and changes what a batch reads must call
+  `part_physics_join()` first. The scene collision mutators
+  (`scene_instances_prepare_physics`, `scene_instances_select`,
+  `scene_instances_add_static_mesh`, `scene_instances_add_ground_props`, ...),
+  `part_destroy` and the tyre tuning in the debug overlay do.
+- `part_physics_join()` is a no-op on the physics thread and without a batch.
+- A batch is committed before the next one starts, before a new world
+  (`register_part_natives`) and in `part_physics_advance`.
+- `--physics-inline` runs the same batch on the host thread. From the same
+  starting state the fixed-step benchmark gives the same states in both
+  modes. The start itself can differ by a fraction of a millimetre between
+  runs: the frames before the benchmark starts use wall-clock time.
+
+What changed against the single-threaded tick: the drawn frame shows the state
+before this frame's ticks (one frame of display latency); damage, crush cages,
+detaching, waking props and loose-body settling apply at the end of the batch
+instead of between its substeps; a crush cage moves the wall probes as it was
+when the batch started; race AI decides once per frame; a parked car woken
+during a batch keeps its drive until the next frame configures it. With one
+tick per frame (60 FPS) only the display latency and the cage timing differ.
 
 **API** (`include/slrr/job_system.hpp`).
 
@@ -903,7 +978,7 @@ run time.
 | DirectShow dynamic media-format renegotiation is not supported; malformed/short RGB32 frames are rejected | `src/platform/video_fmv.cpp` (`grab_frame`) |
 | `FindFile` still bypasses shared path confinement. The File native path validator now checks canonical components, rejects the root and accepts dots within names; File.delete is nonrecursive (#68, #71). Invalid SDAT resource writes preserve field alignment with a null placeholder (#70); see [SAVE_IO_FIXES.md](SAVE_IO_FIXES.md) | `src/natives/natives_boot.cpp:under_game`, `src/natives/natives_io.cpp:register_io_natives` |
 | Boot adopts the section already entered by Java Init without replaying lifecycle (#76). Windowed startup retains a timer-only reset so startup work cannot consume the splash display interval. | `src/boot/boot.cpp:boot_game`, `src/boot/mainloop.cpp:mainloop_adopt_section` |
-| Released cars retain static-world contacts without a driver/engine. Shared chassis OBB pairs and all-car movable-body contacts now use impulse-aware damage/detachment; full Bot recovery/audio/seating remain partial. See [traffic/race audit](TRAFFIC_RACE_AUDIT.md). | `src/resources/part_runtime.cpp:advance_chassis_tick`, `src/resources/part_runtime.cpp:advance_loose_panels`, `src/resources/part_runtime.cpp:advance_free_bodies` |
+| Released cars retain static-world contacts without a driver/engine. Shared chassis OBB pairs and all-car movable-body contacts now use impulse-aware damage/detachment; full Bot recovery/audio/seating remain partial. See [traffic/race audit](TRAFFIC_RACE_AUDIT.md). | `src/resources/part_runtime.cpp:simulate_batch`, `src/resources/part_runtime.cpp:sim_loose_bodies`, `src/resources/part_runtime.cpp:sim_free_bodies` |
 | Gamepad fallback is now per driving axis and unclaimed physical channel; hardware validation remains separate | `src/platform/host_input.cpp`, `src/platform/host_input_mapping.hpp` |
 | The unused offscreen scene target, HiZ pyramid/readback and legacy projected car shadows are removed (#105). World rendering uses the swap chain; the retained projected-size filter does not perform occlusion. Shader creation releases caller handles on success and failure. | `src/render/bgfx_lib_backend.cpp:LibBgfxBackend::open`, `src/render/bgfx_program.hpp:create_owned_program` |
 
@@ -979,6 +1054,22 @@ These are entry points, not fixes. Each needs its own reproduction.
   follow-up overlapped the chained `city2` parse with `city`'s props, indexed
   large collision meshes on the pool and kept the log order serial: the warm
   load is now under 1 s.
+- **#203 physics-clock/engine-math spike.** The default remains 60 Hz host
+  ticks with 120 Hz shared-world substeps and interpolated drawing. Fixed
+  stepping is not independent wall-clock scheduling: excess frame time is
+  discarded. The integer shared-world loop would lose 4% of simulated time
+  with a bare 1000 Hz override. Rate experiments, throttle integration boundaries,
+  adaptive-setting references and dyno/Java compression couplings are recorded
+  in [PHYSICS_TICK_SPIKE.md](PHYSICS_TICK_SPIKE.md). The owner permits changed
+  engine outputs: cycle torque is now SI net crank Nm, sampled power is T·ω,
+  and driving consumes that curve without the legacy ×2 gain or duplicate WOT
+  loss. The shipped Java head/Inline/Vee patch normalizes capped curtain area by
+  a declared 1-ms ideal-air reference exchange volume, replacing X²/V. Native
+  DynoData fields remain unchanged; full pressure-dependent flow, fuel calibration
+  and independent-thread ownership remain open. The actual-solver throttle
+  experiment covers digital/analog plate response, cut hysteresis and latched
+  BOV events without enabling new production controls. `interpolation_ms`
+  measures pose publication inside Physics, not downstream renderer caches.
 
 ## 12. Self-check
 
@@ -1845,8 +1936,8 @@ become aliases remain dormant and are filtered at lookup, preserving wrapper
 unbind semantics. Alias deletion, canonical deletion and clear remove indexed
 entries. This index does not add Java GC roots or change ID ownership.
 
-`advance_free_bodies` resolves the controlled chassis and validates its script
-frame once before iterating bodies. Loose panels can have different owner IDs;
+`prepare_batch` resolves the controlled chassis and validates its script
+frame once before the batch. Loose panels can have different owner IDs;
 their per-panel lookups remain, now indexed. Seated-driver world traversal
 (#112) is unchanged and stays open; caching its results requires reliable
 invalidation of all relevant scene changes.

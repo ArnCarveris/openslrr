@@ -67,7 +67,7 @@ plausible acceleration.
   against the MWM binary, not against SLRR_rev.
 - Wall collision, impact damage and mileage currently run only for the
   player-controlled car with an engine
-  (`src/resources/part_runtime.cpp:advance_chassis_tick`); uncontrolled or
+  (`src/resources/part_runtime.cpp:sim_step_car`); uncontrolled or
   engineless cars never hit walls. This also matters for M2 and M4.
 
 Done when: the Baiern drives a lap on keyboard and pad, its 0–100 km/h time

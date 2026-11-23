@@ -245,9 +245,12 @@ All little-endian. Each item notes OpenSLRR's status.
   OpenSLRR keeps the last sample reachable and blends the nitro bank
   (`src/physics/dyno_model.cpp:dyno_sample`). The nitro blend only affects
   the `getTorque`/`getHP` natives; driving always samples with nitro 0. One
-  side is wrong for the target EXE; settle it against the binary. Both
-  reproduce the witness value for default DynoData, about 82.087 N·m at the
-  437 RPM step (`src/physics/dyno_model.cpp:dyno_self_check`). **ext**
+  side is wrong for the target EXE; settle it against the binary. The pre-#203
+  OpenSLRR and upstream outputs reproduced about 82.087 N·m at the 437 RPM
+  default-DynoData witness. #203 intentionally preserves the recovered cycle
+  work but converts torque/power to SI net crank output under the owner's
+  physical-consistency direction; see [the audit](PHYSICS_TICK_SPIKE.md).
+  `src/physics/dyno_model.cpp:dyno_self_check` now checks that converted witness. **ext + design**
 - **Clutch pitfall.** `ClutchF` is not a torque cap in N·m, and both sides of
   the clutch exchange must share one wheel inertia, or energy is created
   (`SLRR_rev:docs/engine-telemetry-calibration.md`). **obs + design**
@@ -255,6 +258,27 @@ All little-endian. Each item notes OpenSLRR's status.
 - **Damage.** No deformation solver exists in the Java, and node-beam is not
   proven for SLRR. SLRR_rev's XPBD cages, thresholds and condition formula are
   invented, as are OpenSLRR's (`src/physics/deformation_cage.cpp`). **ext**
+- **Damage inputs in the MWM EXE.** The CFG keyword table at 0x60E100 maps
+  each keyword to its handler. A part's `damage <strength>` (346 stock lines:
+  lights 0.10, mirrors 0.20, rims/tyres 3.0, traffic templates 10.0; handler
+  0x46CF50) divides the condition it loses per impact, scaled by the
+  `external_damage` option (0x474E09, 0x458AE4); at zero condition the part
+  breaks off. `slotdmgmode` (680 lines) and `slotdeform` (54) set per-slot
+  behaviour; `damagedef` is an empty handler. OpenSLRR reads none of these
+  yet; its condition and detachment use the host cage and SLRR_rev
+  thresholds. The impact measure's units are not established. **exe**
+- **Aerodynamics in the MWM EXE.** `Chassis.C_drag` quadratic drag and the
+  CFG `wing` panels (529 stock lines, all type 4, suction ±0.25, exponent
+  0.666/0.667) act on the car body; the panel force grows with speed^0.666.
+  EliasFD3S/slrr-reverse decodes the same drag and clamp but not the panels.
+  The original Invictus Aero v1.2 3ds Max calculator, posted on PR #223,
+  shows how the lines are authored. OpenSLRR keeps `C_drag` but replaces the
+  panel law with real-life body and wing aerodynamics (ENGINE_CONTRACT §11).
+  **exe + source**
+- **Anti-roll bars.** MWM `Swaybar.updatevariables` leaves its
+  `addrollbar` commands commented out, so stock anti-roll-bar parts change
+  nothing in the original. Only fake-racer and traffic templates have native
+  CFG `rollbar` lines (32). **source + corpus**
 - Button steering slews at 2 rad/s in the original. **source**
 
 ## 5. Maps, collision, traffic and pedestrians

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace slrr::physics {
 // Script-space metres, kilograms and seconds. Renderer handedness stays
@@ -78,6 +79,39 @@ struct GroundHit {
 // from_y is a ray origin/ceiling, not a default ground height. False = air.
 using Terrain =
     std::function<bool(double x, double z, double from_y, GroundHit &)>;
+// Real-life aerodynamics (ENGINE_CONTRACT §11): ½ρv² forces from the air
+// velocity relative to the car, with typical road-car coefficients.
+// The mean wind of a weather report: m/s at 10 m height, blowing towards
+// `heading` (degrees from +Z towards +X).
+struct Wind {
+  double speed = 0, heading = 0;
+};
+// Air velocity (world m/s) at car height at a world position and time: the
+// mean wind reduced by the log wind profile, plus gusts that travel with it.
+Vec3 wind_velocity(const Wind &wind, Vec3 position, double seconds);
+struct AeroWing {
+  // One face of a wing in chassis-frame metres: unit normal, planform m².
+  Vec3 position, normal;
+  double area = 0;
+};
+struct Aerodynamics {
+  // Chassis.C_drag (kg/m): the extra drag of missing body panels, against
+  // the velocity of drag_center (chassis frame) above 1 m/s.
+  double drag = 0;
+  Vec3 drag_center;
+  // Drag and lift of the body, sized by the rigid body's bounds.
+  bool body = false;
+  std::vector<AeroWing> wings;
+  // Air velocity around the car (world m/s); every force uses the car's
+  // velocity relative to it.
+  Vec3 wind;
+};
+// Resultant aerodynamic force (world) and its torque about the centre of
+// mass for one step of `dt`, as VehicleDynamics applies it.
+struct AeroLoad {
+  Vec3 force, torque;
+};
+AeroLoad aero_load(const Aerodynamics &aero, const RigidBody &body, double dt);
 struct WheelConfig {
   bool enabled = false;
   // Fixed suspension travel with compliant tyre/bump-stop support.
@@ -142,6 +176,8 @@ struct DriveInput {
   double differential_lock = 0;
   double inertia = 0, idle = 0, limit = 0, starter = 0;
   double clutch = 1;
+  // Net open-throttle crank torque (Nm) at the requested rpm, including
+  // the shared mechanical friction loss; the solver applies no extra gain.
   std::function<double(double)> torque;
   // Optional wet dyno bank. Empty/zero leaves the existing dry drive unchanged.
   std::function<double(double)> nitro_torque;
@@ -151,11 +187,18 @@ double suspension_force(double length, double velocity, double rest,
                         double maximum, double spring, double bump,
                         double rebound);
 
+// Compile all consumers with the same experimental solver rate (#203).
+// The game additionally requires a multiple of its 60 Hz shared-world tick.
+#ifndef SLRR_VEHICLE_PHYSICS_HZ
+#define SLRR_VEHICLE_PHYSICS_HZ 120
+#endif
+
 class VehicleDynamics {
 public:
-  // SLRR_rev physics-timing.ts driving frequency.
-  static constexpr unsigned frequency = 120;
+  // SLRR_rev physics-timing.ts driving frequency; shipped default is 120 Hz.
+  static constexpr unsigned frequency = SLRR_VEHICLE_PHYSICS_HZ;
   static constexpr unsigned update_frequency = 60;
+  static_assert(SLRR_VEHICLE_PHYSICS_HZ >= 60, "solver rate must be at least 60 Hz");
   static constexpr double timestep = 1.0 / frequency;
   RigidBody body;
   struct Impact {
@@ -179,6 +222,7 @@ public:
   std::array<Vec3, 8> body_supports{};
   std::size_t body_support_count = 0;
   DriveInput drive;
+  Aerodynamics aero;
   double engine_omega = 0;
   bool engine_running = false;
   int gear = 0;
@@ -201,6 +245,7 @@ private:
   bool accelerator_down_ = false, forced_reverse_ = false;
   bool launch_active_ = false;
   void step(const Terrain &terrain);
+  void apply_aero();
   void step_drive();
   void update_gear(double rpm, double shaft, double road_shaft);
 };

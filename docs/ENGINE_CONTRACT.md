@@ -219,10 +219,33 @@ because the caller is a fiber.
 
 ### Host threads and the worker pool
 
-The host thread runs the VM, the frame pump, physics, scene collection and
-bgfx submission. bgfx presents from its own render thread, pedestrians step
-on their own worker (`PedSim` in `part_runtime.cpp`), and audio and video
+The host thread runs the VM, the frame pump, scene collection and bgfx
+submission. Physics steps on its own thread (#203, `PhysicsWorker` in
+`part_runtime.cpp`). bgfx presents from its own render thread, pedestrians
+step on their own worker (`PedSim` in `part_runtime.cpp`), and audio and video
 decoders keep their library threads.
+
+The physics thread runs one batch per frame: the 60 Hz host ticks the frame
+owes, each as shared solver substeps over every car, loose body and free
+PhysicsRef body. `part_physics_begin` prepares the batch on the host just
+before `render.flush()` and starts it; `part_physics_end`, after the flush,
+waits for it and publishes it. The host owns everything outside that window,
+so scripts, natives and callbacks never run concurrently with a batch, and
+they see the ticked state as before; the frame drawn during a batch shows the
+state before its ticks.
+
+A batch works on copies taken while the host owns everything: bodies, drive
+and steering inputs, options, nitrous capacity, crush-cage probe shifts, car
+shells and immutable dyno curves. On the physics thread it reads only those
+and the scene collision prepared for it. It must not call the VM, GameRef,
+`records`, audio, bgfx or anything with a lazily filled cache; it records
+impacts, props to wake, loose bodies to settle and diagnostics for the commit,
+which applies them in solver order with the chassis as it was when hit. Host
+code that may run while a batch is in flight and changes what a batch reads
+calls `part_physics_join()` first: the scene collision mutators,
+`part_destroy` and the debug overlay's tyre tuning do. `--physics-inline`
+runs the same batch on the host thread; from the same starting state the
+fixed-step benchmark gives the same states either way.
 
 Loading work that only reads files goes to the shared worker pool in
 `src/platform/job_system.cpp`: one worker per logical processor besides
@@ -683,6 +706,94 @@ The active tire code is in `tire_model.cpp`, integrated in
 `vehicle_dynamics.cpp`. The presence of `sl2_pacejka.cpp` in the repository
 does not mean the whole driving model uses that older model.
 
+Aerodynamics are real-life calculations, as the owner decided on PR #223:
+every force is `½ ρ C A v²` from the air velocity relative to the car
+(`w - v`, with the wind `w` below), with ρ = 1.225 kg/m³ and typical road-car
+coefficients, not values recovered from the original game.
+`VehicleDynamics::apply_aero` adds, each substep:
+
+- **Body drag, side force and lift.** The rigid body's bounds (W × H × L)
+  give a frontal area `0.85 W H`, a side area `0.85 L H` and a plan area
+  `0.85 W L`. Each component of the air velocity in the car's axes drags on
+  its own area: Cd 0.32 on the frontal area for the flow along the car, and a
+  crossflow Cd 1.0 on the side and plan areas, so a sliding car meets its
+  side area. In yawed flow the side view also acts as a slender wing of
+  chord L and span 2H (the ground mirrors it): a side force of
+  `½ρ A_side (πH/L) |v_x v_z|`, about 0.04 per degree of yaw on the frontal
+  area as road cars measure, at a quarter of the length from the leading
+  end. Lift uses CL 0.25 on the frontal area with the flow along the car.
+  The drags and lift act at the centre of the bounds; native traffic
+  templates keep their own force policy and get none of them.
+- **Chassis drag.** `Chassis.updatevariables` sets `C_drag` to
+  `fully_stripped_drag` minus the `drag_reduction` of each body part on the
+  chassis slots, floored at 0, and the EXE reads it with `drag_center`
+  (0x448CD2). It is already in real units (kg/m, `½ρCdA`): above 1 m/s it
+  adds `-C_drag |v| v` at `drag_center` (0x456A83), the extra drag of missing
+  panels. A complete stock car has 0.
+- **Wings.** A CFG `wing` line authored as a wing (type 5, or type 4 with
+  exponent 0.667) is one face of an airfoil in its part's frame; body surface
+  lines only describe the shape the body model covers. The face meeting the
+  air, with incidence `sin α = v̂ · n`, carries the element's normal force
+  `½ρ A v² min(4.2 sin α, 1.5)` along `-n` (lift slope `2πA/(A+2)` for aspect
+  ratio 4, stalled single-element limit) plus profile drag Cd 0.05; the face
+  turned away carries nothing. Its tilt splits the force into downforce and
+  induced drag.
+
+The centre of pressure follows from where these forces act: a rear wing
+moves load to the rear axle and lifts the front, and the side force ahead of
+the centre of mass turns a car in a crosswind downwind, as a road car is
+aerodynamically unstable in yaw. Every drag force is
+clamped to the impulse that stops its point in one step, as the EXE does for
+`C_drag`.
+
+**Wind.** `--wind M/S[,HEADING]` gives the mean wind of a weather report: m/s
+at 10 m height, blowing towards HEADING degrees from +Z towards +X. The
+default is 4 m/s (a gentle breeze) towards 60°; `--wind 0` is calm air. The
+original game has no wind. `wind_velocity` turns it into the air velocity at
+car height:
+
+- **Mean.** The log wind profile over open terrain, roughness length
+  z0 = 0.03 m, at z = 1 m: `ln(z/z0) / ln(10/z0)` = 0.60 of the report.
+- **Gusts.** Turbulence intensity `1/ln(z/z0)` = 0.29 along the wind
+  (EN 1991-1-4 §4.4) and three quarters of it across, each from three
+  sinusoidal plane waves of 28–240 m wavelength with fixed phases. The waves
+  are frozen in the air and carried by the mean wind (Taylor's hypothesis):
+  in the default wind a standing car feels gusts every 12 s to 3 minutes,
+  and a car at 100 km/h crosses the shortest in about a second. There is no
+  vertical wind.
+
+The wind changes the dynamic pressure `½ρ|w - v|²` on every surface: a
+headwind adds drag, lift and wing downforce, a tailwind removes them, and a
+crosswind yaws the flow: it pushes the car downwind and turns its nose
+downwind through the body's side force.
+On the physics thread, `sim_step_car` samples it at each released car's
+centre of mass every substep, from the wind and driving-world clock that
+`prepare_batch` copies into the batch on the host; cars in the garage or a
+preview, and native traffic templates, feel none. Hinged panels feel the
+same wind. Air density stays at ISA sea level: there is no weather, altitude
+or temperature change of pressure.
+
+`part_runtime` reads `C_drag`/`drag_center` with the drive inputs and
+collects the wing faces in chassis coordinates when the body support is
+rebuilt (assembly change, deformation, repair), at the parts' poses at that
+moment (`rebuild_aerodynamics`). A swinging hinged panel keeps the pose it
+had then; loose detached parts get no aerodynamics.
+
+`wing` lines (handler 0x4443C0, 16 per part) are authored by the original
+Invictus Aero v1.2 3ds Max calculator (posted on PR #223): position and
+unnormalised normal are the area-weighted centre and normal of the selected
+faces. Its SLRR method writes type 4 with `area` = 30 × the flattened area in
+m² for surfaces and 90 × for wings, suction −0.25/0.25 and exponent
+0.666/0.667; its CRC and Experimental methods store about 1.27 × the area and
+write wings as type 5. `part_wing_is_airfoil`/`part_wing_area` invert this.
+For reference only, the original EXE's own formulas, no longer applied:
+type 4 pushes along the normal with `-area · d' · (d' > 0 ? 1 : suction)`,
+`d' = sign(d) · 100 (|d|/100)^exponent` for the normal velocity `d`
+(0x48EB3C); type 5 with `-area · d + suction · |v_t|²` (0x48ED73). With the
+stock exponent 0.666 that grows with speed^0.666, far stronger than real air
+at town speeds. slrr-reverse decodes the same `C_drag` drag and clamp
+(`Chassis_part2.inc`).
+
 ### Intended driving model: revision `8ac2ba9`
 
 The maintainer's `8ac2ba9601300b36efca54dd81031fb6bc9de98b` revision is the
@@ -804,6 +915,39 @@ For the dyno, a new configuration must rebuild the matching curve banks,
 including nitro. Do not mix an old nitro bank with a new RPM step or a new
 geometry. Bound indices before the integer conversion. The last exact sample
 must remain reachable.
+
+#203 defines dyno torque and `DriveInput::torque` as **net open-throttle crank
+Nm**. A four-stroke cycle contributes N·work/(4π), minus the shared recovered
+mechanical friction torque (`engine_friction_torque` in
+[dyno_model.hpp](../include/slrr/dyno_model.hpp)). Power is torque × angular speed,
+including between samples and for nitrous blends. The stock `getHP` native still
+returns watts, while `maxHP` remains mechanical horsepower. Driving has no ×2
+gain: it recovers indicated torque before pedal/combustion limiting and subtracts
+mechanical friction once. The previous drag curve is incremental closed-throttle
+pumping scaled by (1 − effective pedal); it is not subtracted again at WOT.
+The nitrous wet bank is net torque too and blends in the same indicated space.
+Fuel cut retains friction, and existing starter/idle/clutch behavior remains.
+These loss curves are empirical, not a new manifold or combustion calibration.
+Stock outputs intentionally change under the issue owner's physical-consistency
+direction; see [the investigation](PHYSICS_TICK_SPIKE.md).
+
+The #203 Java port patch computes `in/out_min/max` from capped curtain area:
+`c = clamp(efficiency * discharge * A_eff * U_ref * 0.001 / V_swept, 0, 1)`
+in SI. The declared ideal-air M=1 reference has `U_ref = 198.629616711 m/s`.
+The existing 0.9 breather factor stays empirical; this does not make the native
+linear pressure relaxation an exact compressible valve solver. The shared
+CylinderHead helper must ship with both updated block classes; DOHC/SOHC/OHV
+continue supplying the same disk-area/lift proxy, and Vee averaging is unchanged.
+Efficiency now restricts minimum as well as maximum flow multiplicatively, so
+authored nonzero closed lifts can change leakage. No DynoData field/schema or
+native signature changes. See [patch installation/reproduction](../patch/README.md#port-flow-normalization-203).
+
+The #203 fuel patch (`AirFuelDeliverySystem`) sets `mixture_H` to the heat per
+kg of charge at a fuel's best mixture, lower heating value / stoichiometric
+air:fuel ratio (95 octane 2.952 MJ/kg), times the stock mixture-match factor,
+without the old ×1.55. `minComp`/`maxComp` still follow the stock heat values,
+so the compression window of every stock engine is unchanged. The native dyno
+consumes `mixture_H` as before. See [patch](../patch/README.md#fuel-heat-203).
 
 ### Nitrous driving and exhaust (#303, #304)
 

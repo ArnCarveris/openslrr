@@ -236,7 +236,13 @@ wall-clock durations.
 Opening the debug overlay starts frame timing automatically. The Renderer tab
 shows CPU scripts, traffic, physics (with vehicle, pedestrian and collision
 subtimes), collection, shadows, reflections, presentation wait and GC. Physics
-and flush totals include their subtimes; do not sum every displayed row. Values
+and flush totals include their subtimes; do not sum every displayed row.
+Physics steps on its own thread while the frame is drawn: the physics total is
+the host's share (preparing the batch, waiting for it, publishing it), and the
+vehicle time is the physics thread's batch, not part of that total. Add
+`--physics-inline` to step physics on the host thread instead, for debugging or
+comparison; from the same starting state the fixed-step drive gives the same
+car states either way. Values
 are from the last completed measurement window, alongside bgfx's delayed render
 and GPU counters. A large GPU reading alone does not identify the whole frame's
 bottleneck.
@@ -262,6 +268,9 @@ the sun cascade atlas and the AO buffer. **Options (saved)** holds the saved
 Enhanced graphics options as before.
 
 `--perf-log` prints one `[perf]` line per simulated second and writes the same fields to the CSV file. Add `--bench-shots DIR` to capture the window every 10 seconds. The run writes `save/game/options` on exit like a normal session.
+The CSV's `interpolation_ms` field measures render-pose publication inside Physics, not downstream pose readers or scene-cache work. Do not add it to the inclusive Physics total.
+During the drive, a `[bench] t=… speed=… rpm=… gear=…` line every 0.1 s of simulated time gives a speed trace at the interval of the original-game telemetry. On a map without ground props, such as the drag strip (`--bench-map Drag_Track`, about 12 s of straight road), the drive starts once the car has rested on all its wheels for 5 s.
+
 Select a visible vehicle or a preview in **Vehicle**, or use **Freeze
 telemetry** to hold a sample. **Tuning** changes tyre parameters and
 simulation speed live. **Renderer** has visual toggles. **Section** shows
@@ -274,6 +283,8 @@ Use **Game Options** for transmission, distance units, GPS mode, damage difficul
 In the garage, **right-click and drag**, the **arrow keys**, and the **scroll wheel** control the camera. From the garage, enter the **Test Track** to drive with your keyboard or SDL3 peripherals. Connect wheels, separate pedals and shifters before opening the control options, then bind each device's axes/buttons there. Reopen the options after adding a new device. The primary gamepad retains the existing default driving controls and saved `XInput Gamepad` profile name; it is now polled through SDL3. **Escape** skips the intros.
 
 You can also set the game path with `$env:SLRR_GAME_ROOT`. The `--root` option takes priority. Without either, the host looks for `data/game`, then `game` and `../game`. Run `slrr_host.exe --help` for all options.
+
+Cars out in the world drive through a gusty wind: by default a 4 m/s breeze, as a weather report measures it at 10 m height, blowing towards 60° from +Z towards +X. `--wind M/S[,HEADING]` changes it, and `--wind 0` gives calm air, for example to compare bench runs.
 
 ### Outline fonts
 

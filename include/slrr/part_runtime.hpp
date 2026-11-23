@@ -103,7 +103,22 @@ bool part_camera_pose(void* car, int camera, float* matrix);
 // Chassis owning a render node, with its active-world script frame.
 void *part_shadow_source(void *render, float *frame);
 // Advance only cars belonging to the active world, at a fixed physics step.
+// The bodies step on the physics thread (#203): part_physics_begin prepares
+// the frame's host ticks and starts them, part_physics_end waits for them and
+// publishes the results, then poses panels, drivers and pedestrians. Between
+// the two the host may render, but must not run scripts, destroy parts or
+// change scene collision without part_physics_join() first.
+// part_physics_advance does both at once.
+void part_physics_begin(double seconds);
+void part_physics_end();
 void part_physics_advance(double seconds);
+// Waits for a running batch without publishing it. A no-op without one.
+void part_physics_join();
+// False runs each batch on the calling thread (--physics-inline).
+void part_physics_set_threaded(bool threaded);
+// The wind on released cars: m/s at 10 m height, blowing towards
+// heading_degrees from +Z towards +X (physics::wind_velocity). 0 is calm.
+void part_set_wind(double speed, double heading_degrees);
 // External traffic motion owns pose/velocity; physics resumes from that pose on release.
 void part_set_external_motion(Object*,bool);
 // Metres travelled and road-wheel steering angle for externally driven traffic.

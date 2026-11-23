@@ -52,7 +52,7 @@ void draw_render_session(Jvm* vm) {
     ImGui::Text("CPU scripts %.2f | traffic %.2f | physics %.2f ms",
                 ms(perf::Zone::Scripts), ms(perf::Zone::Traffic),
                 ms(perf::Zone::Physics));
-    ImGui::Text("CPU vehicles %.2f | pedestrians %.2f | collision %.2f ms",
+    ImGui::Text("Physics thread %.2f | pedestrians %.2f | collision %.2f ms",
                 ms(perf::Zone::Vehicles), ms(perf::Zone::Pedestrians),
                 ms(perf::Zone::Collision));
     ImGui::Text("CPU collect %.2f | shadows %.2f | reflections %.2f ms",
@@ -197,10 +197,10 @@ constexpr std::pair<perf::Zone, const char*> kRenderZones[] = {
     // Main-thread host work outside the renderer (#260).
     {perf::Zone::Scripts, "Scripts"},
     {perf::Zone::Traffic, "Traffic"},
-    {perf::Zone::Physics, "Physics (all)"},
-    {perf::Zone::Vehicles, "  vehicles"},
+    {perf::Zone::Physics, "Physics on the host (prepare, wait, publish)"},
     {perf::Zone::Pedestrians, "  pedestrians"},
     {perf::Zone::Collision, "  collision"},
+    {perf::Zone::Vehicles, "Physics thread (beside the host)"},
     {perf::Zone::Gc, "GC"},
     {perf::Zone::Flush, "Render flush (all renderer zones)"},
 };
@@ -554,15 +554,26 @@ void draw_tuning(Jvm* vm) {
                            {Value::make_float(warp)});
   }
   ImGui::SeparatorText("Tyre model");
-  auto& tuning = physics::tire_tuning();
-  const auto slider = [](const char* label, float& value, float minimum, float maximum) {
-    ImGui::SliderFloat(label, &value, minimum, maximum, "%.2fx", ImGuiSliderFlags_NoInput);
+  // The physics thread reads the tuning during a batch: edit a copy and
+  // apply it between batches.
+  auto tuning = physics::tire_tuning();
+  bool changed = false;
+  const auto slider = [&changed](const char* label, float& value, float minimum, float maximum) {
+    changed |= ImGui::SliderFloat(label, &value, minimum, maximum, "%.2fx",
+                                  ImGuiSliderFlags_NoInput);
   };
   slider("Lateral grip", tuning.lateral_grip, .25f, 2.f);
   slider("Longitudinal grip", tuning.longitudinal_grip, .25f, 2.f);
   slider("Lateral response", tuning.lateral_response, .25f, 2.f);
   slider("Load sensitivity", tuning.load_sensitivity, 0.f, 2.5f);
-  if (ImGui::Button("Reset tyre settings")) tuning = {};
+  if (ImGui::Button("Reset tyre settings")) {
+    tuning = {};
+    changed = true;
+  }
+  if (changed) {
+    part_physics_join();
+    physics::tire_tuning() = tuning;
+  }
 }
 
 void draw_section(Jvm* vm, const SectionMachine* sections, bool& edit_fields) {
@@ -889,6 +900,7 @@ void DebugOverlay::shutdown() {
   sections_ = nullptr;
   jvm_ = nullptr;
   render_options_ = {};
+  part_physics_join();
   physics::tire_tuning() = {};
   mouse_buttons_ = 0;
 }
