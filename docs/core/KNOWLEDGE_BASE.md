@@ -150,7 +150,21 @@ current gaps to SLRR_rev code are in
   fixed 1/60 s step per frame, so every build covers the same street frame
   by frame and each CSV row is one simulated second. `--bench-shots DIR`
   writes window captures every 10 simulated seconds
-  (`src/boot/boot.cpp:boot_game`).
+  (`src/boot/boot.cpp:boot_game`). The benchmark car shifts automatically
+  whatever the saved transmission (`src/resources/part_runtime.cpp:configure_drive`).
+  That straight drive leaves the road after about 12 s, so use a recorded
+  drive for measurements (#358): `--record-path FILE` writes the player
+  car's published local matrix every frame of normal play, and
+  `--replay-path FILE` makes the benchmark car follow it in external motion
+  (`src/boot/drive_path.cpp`, `src/resources/part_runtime.cpp:part_set_external_pose`);
+  the drive then lasts the recording. `--seed N` fixes the script RNG
+  (`Math.randomize`, `src/natives/natives_lang.cpp:natives_fix_random_seed`).
+  `--auto-cmd demo` runs the main menu's DEMO race (measured like the
+  benchmark with `--bench-drive`), but two runs diverge within 10 s, so it is
+  not an A/B scene. `scripts/perf_baseline.ps1` runs the replay over day and
+  night, CPU affinity profiles and graphics presets; the reference drive and
+  numbers are in `assets/validation/perf-baseline/` and
+  [rendering/performance.md](../rendering/performance.md#baseline-on-a-recorded-drive-358).
 - Runtime environment variables: `SLRR_GAME_ROOT` (`src/main.cpp`),
   `SLRR_VLC_DIR` (`src/platform/video_fmv_vlc.cpp`) and `SLRR_AMBIENCE_LOG`
   (`src/resources/scene_ambience.cpp`, debug logging of random ambience

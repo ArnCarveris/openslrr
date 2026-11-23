@@ -1,0 +1,23 @@
+# Performance baseline (#358)
+
+- `drive.path`: a 135 s drive through Valo City recorded by Elias with
+  `--record-path` (4.65 km: downtown with pedestrians, residential streets,
+  the expressway and the underpass). It is replayed by `--replay-path`.
+- `route-night.jpg`: replay captures at 0, 30, 60, 90, 110 and 130 s, at night.
+- `replay-expo-off/`: `scripts/perf_baseline.ps1` on that replay, one CSV per
+  run, plus `summary.csv` / `summary.txt` (averages without the two warm-up
+  seconds).
+
+Machine: i7-13700KF (8P + 8E, 24 threads), RTX 4080 16 GB, 64 GB DDR5
+running at 4000 MT/s (EXPO off), Windows 10 22H2, 2560x1440 window.
+Build: `main` at 25d8fd7 plus the #358 benchmark changes.
+
+Reproduce:
+
+```powershell
+powershell -File scripts\perf_baseline.ps1 -SourceRoot game -Out <dir> -ReplayPath assets\validation\perf-baseline\drive.path
+```
+
+Two replays of the same build differ by about ±2 % in draws and by less than
+0.4/255 mean pixel difference: traffic and pedestrians still move a little
+differently. The route and camera path are identical.

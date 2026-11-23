@@ -26,12 +26,13 @@ void usage() {
       "  slrr_host --probe-dyno\n"
       "  slrr_host --probe-gc [--root DIR]\n"
       "  slrr_host --game [--root DIR] [--window] [--no-wait] [--auto-new]\n"
-      "           [--auto-cmd mainmenu|street|N]\n"
+      "           [--auto-cmd mainmenu|street|demo|N] [--seed N]\n"
       "           [--spawn-car cars/racers/Baiern.rpk:0x6]\n"
       "           [--vehicle-osd PATH]\n"
       "           [--perf-log CSV|-] [--bench-map TRACK] [--bench-drive SECONDS]\n"
       "           [--bench-career SAVE_DIRECTORY] [--bench-realtime]\n"
       "           [--bench-time HOUR] [--bench-shots DIR]\n"
+      "           [--record-path FILE] [--replay-path FILE]\n"
       "           [--wind M/S[,HEADING]]\n"
       "           [--no-vsync] [--debug-overlay] [--physics-inline]\n"
       "           [PlayerName]\n"
@@ -113,7 +114,10 @@ int main(int argc, char** argv) {
         opt.auto_cmd = 109;
       else if (std::strcmp(c, "escape") == 0)
         opt.auto_cmd = 119;
-      else
+      else if (std::strcmp(c, "demo") == 0) {
+        opt.auto_cmd = 101;  // to the main menu, then MainMenu.CMD_DEMO
+        opt.auto_demo = true;
+      } else
         opt.auto_cmd = static_cast<int32_t>(std::atoi(c));
       continue;
     }
@@ -142,6 +146,18 @@ int main(int argc, char** argv) {
     }
     if (std::strcmp(a, "--bench-shots") == 0 && i + 1 < argc) {
       opt.bench_shots = argv[++i];
+      continue;
+    }
+    if (std::strcmp(a, "--seed") == 0 && i + 1 < argc) {
+      opt.random_seed = std::atoll(argv[++i]);
+      continue;
+    }
+    if (std::strcmp(a, "--record-path") == 0 && i + 1 < argc) {
+      opt.record_path = argv[++i];
+      continue;
+    }
+    if (std::strcmp(a, "--replay-path") == 0 && i + 1 < argc) {
+      opt.replay_path = argv[++i];
       continue;
     }
     if(std::strcmp(a,"--bench-realtime")==0){opt.bench_realtime=true;continue;}

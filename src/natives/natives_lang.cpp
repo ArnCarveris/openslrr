@@ -27,6 +27,7 @@
 namespace slrr {
 
 namespace {
+int64_t g_fixed_random_seed = -1;
 
 float bits_f32(uint32_t u) {
   float f = 0.f;
@@ -235,6 +236,11 @@ void register_gc_natives(Jvm& jvm) {
       });
 }
 
+void natives_fix_random_seed(int64_t seed) {
+  g_fixed_random_seed = seed;
+  if (seed >= 0) std::srand(static_cast<unsigned>(seed));
+}
+
 void register_lang_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
   register_gc_natives(jvm);
   jvm.natives().register_method("java.lang.Vector3", "rotate", "(Ljava.lang.Ypr;)Ljava.lang.Vector3;",
@@ -340,7 +346,8 @@ void register_lang_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) {
   jvm.natives().register_method(
       "java.lang.Math", "randomize", "()V",
       [](Object*, const std::vector<Value>&) {
-        std::srand(static_cast<unsigned>(std::time(nullptr)));
+        std::srand(g_fixed_random_seed >= 0 ? static_cast<unsigned>(g_fixed_random_seed)
+                                            : static_cast<unsigned>(std::time(nullptr)));
         return Value::make_void();
       });
   // Cooperative stacks resume run() from the host frame; start remains asynchronous.

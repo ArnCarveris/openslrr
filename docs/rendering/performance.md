@@ -381,3 +381,55 @@ remaining ~2.8 ms (they are in the menu's "Session and host" section).
 - The 2560x1440 flake noted for #266 also hit the caches on/off comparison;
   `city_submission` now accepts up to 64 differing bytes at most 1 apart and
   fails on anything larger.
+
+## Baseline on a recorded drive (#358)
+
+The straight `--bench-drive` run used for earlier numbers leaves the road
+after about 12 s and sits against a fence for the rest of the run (and, with
+a manual-transmission save, never left neutral; the benchmark now forces the
+automatic gearbox). The baseline therefore replays a 135 s drive Elias
+recorded in Valo City (`--record-path` / `--replay-path`, KNOWLEDGE_BASE §3),
+through downtown with pedestrians, residential streets, the expressway and
+the underpass. Files and machine: `assets/validation/perf-baseline/`.
+
+`scripts/perf_baseline.ps1` runs it at 13:00 and 22:00, with the process
+restricted to every logical processor (`all`), four P-cores with
+Hyper-Threading (`p4`, logical CPUs 0-7) or four E-cores (`e4`, 16-19), and
+with Elias's settings (2560x1440, MSAA 8x, GTAO High, shadows High / Very
+soft, reflections and clouds on) or a `low` preset (1920x1080, no MSAA, no
+AO, low shadows, no dynamic reflections or volumetric clouds). Averages over
+the drive, ms (i7-13700KF, RTX 4080, DDR5 at 4000 MT/s):
+
+| Run | Frame | p95 | Flush | Shadows | Collect | Prop batches | World | Physics | Render thread | GPU | Draws |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| day all saved | 6.33 | 7.01 | 5.06 | 2.56 | 1.00 | 0.50 | 0.81 | 0.59 | 2.47 | 4.19 | 2998 |
+| day p4 saved | 6.79 | 7.65 | 5.28 | 2.63 | 1.15 | 0.61 | 0.82 | 0.64 | 2.54 | 4.48 | 2994 |
+| day e4 saved | 10.32 | 11.13 | 8.75 | 4.50 | 2.09 | 1.07 | 1.23 | 0.67 | 3.84 | 4.85 | 3013 |
+| night all saved | 3.57 | 4.15 | 2.57 | 0.08 | 0.89 | 0.44 | 0.83 | 0.46 | 1.82 | 3.29 | 2215 |
+| night e4 saved | 5.53 | 6.35 | 4.18 | 0.14 | 1.88 | 0.96 | 1.28 | 0.57 | 2.88 | 4.35 | 2233 |
+| day all low | 6.12 | 6.73 | 4.81 | 2.54 | 1.03 | 0.51 | 0.78 | 0.61 | 1.89 | 2.36 | 2402 |
+| day e4 low | 9.89 | 10.62 | 8.29 | 4.33 | 2.09 | 1.09 | 1.21 | 0.69 | 2.97 | 3.78 | 2414 |
+| night all low | 3.06 | 3.61 | 2.15 | 0.08 | 0.87 | 0.42 | 0.80 | 0.41 | 1.30 | 1.68 | 1620 |
+
+The full table, with `p4` night runs, is `replay-expo-off/summary.txt`.
+
+Findings:
+
+- The frame is CPU-bound in every run (present wait at most 0.15 ms, GPU
+  below the frame time).
+- By day, shadow submission on the host is the largest single cost, almost
+  all of it the sun cascades (`sun_shadows_ms` 2.54 of 2.56): 2.5 ms of a
+  6.3 ms frame on all cores, 4.5 ms of 10.3 ms on four E-cores.
+  At night it is gone and the frame is almost twice as fast. The sun cascades
+  are not on worker encoders (#270 only moved the AO prepass, car tiles and
+  reflection faces), so they are the first target of #359.
+- The `low` preset barely changes the CPU frame (6.33 → 6.12 ms by day): low
+  shadow quality still collects and submits every cascade. It only lowers GPU
+  time (4.19 → 2.36 ms). A weaker machine has no setting that cuts the host
+  cost of sun shadows.
+- The 1.55 ms "instanced prop batches" zone of the #260/#262 snapshot does
+  not reproduce on this drive: 0.44–0.51 ms on all cores, about 1 ms on four
+  E-cores. It predates the parallel batch collection of #266.
+- The heaviest stretch is downtown by day: about 9 ms per second on all
+  cores, 15 ms on four E-cores, with 4,300–5,800 draws. No frame went above
+  33 ms in any run.

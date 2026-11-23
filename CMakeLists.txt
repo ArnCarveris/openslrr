@@ -129,6 +129,7 @@ add_executable(slrr_host
   src/boot/mainloop.cpp
   src/boot/script_events.cpp
   src/boot/boot.cpp
+  src/boot/drive_path.cpp
   src/physics/sl2_pacejka.cpp
   src/physics/tire_model.cpp
   src/physics/dyno_model.cpp

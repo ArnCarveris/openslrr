@@ -16,6 +16,12 @@ struct BootOptions {
   bool auto_new = false;
   // After Garage: fire Garage.osdCommand (101 MAINMENU / 109 HITTHESTREET / 0=skip).
   int32_t auto_cmd = 0;
+  // --auto-cmd demo: from the main menu, run its DEMO command (an AI race in
+  // Valo City). With --bench-drive it is measured like the benchmark: fixed
+  // 1/60 s step, --bench-time hour, then quit (#358).
+  bool auto_demo = false;
+  // --seed N: fixed seed for the script RNG (Math.randomize), -1 = clock.
+  int64_t random_seed = -1;
   int32_t max_frames = 0;  // 0 = until quit
   // --perf-log: per-second frame timing on stdout, plus CSV rows when a path
   // other than "-" is given.
@@ -36,6 +42,12 @@ struct BootOptions {
   // --bench-shots: directory for window captures (TGA) at the start of the
   // benchmark drive and every 10 seconds after it.
   std::string bench_shots;
+  // --record-path: write the player car's pose every frame of normal play
+  // (slrr/drive_path.hpp). --replay-path: during the benchmark drive, move
+  // the car along such a recording instead of driving it; the drive lasts
+  // the recording unless --bench-drive is given.
+  std::string record_path;
+  std::string replay_path;
   // --wind SPEED[,HEADING]: mean wind in m/s at 10 m height (a gentle breeze
   // by default, 0 for calm air), blowing towards HEADING degrees from +Z
   // towards +X.
