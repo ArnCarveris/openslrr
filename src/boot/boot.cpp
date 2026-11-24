@@ -525,6 +525,14 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
     if (until_quit)
       std::printf("[boot] Soft MainLoop until window close\n");
     if (opt.perf_log) perf::enable(opt.perf_log_path);
+    // Free-running physics thread (#380), except for the benchmark, which
+    // steps fixed 1/60 s frames: there the frame-locked batches keep its
+    // results independent of the wall clock. --physics-batch also turns it off.
+    const bool fixed_step_bench =
+        (opt.bench_drive_seconds > 0 || !opt.replay_path.empty() || !opt.bench_map.empty() ||
+         opt.auto_demo) && !opt.bench_realtime;
+    if (!fixed_step_bench && !opt.physics_batch) part_physics_set_free_running(true);
+    if (!opt.physics_trace.empty()) part_physics_trace(opt.physics_trace);
     // Development benchmark: a straight full-throttle run from the spot
     // where the player first drives an outdoor world.
     bool bench_running = false;
@@ -593,6 +601,10 @@ int boot_game(Jvm& jvm, IRenderBackend& render, const BootOptions& opt) {
       if (fr.quit) break;
       if (!bench_map_started && sections.actual() &&
           sections.actual()->class_name.find("Garage") != std::string::npos) {
+        // --bench-traffic: the city traffic density, without the options menu.
+        if (opt.bench_traffic >= 0.f)
+          jvm.set_static("java.util.Config", "trafficDensity",
+                         Value::make_float(opt.bench_traffic));
         // Same call TrackSelect makes for TAKE IT, without the menu.
         bench_map_started = true;
         const Value maps = jvm.get_static("java.game.GameLogic", "MapBox");

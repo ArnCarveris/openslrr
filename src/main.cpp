@@ -8,7 +8,9 @@
 #include "slrr/natives_boot.hpp"
 #include "slrr/gameref.hpp"
 #include "slrr/part_runtime.hpp"
+#include "slrr/vehicle_dynamics.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,11 +32,12 @@ void usage() {
       "           [--spawn-car cars/racers/Baiern.rpk:0x6]\n"
       "           [--vehicle-osd PATH]\n"
       "           [--perf-log CSV|-] [--bench-map TRACK] [--bench-drive SECONDS]\n"
-      "           [--bench-career SAVE_DIRECTORY] [--bench-realtime]\n"
+      "           [--bench-career SAVE_DIRECTORY] [--bench-realtime] [--bench-traffic 0..1]\n"
       "           [--bench-time HOUR] [--bench-shots DIR]\n"
       "           [--record-path FILE] [--replay-path FILE]\n"
       "           [--wind M/S[,HEADING]]\n"
-      "           [--no-vsync] [--debug-overlay] [--physics-inline]\n"
+      "           [--no-vsync] [--debug-overlay] [--physics-inline] [--physics-batch] [--physics-hz HZ]\n"
+      "           [--physics-trace FILE]\n"
       "           [PlayerName]\n"
       "\n"
       "Default --game: FMV intros → Init(int) (Soft splash / menu).\n"
@@ -131,6 +134,17 @@ int main(int argc, char** argv) {
       opt.vsync = false;
       continue;
     }
+    if (std::strcmp(a, "--physics-hz") == 0 && i + 1 < argc) {
+      // Vehicle solver rate (#380): 60-4000 Hz; 120 by default.
+      slrr::physics::VehicleDynamics::set_frequency(
+          static_cast<unsigned>(std::atoi(argv[++i])));
+      continue;
+    }
+    if (std::strcmp(a, "--physics-batch") == 0) {
+      // Frame-locked batches instead of the free-running thread (#380).
+      opt.physics_batch = true;
+      continue;
+    }
     if (std::strcmp(a, "--physics-inline") == 0) {
       // Step physics on the host thread instead of the physics thread.
       part_physics_set_threaded(false);
@@ -161,6 +175,14 @@ int main(int argc, char** argv) {
       continue;
     }
     if(std::strcmp(a,"--bench-realtime")==0){opt.bench_realtime=true;continue;}
+    if (std::strcmp(a, "--physics-trace") == 0 && i + 1 < argc) {
+      opt.physics_trace = argv[++i];
+      continue;
+    }
+    if (std::strcmp(a, "--bench-traffic") == 0 && i + 1 < argc) {
+      opt.bench_traffic = std::clamp(static_cast<float>(std::atof(argv[++i])), 0.f, 1.f);
+      continue;
+    }
     if(std::strcmp(a,"--bench-career")==0&&i+1<argc){opt.bench_career=argv[++i];opt.auto_new=true;continue;}
     if (std::strcmp(a, "--bench-map") == 0 && i + 1 < argc) {
       opt.bench_map = argv[++i];

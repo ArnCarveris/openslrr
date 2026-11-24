@@ -5,6 +5,7 @@
 #include "shadow_cascades.hpp"
 
 #include "slrr/part_runtime.hpp"
+#include "slrr/skid_marks.hpp"
 #include "slrr/dds_image.hpp"
 #include "slrr/host_cursor.hpp"
 #include "slrr/host_input.hpp"
@@ -324,6 +325,60 @@ void LibBgfxBackend::draw_nitro_flares(const float* view, const float* projectio
     submit_bound(view_id, program_, 6);
     ++drawn;
   }
+}
+
+// Tyre skid marks (skid_marks.hpp): one transient batch of world quads that
+// darken the road by multiplication, so a mark needs no lighting and never
+// lightens a shadowed surface. Colour and opacity are SLRR_rev's road mark
+// (0x17191a at 0.62).
+void LibBgfxBackend::draw_skid_marks(uint16_t view_id) {
+  const auto& marks = skid_mark_vertices();
+  const uint32_t quads = static_cast<uint32_t>(marks.size() / 4);
+  if (!quads) return;
+  const uint32_t vertex_count = quads * 4, index_count = quads * 6;
+  if (bgfx::getAvailTransientVertexBuffer(vertex_count, layout_) < vertex_count ||
+      bgfx::getAvailTransientIndexBuffer(index_count) < index_count) return;
+  bgfx::TransientVertexBuffer vb;
+  bgfx::TransientIndexBuffer ib;
+  bgfx::allocTransientVertexBuffer(&vb, vertex_count, layout_);
+  bgfx::allocTransientIndexBuffer(&ib, index_count);
+  auto* out = reinterpret_cast<MeshVertex*>(vb.data);
+  constexpr float kOpacity = .62f, kDark = 1.f - float(0x17) / 255.f;
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    const auto& m = marks[i];
+    const float shade = 1.f - std::clamp(m.alpha, 0.f, 1.f) * kOpacity * kDark;
+    const uint32_t c = static_cast<uint32_t>(std::lround(shade * 255.f));
+    MeshVertex v{};
+    v.x = m.x;
+    v.y = m.y;
+    v.z = -m.z;  // script space to render space, as part_car_lights
+    v.ny = 1.f;
+    v.rgba = c | c << 8 | c << 16 | 0xff000000u;
+    out[i] = v;
+  }
+  auto* index = reinterpret_cast<uint16_t*>(ib.data);
+  for (uint32_t q = 0; q < quads; ++q) {
+    const uint16_t v = static_cast<uint16_t>(q * 4);
+    const uint16_t tri[6] = {v, uint16_t(v + 1), uint16_t(v + 2), uint16_t(v + 1), uint16_t(v + 3),
+                             uint16_t(v + 2)};
+    std::copy(std::begin(tri), std::end(tri), index + q * 6);
+  }
+  BindingScope binding(*this, view_id);
+  float identity[16];
+  bx::mtxIdentity(identity);
+  // y 2: emission path over a white mask (no sun, shadow or fog);
+  // w -3: the diffuse is multiplied by the vertex colour.
+  const float settings[4] = {0.f, 2.f, 0.f, -3.f};
+  const float white[4] = {1.f, 1.f, 1.f, 1.f};
+  bind_baked_light(nullptr, nullptr, BGFX_INVALID_HANDLE, false, nullptr, nullptr);
+  enc()->setUniform(u_color_, white);
+  enc()->setUniform(u_alpha_test_, settings);
+  enc()->setTransform(identity);
+  enc()->setVertexBuffer(0, &vb);
+  enc()->setIndexBuffer(&ib);
+  set_texture(0, s_tex_, white_tex_);
+  enc()->setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_GREATER | BGFX_STATE_BLEND_MULTIPLY);
+  submit_bound(view_id, program_, index_count);
 }
 
 // Fills the per-frame light data texture (#254, layout in scene_shadow.sh).

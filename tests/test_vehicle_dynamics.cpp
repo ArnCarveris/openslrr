@@ -271,18 +271,23 @@ SLRR_TEST(high_grip_braking_remains_finite_with_legacy_centre_fields) {
   car.dynamics.body.velocity = car.dynamics.body.orientation.rotate({0, 0, -25});
   for (auto& wheel : car.dynamics.state) wheel.spin = 25 / .31;
   double worst_vertical = 0, worst_lift = 0;
-  bool always_in_contact = true;
+  // At about 2.4 g of braking the load transfer and the pitch of the dive
+  // can lift the rear wheels for an instant at the 1000 Hz solver rate (#380);
+  // the 120 Hz solver damped that peak. The support must stay finite and the
+  // car must not hop: no wheel stays off for more than three samples.
+  int off_run[4] = {}, longest_off = 0;
   for (int i = 0; i < 120; ++i) {
     const auto before = car.dynamics.body.velocity;
     car.run(1. / 60, 0, 1, 0);
     worst_vertical = std::max(worst_vertical, std::abs(car.dynamics.body.velocity.y - before.y) * 60);
     for (int w = 0; w < 4; ++w) {
       const auto& s = car.dynamics.state[w];
-      always_in_contact = always_in_contact && s.contact;
+      off_run[w] = s.contact ? 0 : off_run[w] + 1;
+      longest_off = std::max(longest_off, off_run[w]);
       worst_lift = std::max(worst_lift, std::abs(s.jacking));
     }
   }
-  SLRR_REQUIRE(always_in_contact);
+  SLRR_REQUIRE(longest_off <= 3);
   SLRR_REQUIRE(worst_lift <= 1e-6);
   SLRR_REQUIRE(worst_vertical < 3);
 }

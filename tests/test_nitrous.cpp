@@ -286,11 +286,13 @@ void stock_nitrous_lifecycle() {
   drive.nitro = .25;
   const physics::Terrain air = [](double, double, double, physics::GroundHit &) { return false; };
   double expected = 0;
-  for (int substep = 0; substep < 2; ++substep) {
+  const double step = physics::VehicleDynamics::timestep;
+  const unsigned substeps = part_physics_steps_ahead(1);
+  for (unsigned substep = 0; substep < substeps; ++substep) {
     const double limiter = predictor.engine_limit_fraction();
     SLRR_REQUIRE(limiter == 1);
-    expected += predictor.engine_omega * kRpm * .0002 * .25 * limiter * rate / 120.;
-    SLRR_REQUIRE(predictor.advance(1. / 120., air) == 1);
+    expected += predictor.engine_omega * kRpm * .0002 * .25 * limiter * rate * step;
+    SLRR_REQUIRE(predictor.advance(step, air) == 1);
   }
   host_input().drive_nitro = .25f;
   state = f.advance();
@@ -298,7 +300,7 @@ void stock_nitrous_lifecycle() {
   std::printf("NITRO rate %.9f RPM %.3f -> %.3f consumed %.12f expected %.12f ticks %llu\n",
               rate, before.rpm, state.rpm, consumed, expected,
               static_cast<unsigned long long>(state.ticks - before.ticks));
-  SLRR_REQUIRE(state.ticks == before.ticks + 2 && state.nitro_active);
+  SLRR_REQUIRE(state.ticks == before.ticks + substeps && state.nitro_active);
   SLRR_REQUIRE(std::fabs(state.rpm - predictor.engine_omega * kRpm) < 1e-5);
   SLRR_REQUIRE(expected > 0 && std::fabs(consumed - expected) < 1e-9);
   SLRR_REQUIRE(number(f.bottle, "actual") == 2.25f);

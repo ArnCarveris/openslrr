@@ -893,6 +893,15 @@ std::string scene_instances_envmap() {
 }
 void scene_instances_select(void *world, void *skydome, bool preview_lamps,
                             SceneEnvironment environment) {
+  if (auto *sky = gameref_get(skydome))
+    sky->sky_render = true;
+  // Called every frame. The free-running physics thread reads the collision
+  // caches, so join it only for a real change (#380): an unconditional join
+  // paused the thread for the rest of every frame. The physics sync prepares
+  // the caches each frame anyway.
+  if (g_world == world && g_sky == skydome && g_preview_lamps == preview_lamps &&
+      g_environment_kind == environment)
+    return;
   part_physics_join();
   if (g_world != world) ++g_floor_revision;
   g_world = world;
@@ -900,8 +909,6 @@ void scene_instances_select(void *world, void *skydome, bool preview_lamps,
   g_preview_lamps = preview_lamps;
   g_environment_kind = environment;
   g_floor_prepared = false;
-  if (auto *sky = gameref_get(skydome))
-    sky->sky_render = true;
 }
 
 bool scene_instances_outdoor() {
@@ -1169,6 +1176,70 @@ std::vector<GameRefState*> render_nodes_in_world(void* root, bool physics = fals
   return nodes;
 }
 
+// One triangle of a floor query, already in script space: keeps the highest
+// surface under (x, z) that is not above `below` (+5 cm).
+void floor_test(const float (&v)[3][3], float x, float z, float below, float &best,
+                bool &hit, float *normal) {
+  const float x0 = v[0][0], z0 = v[0][2], x1 = v[1][0], z1 = v[1][2];
+  const float x2 = v[2][0], z2 = v[2][2];
+  const float denom = (z1 - z2) * (x0 - x2) + (x2 - x1) * (z0 - z2);
+  if (std::fabs(denom) < 1e-8f)
+    return;
+  const float a = ((z1 - z2) * (x - x2) + (x2 - x1) * (z - z2)) / denom;
+  const float b = ((z2 - z0) * (x - x2) + (x0 - x2) * (z - z2)) / denom;
+  const float c = 1.f - a - b;
+  if (a < -1e-4f || b < -1e-4f || c < -1e-4f)
+    return;
+  const float y = a * v[0][1] + b * v[1][1] + c * v[2][1];
+  if (y > below + 0.05f)
+    return;
+  if (!hit || y > best) {
+    best = y;
+    hit = true;
+    if (normal) {
+      const float ax = v[1][0] - v[0][0], ay = v[1][1] - v[0][1],
+                  az = v[1][2] - v[0][2];
+      const float bx = v[2][0] - v[0][0], by = v[2][1] - v[0][1],
+                  bz = v[2][2] - v[0][2];
+      float nx = ay * bz - az * by, ny = az * bx - ax * bz,
+            nz = ax * by - ay * bx;
+      const float size = std::sqrt(nx * nx + ny * ny + nz * nz);
+      const float sign = ny < 0 ? -1.f : 1.f;
+      normal[0] = nx / size * sign;
+      normal[1] = ny / size * sign;
+      normal[2] = nz / size * sign;
+    }
+  }
+}
+
+// Triangle t (an offset in idx) transformed by m, with its X/Z bounds. False
+// for an index outside the positions.
+bool floor_triangle(const float *m, const std::vector<float> &pos,
+                    const std::vector<uint32_t> &idx, size_t t, float scale,
+                    float (&v)[3][3], float (&bounds)[4]) {
+  for (int k = 0; k < 3; ++k) {
+    const uint32_t vi = idx[t + static_cast<size_t>(k)];
+    if (static_cast<size_t>(vi) * 3 + 2 >= pos.size())
+      return false;
+    const float vx = pos[vi * 3] * scale;
+    const float vy = pos[vi * 3 + 1] * scale;
+    const float vz = pos[vi * 3 + 2] * scale;
+    v[k][0] = m[0] * vx + m[4] * vy + m[8] * vz + m[12];
+    v[k][1] = m[1] * vx + m[5] * vy + m[9] * vz + m[13];
+    v[k][2] = m[2] * vx + m[6] * vy + m[10] * vz + m[14];
+    if (k == 0) {
+      bounds[0] = bounds[1] = v[0][0];
+      bounds[2] = bounds[3] = v[0][2];
+    } else {
+      bounds[0] = std::min(bounds[0], v[k][0]);
+      bounds[1] = std::max(bounds[1], v[k][0]);
+      bounds[2] = std::min(bounds[2], v[k][2]);
+      bounds[3] = std::max(bounds[3], v[k][2]);
+    }
+  }
+  return true;
+}
+
 void floor_triangles(const float *m, const std::vector<float> &pos,
                      const std::vector<uint32_t> &idx, float scale, float x,
                      float z, float below, float &best, bool &hit,
@@ -1176,63 +1247,11 @@ void floor_triangles(const float *m, const std::vector<float> &pos,
   if (!m || idx.size() < 3 || pos.size() < 9)
     return;
   for (size_t t = 0; t + 2 < idx.size(); t += 3) {
-    float v[3][3];
-    bool ok = true;
-    float min_x = 0, max_x = 0, min_z = 0, max_z = 0;
-    for (int k = 0; k < 3; ++k) {
-      const uint32_t vi = idx[t + static_cast<size_t>(k)];
-      if (static_cast<size_t>(vi) * 3 + 2 >= pos.size()) {
-        ok = false;
-        break;
-      }
-      const float vx = pos[vi * 3] * scale;
-      const float vy = pos[vi * 3 + 1] * scale;
-      const float vz = pos[vi * 3 + 2] * scale;
-      v[k][0] = m[0] * vx + m[4] * vy + m[8] * vz + m[12];
-      v[k][1] = m[1] * vx + m[5] * vy + m[9] * vz + m[13];
-      v[k][2] = m[2] * vx + m[6] * vy + m[10] * vz + m[14];
-      if (k == 0) {
-        min_x = max_x = v[0][0];
-        min_z = max_z = v[0][2];
-      } else {
-        min_x = std::min(min_x, v[k][0]);
-        max_x = std::max(max_x, v[k][0]);
-        min_z = std::min(min_z, v[k][2]);
-        max_z = std::max(max_z, v[k][2]);
-      }
-    }
-    if (!ok || x < min_x || x > max_x || z < min_z || z > max_z)
+    float v[3][3], bounds[4];
+    if (!floor_triangle(m, pos, idx, t, scale, v, bounds) || x < bounds[0] ||
+        x > bounds[1] || z < bounds[2] || z > bounds[3])
       continue;
-    const float x0 = v[0][0], z0 = v[0][2], x1 = v[1][0], z1 = v[1][2];
-    const float x2 = v[2][0], z2 = v[2][2];
-    const float denom = (z1 - z2) * (x0 - x2) + (x2 - x1) * (z0 - z2);
-    if (std::fabs(denom) < 1e-8f)
-      continue;
-    const float a = ((z1 - z2) * (x - x2) + (x2 - x1) * (z - z2)) / denom;
-    const float b = ((z2 - z0) * (x - x2) + (x0 - x2) * (z - z2)) / denom;
-    const float c = 1.f - a - b;
-    if (a < -1e-4f || b < -1e-4f || c < -1e-4f)
-      continue;
-    const float y = a * v[0][1] + b * v[1][1] + c * v[2][1];
-    if (y > below + 0.05f)
-      continue;
-    if (!hit || y > best) {
-      best = y;
-      hit = true;
-      if (normal) {
-        const float ax = v[1][0] - v[0][0], ay = v[1][1] - v[0][1],
-                    az = v[1][2] - v[0][2];
-        const float bx = v[2][0] - v[0][0], by = v[2][1] - v[0][1],
-                    bz = v[2][2] - v[0][2];
-        float nx = ay * bz - az * by, ny = az * bx - ax * bz,
-              nz = ax * by - ay * bx;
-        const float size = std::sqrt(nx * nx + ny * ny + nz * nz);
-        const float sign = ny < 0 ? -1.f : 1.f;
-        normal[0] = nx / size * sign;
-        normal[1] = ny / size * sign;
-        normal[2] = nz / size * sign;
-      }
-    }
+    floor_test(v, x, z, below, best, hit, normal);
   }
 }
 } // namespace
@@ -1827,6 +1846,124 @@ bool scene_instances_sample_floor(float x, float z, float below, void *ignore,
                       below, best, hit, sample.normal);
     floor_triangles(eye, mesh.positions, mesh.large_triangles, mesh.scale, x, z,
                     below, best, hit, sample.normal);
+  }
+  if (!hit)
+    return false;
+  sample.height = best;
+  return true;
+}
+
+namespace {
+constexpr float kPatchCell = .5f;  // metres
+constexpr int kPatchCells = 64;    // per axis at most
+}  // namespace
+
+void scene_instances_floor_patch(float x0, float z0, float x1, float z1, void *ignore,
+                                 SceneFloorPatch &patch) {
+  if (!g_floor_prepared) scene_instances_prepare_physics();
+  patch.triangles.clear();
+  patch.start.clear();
+  patch.list.clear();
+  patch.ignore = ignore;
+  patch.revision = g_floor_revision;
+  patch.x0 = x0;
+  patch.z0 = z0;
+  patch.x1 = x1;
+  patch.z1 = z1;
+  patch.nx = patch.nz = 0;
+  if (!(x1 >= x0 && z1 >= z0) || x1 - x0 > kPatchCell * kPatchCells ||
+      z1 - z0 > kPatchCell * kPatchCells)
+    return;  // no grid: every query falls back
+  float eye[16];
+  identity(eye);
+  // The meshes in the order scene_instances_sample_floor tests them; each
+  // mesh's cell triangles before its large ones.
+  const auto add_list = [&](const StaticMesh &mesh, const std::vector<uint32_t> &idx) {
+    if (idx.size() < 3 || mesh.positions.size() < 9) return;
+    for (size_t t = 0; t + 2 < idx.size(); t += 3) {
+      SceneFloorPatch::Triangle tri;
+      if (!floor_triangle(eye, mesh.positions, idx, t, mesh.scale, tri.v, tri.bounds) ||
+          tri.bounds[1] < x0 || tri.bounds[0] > x1 || tri.bounds[3] < z0 || tri.bounds[2] > z1)
+        continue;
+      patch.triangles.push_back(tri);
+    }
+  };
+  const auto add_mesh = [&](const StaticMesh &mesh) {
+    const int32_t cx0 = cell_coordinate(x0, mesh), cx1 = cell_coordinate(x1, mesh);
+    const int32_t cz0 = cell_coordinate(z0, mesh), cz1 = cell_coordinate(z1, mesh);
+    for (int32_t cx = cx0; cx <= cx1; ++cx)
+      for (int32_t cz = cz0; cz <= cz1; ++cz) {
+        const auto cell = mesh.cells.find(floor_cell(cx, cz));
+        if (cell != mesh.cells.end()) add_list(mesh, cell->second);
+      }
+    add_list(mesh, mesh.large_triangles);
+  };
+  if (g_static_enabled)
+    for (const auto &mesh : g_static) add_mesh(mesh);
+  for (const auto &[key, ground] : g_ground_collision)
+    for (const auto &mesh : ground.meshes) add_mesh(mesh);
+  for (const auto &entry : g_floor_meshes) {
+    const auto &cached = entry.second;
+    if (ignore && std::find(cached.ancestors.begin(), cached.ancestors.end(), ignore) !=
+                      cached.ancestors.end())
+      continue;
+    add_mesh(cached.mesh);
+  }
+  // A grid of kPatchCell cells over the rectangle, each listing its
+  // triangles in the order above (counted, then filled).
+  patch.nx = std::clamp(static_cast<int>(std::ceil((x1 - x0) / kPatchCell)), 1, kPatchCells);
+  patch.nz = std::clamp(static_cast<int>(std::ceil((z1 - z0) / kPatchCell)), 1, kPatchCells);
+  const auto column = [&](float x) {
+    return std::clamp(static_cast<int>(std::floor((x - x0) / kPatchCell)), 0, patch.nx - 1);
+  };
+  const auto row = [&](float z) {
+    return std::clamp(static_cast<int>(std::floor((z - z0) / kPatchCell)), 0, patch.nz - 1);
+  };
+  patch.start.assign(static_cast<size_t>(patch.nx * patch.nz) + 1, 0);
+  for (int pass = 0; pass < 2; ++pass) {
+    if (pass == 1) {
+      for (size_t c = 1; c < patch.start.size(); ++c) patch.start[c] += patch.start[c - 1];
+      patch.list.resize(patch.start.back());
+    }
+    for (uint32_t t = 0; t < patch.triangles.size(); ++t) {
+      const auto &b = patch.triangles[t].bounds;
+      const int cx0 = column(b[0]), cx1 = column(b[1]), cz0 = row(b[2]), cz1 = row(b[3]);
+      for (int cz = cz0; cz <= cz1; ++cz)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+          const size_t c = static_cast<size_t>(cz * patch.nx + cx);
+          if (pass == 0) ++patch.start[c + 1];
+          else patch.list[patch.start[c]++] = t;
+        }
+    }
+  }
+  // The fill advanced each start to the next cell's: shift them back.
+  for (size_t c = patch.start.size() - 1; c > 0; --c) patch.start[c] = patch.start[c - 1];
+  patch.start[0] = 0;
+}
+
+bool scene_instances_floor_patch_covers(const SceneFloorPatch &patch, float x0, float z0,
+                                        float x1, float z1, void *ignore) {
+  return patch.nx && g_floor_prepared && patch.revision == g_floor_revision &&
+         patch.ignore == ignore && x0 >= patch.x0 && x1 <= patch.x1 && z0 >= patch.z0 &&
+         z1 <= patch.z1;
+}
+
+bool scene_instances_sample_floor(const SceneFloorPatch &patch, float x, float z,
+                                  float below, SceneFloorHit &sample) {
+  if (!patch.nx || !(x >= patch.x0 && x <= patch.x1 && z >= patch.z0 && z <= patch.z1))
+    return scene_instances_sample_floor(x, z, below, patch.ignore, sample);
+  const int cx = std::clamp(static_cast<int>(std::floor((x - patch.x0) / kPatchCell)), 0,
+                            patch.nx - 1);
+  const int cz = std::clamp(static_cast<int>(std::floor((z - patch.z0) / kPatchCell)), 0,
+                            patch.nz - 1);
+  const size_t c = static_cast<size_t>(cz * patch.nx + cx);
+  float best = 0.f;
+  bool hit = false;
+  for (uint32_t i = patch.start[c]; i < patch.start[c + 1]; ++i) {
+    const auto &tri = patch.triangles[patch.list[i]];
+    if (x < tri.bounds[0] || x > tri.bounds[1] || z < tri.bounds[2] || z > tri.bounds[3])
+      continue;
+    floor_test(tri.v, x, z, below, best, hit, sample.normal);
   }
   if (!hit)
     return false;
@@ -2771,8 +2908,9 @@ void scene_instances_override_mesh(uint32_t id,
     g_overrides[id] = std::move(geo);
 }
 void scene_instances_enable_static_floor(bool enabled) {
+  if (g_static_enabled == enabled) return;  // every frame: join only on a change
   part_physics_join();
-  if (g_static_enabled != enabled) ++g_floor_revision;
+  ++g_floor_revision;
   g_static_enabled = enabled;
 }
 void scene_instances_add_static_mesh(const ScxGeometry &geo) {

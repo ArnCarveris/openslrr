@@ -12,6 +12,174 @@ physics now steps on its own thread ([§1](#physics-thread)). The compile-time
 rate override and [standalone experiment](../../tests/test_physics_tick_rate.cpp)
 support further work. New default controls are not part of this branch.
 
+## Update #380: 1000 Hz free-running solver and Physics Lab
+
+Issue [#380](https://github.com/EliasFD3S/openslrr/issues/380) (phase 1 of the
+car physics overhaul) replaces the frame-locked clock described below as the
+game's default. The sections after this one describe the frame-locked mode,
+which the fixed-step benchmark, `--physics-batch` and the tests still use.
+
+- **Rate at run time.** `VehicleDynamics::frequency` / `timestep` are run-time
+  values (`set_frequency`, `--physics-hz HZ`, 60-4000 Hz); the default is
+  1000 Hz (`SLRR_VEHICLE_PHYSICS_HZ`). A 60 Hz host tick runs
+  `steps_in_host_tick` = floor((n+1) f / 60) - floor(n f / 60) solver steps, so
+  rates that 60 does not divide keep exact time.
+- **Free-running thread.** `PhysicsClock` steps an open batch one solver step
+  at a time on the wall clock; `part_physics_begin` pauses it, commits,
+  publishes and resumes it ([contract §6](../core/ENGINE_CONTRACT.md#host-threads-and-the-worker-pool)).
+  Measured in Valo City at 1000 Hz: 1000-1004 steps per wall second at
+  about 230 FPS. The first version re-anchored its clock at each resume and
+  ran only about 450 steps per second: the time spent in the sync was lost.
+  The clock now keeps game time running through the sync.
+- **Real time first.** A thread that falls behind no longer slows the game.
+  Before, the clock dropped the steps beyond 0.1 s, so 98 traffic cars at
+  321 steps/s ran the world at a third of its speed. Now the sync first waits,
+  at most 50 ms, for the steps due (`PhysicsClock::catch_up`): the frame rate
+  drops instead. The rate also adapts: after a second with dropped time, or
+  with frames waiting over 10 % of the time, it halves (1000, 500, 250 Hz),
+  and after three seconds with room for twice the load it doubles back to the
+  requested rate. The Lab gives the same handling from 250 to 1000 Hz. The
+  overlay shows the wait and any dropped time.
+- **No join for an unchanged scene.** `scene_instances_select` and
+  `scene_instances_enable_static_floor` run every frame and called
+  `part_physics_join()` every time, which paused the thread until the next
+  sync: with traffic it ran only part of each frame. They now join only when
+  the world, sky, lamps, environment or static floor changes.
+- **Multi-rate traffic.** In a free-running batch, native traffic farther than
+  60 m from the controlled car steps about every 8 ms (125 Hz), and beyond
+  150 m about every 16 ms (60 Hz): `VehicleDynamics::advance(..., merge)` runs
+  the owed solver steps as one step (`defer` adds time on the other steps).
+  The phases are spread over the cars, and an impact (normal impulse over 1)
+  puts both cars back on every step. The Lab at 60 Hz stays stable but brakes
+  in 33.9 m instead of 30.7 m: good enough for cars no one is near.
+- **Pair broadphase.** The car pair loop skips a pair whose swept bounding
+  spheres (box half-diagonal plus the step's travel) are apart, before
+  copying and validating both bodies: with 98 cars, 4753 pairs went from
+  2.5 ms to 0.1 ms per step.
+- **Crush cages at their own rate.** `DeformationCage` steps at a fixed
+  120 Hz (`kRate`, the former solver rate) from the solver steps it is given:
+  its compliance, mount strength and settling were tuned for that step, and
+  stepping every 1 ms cost 4-7 ms per frame of commit with traffic. Stepping
+  every 1 ms had also almost removed crash damage: in the race test a 15 m/s
+  impact left the chassis at condition 0.975, against 0.51 with the 120 Hz
+  step. With the damage back, the race AI runs up to 12.6 m off its line
+  after that impact (the test now allows 13 m).
+- **Floor patch.** A car's ~45 floor queries per step now read a
+  `SceneFloorPatch`: the triangles under the car in a 0.5 m grid, kept on the
+  record and rebuilt when the car leaves it (3 m of slack) or the collision
+  changes. Over 4 million compared queries the hit and height always matched
+  the full query; 33 normals differed, at ties between equally high
+  triangles on a shared edge.
+- **Tyre footprint on kerbs.** A linked wheel used to sample the ground at
+  one point under its hub, as an infinite plane: a kerb existed only once the
+  hub crossed its edge, and then the wheel jumped its whole height in one step
+  (the bump taking a kerb at an angle). `solve_linked` now samples the
+  footprint: 7 points along the tread (to 0.85 R) and, with
+  `WheelConfig::half_width` (from `WheelRef.setWidth`), the tread edges and the
+  sidewall bulge across it. Each point reaches sqrt(R^2 - along^2) below the
+  hub, less its shoulder or sidewall height, and the deepest wins. On any one
+  plane the centre point is the deepest, so flat and sloped ground give the
+  former results (Lab launch, brake, skidpad and step steer unchanged). At an
+  edge the nearest step is bisected (6 queries), so the wheel lifts
+  continuously, and the contact normal runs from the edge to the hub when the
+  edge's plane does not reach under the hub: the kerb pushes the car back and
+  up. Two 1000 Hz defects showed on kerbs and are fixed: the wheel's travel
+  rate was reset to zero on contact, so its next free-length prediction could
+  extend only a*dt^2 (0.24 mm at 1000 Hz) and the wheel left and retouched
+  the ground every other step; and a wheel short of the ground by up to 3 mm
+  now still touches it (the tyre's radial give). Lab, 15 cm kerb, 1000 Hz:
+
+  | Case | Before: bump, airborne, deceleration | Now |
+  |---|---|---|
+  | 8 km/h, square | 0.42 g, 24 ms, 0.10 g | 0.44 g, 0 ms, 0.73 g |
+  | 30 km/h, square | 0.42 g, 33 ms, 0.11 g | 1.92 g, 0 ms, 1.49 g |
+  | 20 km/h, 20 degrees | 0.40 g, 6 ms, 0.08 g | 0.66 g, 0 ms, 0.59 g |
+  | 20 km/h, 8 degrees | not measured | 0.88 g, 0 ms, 0.58 g |
+
+  The kerb now resists in proportion to speed, and 120, 250 and 1000 Hz agree.
+  Taken from the side, the first 5 cm of a 15 cm kerb are still a sudden lift:
+  it is taller than the sidewall, which the 2.5D contact treats as a step
+  rather than as a wall against the tyre.
+- **Quarter-car wheel.** A wheel with unsprung mass is no longer placed on
+  the ground kinematically each step. It is a mass between the suspension
+  (spring and damper to the body) and the tyre (a radial spring of 250 kN/m
+  and 1500 N s/m to the ground, `kTyreRate`, `kTyreDamping`), integrated
+  implicitly along its travel, so 120 Hz stays stable. A rigid tyre on a kerb
+  edge had to rise at v tan(angle), up to 1.6 times the car's speed, into the
+  damper. The body takes the spring and damper along the travel and the tyre
+  force across it (through the arms), or the whole tyre force at the bump
+  stop. The wheel carries no weight of its own (the body's mass includes it).
+  The rigid deep-penetration stop acts on a bottomed wheel only past 6 cm of
+  tyre squash (`kTyreDeflection`).
+- **Suspension values from the Java parts.** `Spring.java` passes the free
+  length (`restlength = rl + m g / k`, with `designedMassOnWheel`) and
+  `maxLen = max(restlength, maxlength)`; `ShockAbsorber.java` sets only the
+  damping. A career Baiern CoupeSport 2.5: 70632 N/m, 5200 N s/m both ways,
+  free length 0.266 m, bump stop 0.152 m, 10 kg unsprung: 11 cm of travel,
+  about 7 cm of it in bump from static. The values are consistent; a 15 cm
+  kerb is simply taller than that bump travel. `physics_lab --sport` uses
+  them, with 8 body low points (12 cm lips, 14 cm sills). Lab, 15 cm kerb,
+  1000 Hz, 10 ms mean bump: 8 km/h 1.25 g, 30 km/h 3.4 g, 8 degrees 1.5 g
+  (5.6 g at 30 km/h with the kinematic wheel).
+- **`--physics-trace FILE`.** Appends the controlled car's solver steps to a
+  CSV around every vertical jolt over 1.5 g (0.6 s before, 0.3 s after):
+  body height, speed, accelerations, wall and ground impact speeds, the ground
+  impact point in chassis coordinates, body spin, and per wheel travel, rate,
+  tyre load and contact normal. In the full-throttle city bench the jolts of
+  50-430 g were all single-step rigid contacts: a body low point, or a wheel
+  bottomed past the tyre's squash, hitting the ground.
+- **Launch control and the auto-clutch.** The auto-clutch read the throttle
+  after launch control had cut it, so a cut lowered the engagement rpm and
+  locked the clutch: at 1000 Hz the launch bogged (Lab with ASR: 8.18 s to
+  100 km/h and 6.7 m/s of slip). It now reads the pedal (7.64 s, 1.71 m/s).
+- **Steering filter.** It takes its step length (`dt`) instead of 1/60 s, so
+  the same filter runs per 60 Hz tick (frame-locked) or per solver step.
+- **Cost.** One car on the Test Track: about 0.065 ms per solver step, so
+  about 6.5 % of a core at 1000 Hz. Valo City, player car only (the bench
+  has no traffic): 0.40 ms of physics thread per 60 Hz frame at 1000 Hz
+  against 0.13 ms at 120 Hz. With `--bench-traffic 1` (about 98 cars), the
+  first version reached only about 96 steps per second (3.1 ms of car steps
+  and 2.5 ms of pairs per step): the world ran in slow motion. With the
+  changes above it keeps real time at 66-70 FPS (66 FPS before #380). The
+  player's car then runs at 250 Hz, because the sync keeps the thread paused
+  about 40 % of the time (commit about 2 ms, prepare about 2 ms for 98 cars).
+- **Telemetry.** The debug overlay's Vehicle tab shows the solver rate,
+  steps per second and the physics thread's load, the applied throttle,
+  brake and clutch, per-wheel speed, slip ratio and slip angle, and rolling
+  plots of speed, rpm, yaw rate, rear slip angle and rear wheelspin.
+- **Physics Lab.** `build/Release/physics_lab.exe` ([tools/physics_lab.cpp](../../tools/physics_lab.cpp))
+  drives `VehicleDynamics` on a flat plane with scripted inputs (launch,
+  brake, skidpad, step steer, burnout) at several rates and prints one line
+  per scenario and rate (`--hz 120,1000`, `--scenario NAME`, `--csv DIR`,
+  `--asr` for launch control; `curb`, `curb_fast`, `curb_angle` and
+  `curb_side` drive into a 15 cm kerb square at 8 and 30 km/h and at 20 and 8
+  degrees at 20 km/h).
+  It is bit-reproducible. On the test saloon the solver alone gives the same
+  results from 250 to 1000 Hz (0-100 km/h 7.32 s, 100-0 km/h 30.5-30.7 m,
+  skidpad 1.115 g, yaw peak 0.33 rad/s at 0.6 s); 120 Hz differs
+  (7.48 s, 31.1 m).
+- **Tests.** Tests that counted "two substeps per host tick" now ask
+  `part_physics_steps_ahead`. At 1000 Hz, extreme braking with a 1.6x grip
+  tyre lifts the rear wheels for one sample (the 120 Hz step damped it), and
+  the race AI runs up to 7.2 m off its line on the ROC (5 m at 120 Hz).
+
+Not done in this phase:
+
+- Inputs are still sampled once per frame; a 1 kHz input path comes with force
+  feedback.
+- With dense traffic the player's car drops to 250 Hz: the per-frame sync
+  (commit and prepare of every car) pauses the thread about 40 % of the time.
+  Overlapping the sync with stepping, or preparing distant traffic less
+  often, would give the time back.
+- The Test Track bench sometimes spawns the car astride the track edge with
+  its rear wheels in the air.
+- The kerb a player could not climb in game is not reproduced in the Lab,
+  where the car climbs at every rate; the footprint contact may change it.
+- Unlinked wheels (no unsprung mass and no arm) and rigid-contact wheels
+  still sample one point under the hub.
+- A traffic model (type 0x160006) is sometimes suspended with "non-finite
+  vehicle contact result" in dense traffic; the cause is not known.
+
 ## Findings and remaining work
 
 | Goal | Finding | Remaining |

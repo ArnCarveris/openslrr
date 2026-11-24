@@ -119,6 +119,9 @@ struct WheelConfig {
   bool metal_contact = false; // no installed rim/tyre, only hub hardware
   Vec3 center, down{0, -1, 0};
   double radius = 0, rest = 0, minimum = 0, maximum = 0;
+  // Half the tyre width (m). The linked contact samples the tyre footprint
+  // across it; zero samples the centre line only (#380).
+  double half_width = 0;
   // CFG spring base + travel, independent of the tunable spring rest length.
   // Zero is the generic kernel fallback (anchor at rest length).
   double anchor = 0;
@@ -190,16 +193,23 @@ double suspension_force(double length, double velocity, double rest,
 // Compile all consumers with the same experimental solver rate (#203).
 // The game additionally requires a multiple of its 60 Hz shared-world tick.
 #ifndef SLRR_VEHICLE_PHYSICS_HZ
-#define SLRR_VEHICLE_PHYSICS_HZ 120
+#define SLRR_VEHICLE_PHYSICS_HZ 1000
 #endif
 
 class VehicleDynamics {
 public:
-  // SLRR_rev physics-timing.ts driving frequency; shipped default is 120 Hz.
-  static constexpr unsigned frequency = SLRR_VEHICLE_PHYSICS_HZ;
-  static constexpr unsigned update_frequency = 60;
+  // Solver rate (#380). SLRR_VEHICLE_PHYSICS_HZ is the start value;
+  // set_frequency changes it at run time (Physics Lab, physics thread). All
+  // vehicles share it: change it only while no solver step is running.
+  static inline unsigned frequency = SLRR_VEHICLE_PHYSICS_HZ;
+  static constexpr unsigned update_frequency = 60;  // host script tick
   static_assert(SLRR_VEHICLE_PHYSICS_HZ >= 60, "solver rate must be at least 60 Hz");
-  static constexpr double timestep = 1.0 / frequency;
+  static inline double timestep = 1.0 / SLRR_VEHICLE_PHYSICS_HZ;
+  static void set_frequency(unsigned hz);
+  // Solver steps in host tick number `tick` (0-based, counted from any fixed
+  // origin): floor((tick+1) f / 60) - floor(tick f / 60). Always f/60 when 60
+  // divides f; 16 or 17 at 1000 Hz.
+  static unsigned steps_in_host_tick(uint64_t tick);
   RigidBody body;
   struct Impact {
     Vec3 point, normal;
@@ -227,7 +237,13 @@ public:
   bool engine_running = false;
   int gear = 0;
   uint64_t ticks = 0;
-  unsigned advance(double seconds, const Terrain &terrain);
+  // Runs the whole solver steps owed after adding `seconds`, at most one host
+  // tick's worth. With `merge`, all owed steps run as one step of their total
+  // length: distant traffic steps at a fraction of the rate (#380). Returns
+  // the solver steps consumed.
+  unsigned advance(double seconds, const Terrain &terrain, bool merge = false);
+  // Adds time without stepping; a later advance runs it.
+  void defer(double seconds) { accumulator_ += seconds; }
   void reset_clock();
   void release_wheels();
   void reset_drive();
@@ -238,6 +254,7 @@ public:
 
 private:
   double accumulator_ = 0;
+  double dt_ = timestep;  // length of the step being run
   double previous_rpm_ = 0, shift_time_ = 0;
   double starter_remaining_ = 0, service_brake_ = 0;
   double launch_factor_ = 1;

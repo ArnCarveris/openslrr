@@ -22,6 +22,7 @@
 #include "slrr/scene_collision.hpp"
 #include "slrr/scx_mesh.hpp"
 #include "slrr/skeleton.hpp"
+#include "slrr/skid_marks.hpp"
 #include "slrr/suspension_geometry.hpp"
 #include "slrr/vehicle_dynamics.hpp"
 #include "slrr/vehicle_contacts.hpp"
@@ -34,6 +35,8 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -100,6 +103,9 @@ struct Record {
   };
   std::vector<Needle> needles;
   std::unique_ptr<physics::DeformationCage> deformation;
+  // The floor under the chassis, kept across solver steps (#380). Only the
+  // step that uses it touches it; the batch holds the same object.
+  std::shared_ptr<SceneFloorPatch> floor_patch = std::make_shared<SceneFloorPatch>();
   std::unique_ptr<ScxGeometry> collision, deformed_collision;
   unsigned deformation_upload_ticks = 0;
   float steering_input = 0;
@@ -175,6 +181,10 @@ struct Record {
   float exhaust_min = 0, steer_radius = 0, steer_r = 0, steer_z = 0;
   int nitro_sfx = 0, nitro_voice = 0;
   float nitro_pitch = 1;
+  // Tyre slide loop and collision one-shots (update_slide_audio, play_impact_audio).
+  int32_t slide_voice = 0;
+  bool sharp_skid = false;
+  std::chrono::steady_clock::time_point last_impact_sound{};
   // MWM keeps a native aggregate, initially empty; `reload` fills it.
   // Canister.actual is script save data, not the engine's consumption owner.
   double nitro_remaining = 0;
@@ -331,6 +341,8 @@ float ped_backlog = 0.f;
 VehicleHudLayout hud_preview;
 std::string hud_preview_directory;
 constexpr double kPhysicsTick = 1.0 / physics::VehicleDynamics::update_frequency;
+// Host ticks run since start: places each tick on the solver-step grid (#380).
+uint64_t host_tick_clock = 0;
 constexpr unsigned kMaxPhysicsTicksPerFrame = 4;
 double physics_elapsed = 0;
 std::unordered_map<uint32_t, std::shared_ptr<const PartConfig>> configurations;
@@ -914,6 +926,9 @@ void release_side(Record &rec) {
   }
   host_sfx_stop(rec.radio_voice);
   rec.radio_voice = 0;
+  host_sfx_stop(rec.slide_voice);
+  rec.slide_voice = 0;
+  skid_marks_forget(reinterpret_cast<uintptr_t>(rec.state.object));
   for (Object *tab : rec.sfx) {
     auto table = sfx_items.find(tab);
     if (table == sfx_items.end()) continue;
@@ -2734,6 +2749,8 @@ void dynamics_wheels(Record &rec) {
          physics::Quaternion{0, 0, std::sin(ypr[2] * .5), std::cos(ypr[2] * .5)}).normalized();
     cfg.radius = inline_wheel ? fallback.radius : !mount ? reach : live.radius > 0 ? live.radius : fallback.radius;
     cfg.metal_contact = !inline_wheel && !has_any_rim;
+    // WheelRef.setWidth: the tyre width in metres (Tyre.java), stored halved.
+    cfg.half_width = cfg.metal_contact ? 0. : std::clamp(double(live.width), 0., .25);
     cfg.rest = live.rest;
     cfg.anchor = fallback.base + fallback.travel;
     cfg.minimum = std::max(0.f, live.min_len);
@@ -3074,7 +3091,7 @@ SteeringInput steering_input(bool controls) {
 // One host tick of the steering filter on explicit state (update_steering).
 void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
                      const physics::RigidBody &body, bool grounded, float &steering_input,
-                     float &steering_request, float &steering_correction) {
+                     float &steering_request, float &steering_correction, double dt) {
   const bool controls = in.controls;
   const float steer = controls ? std::clamp(in.steer, -1.f, 1.f) : 0.f;
   steering_request = steer;
@@ -3097,7 +3114,7 @@ void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
   const float helped_rate = static_cast<float>(
       std::max(.2, 2. / (1 + normalized_speed * normalized_speed)));
   const float rate = std::lerp(2.f, helped_rate, unwinding ? 0.f : help);
-  const float max_delta = rate / (max_steer * physics::VehicleDynamics::update_frequency);
+  const float max_delta = static_cast<float>(rate * dt / max_steer);
   steering_input += std::clamp(target - steering_input, -max_delta, max_delta);
 
   const auto local_velocity = body.orientation.inverse_rotate(velocity);
@@ -3118,7 +3135,7 @@ void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
   const float correction = static_cast<float>(geometry.help * blend *
       std::copysign(std::max(0., limit - already_correcting), slip));
   constexpr float response = 12.f;
-  const float alpha = 1.f - std::exp(-response / physics::VehicleDynamics::update_frequency);
+  const float alpha = 1.f - std::exp(-response * static_cast<float>(dt));
   steering_correction = std::lerp(steering_correction, correction, alpha);
 }
 bool steering_grounded(const physics::VehicleDynamics &dynamics) {
@@ -3127,7 +3144,7 @@ bool steering_grounded(const physics::VehicleDynamics &dynamics) {
 void update_steering(Record &rec, bool controls) {
   steering_filter(steering_geometry(rec), steering_input(controls), rec.dynamics.body,
                   steering_grounded(rec.dynamics), rec.steering_input, rec.steering_request,
-                  rec.steering_correction);
+                  rec.steering_correction, kPhysicsTick);
 }
 
 // What configure_drive leaves for the later host ticks of a physics batch:
@@ -3344,6 +3361,136 @@ void update_engine_audio(Record &rec, bool active) {
       }
     }
   }
+}
+
+// Tyre slide and collision sounds, after SLRR_rev 4ca11c2 vehicle-audio.ts.
+// The stock clips are sound.rpk `surface/slide` (SLIP3.WAV), `surface`'s
+// sharp-skid chirp skid_ok.wav and `collision` (Collision.wav), layered
+// with two objects.rpk metal hits for harder impacts. The host mixer has no
+// 3D voices, so the Web Audio panner's inverse distance model (ref, max,
+// rolloff .25) becomes a gain on the distance to the world camera.
+struct StockSound {
+  std::string path;
+  float volume = 1;
+};
+const StockSound &stock_sound(uint32_t local) {
+  static std::unordered_map<uint32_t, StockSound> cache;
+  auto [it, fresh] = cache.try_emplace(local);
+  if (fresh && index) {
+    const uint32_t id = RpkIndex::make_full_id(index->open_lib("sound.rpk"), local);
+    auto path = index->payload_prop(id, "sourcefile");
+    if (!path.empty()) {
+      std::replace(path.begin(), path.end(), '\\', '/');
+      it->second.path = (std::filesystem::path(index->game_root()) / path).string();
+    }
+    const auto volume = index->payload_prop(id, "volume");
+    if (!volume.empty()) it->second.volume = std::clamp(std::strtof(volume.c_str(), nullptr), 0.f, 1.f);
+  }
+  return it->second;
+}
+std::string game_sound(const char *relative) {
+  return index ? (std::filesystem::path(index->game_root()) / relative).string() : std::string{};
+}
+// `collision/chassis` (0x13) has an empty payload; its parent `collision`
+// (0x0b) carries the Collision.wav entry.
+constexpr uint32_t kSoundCollision = 0x0b, kSoundSurfaceSlide = 0x06;
+// Gain of a source `distance` metres from the camera; 0 beyond `maximum`.
+float distance_gain(const physics::Vec3 &position, float reference, float maximum) {
+  float eye[3]{}, at[3]{}, up[3] = {0.f, 1.f, 0.f};
+  if (!gameref_world_camera(eye, at, nullptr, nullptr, nullptr, up)) return 1.f;
+  const float dx = float(position.x) - eye[0], dy = float(position.y) - eye[1],
+              dz = float(position.z) - eye[2];
+  const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+  if (!std::isfinite(distance)) return 0.f;
+  if (distance > maximum) return 0.f;
+  return reference / (reference + .25f * std::max(0.f, distance - reference));
+}
+// SLRR_rev audio-settings.ts skidLoudness: quieter squeal at speed.
+float skid_loudness(double speed) {
+  return 1.f - .55f * static_cast<float>(std::clamp((std::abs(speed) - 8) / 22, 0.0, 1.0));
+}
+
+void update_slide_audio(Record &rec, bool active) {
+  const auto &body = rec.dynamics.body;
+  const double speed = body.velocity.length();
+  double slip = 0, sideways = 0;
+  for (size_t i = 0; i < rec.dynamics.state.size(); ++i) {
+    const auto &s = rec.dynamics.state[i];
+    // A hub on the road scrapes metal; it does not squeal.
+    if (!s.contact || s.force <= 0 || rec.dynamics.wheels[i].metal_contact) continue;
+    slip = std::max(slip, std::hypot(s.slip_speed, s.lateral_speed));
+    sideways = std::max(sideways, std::abs(s.lateral_speed));
+  }
+  const float place = active ? distance_gain(body.position, 2.f, 55.f) : 0.f;
+  const float level = skid_loudness(speed);
+  // One loop for the car, from its most slipping wheel: four wheel loops per
+  // car would take the mixer's loop budget from the engines.
+  const auto &slide = stock_sound(kSoundSurfaceSlide);
+  const float gain = place * static_cast<float>(std::clamp((slip - 2) / 10, 0.0, 1.0)) * .3f *
+                     level * slide.volume;
+  // SLRR_rev keeps the clip's pitch; a host addition raises it slightly with
+  // the slip so a long slide is not one flat tone.
+  const float pitch = static_cast<float>(std::clamp(.92 + (slip - 2) / 60, .92, 1.15));
+  if (gain > .001f && !slide.path.empty()) {
+    if (!rec.slide_voice || !host_sfx_is_playing(rec.slide_voice))
+      rec.slide_voice = host_sfx_play_file(slide.path, pitch, gain, true);
+    else
+      host_sfx_update_loop(rec.slide_voice, pitch, gain);
+  } else if (rec.slide_voice) {
+    host_sfx_stop(rec.slide_voice);
+    rec.slide_voice = 0;
+  }
+  // The sharp chirp of a car snapping sideways, once per slide.
+  const bool sharp = place > 0 && speed > 14 && sideways > 3.4;
+  if (sharp && !rec.sharp_skid)
+    host_sfx_play_file(game_sound("sound/wav/surface/skid_ok.wav"), 1.f, .62f * level * place);
+  rec.sharp_skid = sharp || (rec.sharp_skid && speed > 9 && sideways > 1.6);
+}
+
+// Skid marks from the wheel state this frame published (not per solver
+// step, so the free-running 1000 Hz clock adds no work). Cars past 120 m of
+// the camera skip it.
+void update_skid_marks(Record &rec, double dt) {
+  const auto &body = rec.dynamics.body;
+  if (!(distance_gain(body.position, 1.f, 120.f) > 0)) return;
+  const physics::Vec3 forward = body.orientation.rotate({0, 0, -1});
+  const double speed = body.velocity.length();
+  const auto key = reinterpret_cast<uintptr_t>(rec.state.object);
+  for (size_t i = 0; i < rec.dynamics.state.size(); ++i) {
+    const auto &s = rec.dynamics.state[i];
+    const auto &wheel = rec.dynamics.wheels[i];
+    SkidWheelSample sample;
+    sample.contact = s.contact && s.force > 0 && wheel.radius > 0 && !wheel.metal_contact;
+    sample.force = s.force;
+    sample.slip_speed = s.slip_speed;
+    const double road = s.spin * wheel.radius - s.slip_speed;
+    sample.slip_ratio = s.slip_speed / std::max(.5, std::abs(road));
+    sample.lateral_speed = s.lateral_speed;
+    sample.point = {s.patch.x, s.patch.y, s.patch.z};
+    sample.normal = {s.normal.x, s.normal.y, s.normal.z};
+    sample.forward = {forward.x, forward.y, forward.z};
+    skid_marks_update(key, i, sample, dt, speed);
+  }
+}
+
+void play_impact_audio(Record &rec, const physics::VehicleDynamics::Impact &hit) {
+  const auto now = std::chrono::steady_clock::now();
+  if (now - rec.last_impact_sound < std::chrono::milliseconds(160)) return;
+  const float place = distance_gain(hit.point, 3.f, 70.f);
+  if (!(place > 0)) return;
+  rec.last_impact_sound = now;
+  const float speed = static_cast<float>(hit.speed);
+  const float strength = std::clamp((speed - 2) / 18, 0.f, 1.f);
+  const float pitch = std::clamp(.9f + speed / 90, .9f, 1.12f);
+  const auto &chassis = stock_sound(kSoundCollision);
+  if (!chassis.path.empty())
+    host_sfx_play_file(chassis.path, pitch, (.32f + strength * .48f) * place * chassis.volume);
+  if (speed > 7)
+    host_sfx_play_file(game_sound("sound/wav/collision/MetalHit2.WAV"), pitch * .93f,
+                       (.15f + strength * .3f) * place);
+  if (speed > 14)
+    host_sfx_play_file(game_sound("sound/wav/collision/Metal_plane_hit_04.WAV"), pitch * 1.05f,
+                       strength * .25f * place);
 }
 
 // Native stock cars (traffic, fake racers) have no Java engine or SfxTables, so
@@ -4442,7 +4589,7 @@ namespace {
 constexpr double kSettleDistance = 40.0;
 // One that is still moving out there after this long (fell off the map, keeps
 // rolling) goes back to where the map placed it, and so does one below this.
-constexpr unsigned kLostTicks = physics::VehicleDynamics::frequency * 10;
+unsigned lost_ticks_limit() { return physics::VehicleDynamics::frequency * 10; }
 constexpr double kLostHeight = -500.0;
 
 // A body released from deep inside the car starts overlapping its collision
@@ -4515,6 +4662,10 @@ struct SimCar {
   SteeringInput steer;
   std::array<physics::Vec3, 4> probe_shift{};
   std::vector<SimShell> shells;
+  std::shared_ptr<SceneFloorPatch> floor_patch;  // the record's
+  // Distant traffic (#380): steps once every `stride` solver steps, as one
+  // merged step; set by prepare_batch, back to 1 after a car contact.
+  unsigned stride = 1;
   // This substep's contact list entry.
   bool listed = false;
   physics::RigidBody previous;
@@ -4567,8 +4718,22 @@ struct SimFree {
   std::string message;
 };
 
+struct ContactSphere {
+  physics::Vec3 center;
+  double radius = 0;
+};
+
 struct SimBatch {
   unsigned ticks = 0;
+  std::vector<unsigned> step_count, step_base;  // solver steps per host tick (#380)
+  unsigned solver_steps = 0;
+  // Cursor of simulate_step. An open batch (free-running thread, #380) has no
+  // planned length: each host tick is one solver step, appended as it runs.
+  bool open = false;
+  unsigned tick = 0, substep = 0, steps_done = 0;
+  unsigned horizon_steps = 0;  // open batch: steps expected before the next sync
+  std::vector<size_t> vehicles;  // scratch of simulate_step
+  std::vector<ContactSphere> spheres;
   std::vector<SimCar> cars;
   std::vector<SimLoose> loose;
   std::vector<SimFree> free;
@@ -4581,6 +4746,29 @@ struct SimBatch {
 };
 
 bool sim_live(const SimCar& car) { return car.ready && !car.fault_reported; }
+
+// Multi-rate traffic (#380). In a free-running batch, native traffic farther
+// than kCoarseDistance from the controlled car steps at about 125 Hz, and
+// beyond kFarDistance at about 60 Hz: one merged VehicleDynamics step every
+// `stride` solver steps, its phase spread over the cars. A car contact puts
+// both cars back on every step. The Physics Lab gives the same handling at
+// 125 Hz and stable, less accurate driving at 60 Hz.
+constexpr double kCoarseDistance = 60, kFarDistance = 150;
+unsigned traffic_stride(double distance) {
+  const unsigned hz = distance > kFarDistance ? 60 : distance > kCoarseDistance ? 125 : 0;
+  return hz ? std::max(1u, physics::VehicleDynamics::frequency / hz) : 1;
+}
+uint64_t solver_step_clock = 0;  // solver steps run, for the coarse phase
+
+// Bounding sphere of a contact car over this step's sweep, for the pair
+// broadphase: the box centre, and the box half-diagonal plus the step's travel.
+ContactSphere contact_sphere(const SimCar& car) {
+  const auto& body = car.dynamics.body;
+  const physics::Vec3 local_center = body.minimum * .5 + body.maximum * .5;
+  return {body.position + body.orientation.rotate(local_center - body.center),
+          (body.maximum * .5 - body.minimum * .5).length() +
+              (body.position - car.previous.position).length()};
+}
 
 std::string phys_message(const char* what, uint32_t resource, const char* reason) {
   char line[512];
@@ -4732,7 +4920,7 @@ void sim_loose_bodies(SimBatch& batch, const std::vector<size_t>& vehicles) {
     SimContacts impacts;
     bool completed = false;
     try {
-      constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
+      const unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
       const bool sleeping = loose.quiet_ticks >= rest_ticks;
       auto& body = loose.body;
       bool near = false, far = true;
@@ -4748,7 +4936,7 @@ void sim_loose_bodies(SimBatch& batch, const std::vector<size_t>& vehicles) {
           settled.push_back({index, true});
           continue;
         }
-        if (loose.far_awake_ticks > kLostTicks || body.position.y < kLostHeight) {
+        if (loose.far_awake_ticks > lost_ticks_limit() || body.position.y < kLostHeight) {
           settled.push_back({index, false});
           continue;
         }
@@ -4921,7 +5109,7 @@ void sim_free_bodies(SimBatch& batch, const std::vector<size_t>& vehicles) {
     SimContacts impacts;
     bool completed = false;
     try {
-      constexpr unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
+      const unsigned rest_ticks = physics::VehicleDynamics::frequency / 2;
       const bool sleeping = free.quiet_ticks >= rest_ticks;
       auto& body = free.body;
       bool near = false;
@@ -4994,7 +5182,7 @@ void sim_clamp_nitro(SimCar& car) {
 // The part of configure_drive that changes between the host ticks of one
 // batch; it ran in full on the host for the first tick. A parked car woken
 // during a batch keeps its drive until the next frame configures it.
-void sim_refresh_drive(SimCar& car) {
+void sim_refresh_drive(SimCar& car, double dt) {
   using Mode = DriveRefresh::Mode;
   auto& drive = car.dynamics.drive;
   drive.nitro = 0;
@@ -5017,7 +5205,7 @@ void sim_refresh_drive(SimCar& car) {
     car.steering_correction = 0;
   } else {
     steering_filter(car.steering, car.steer, car.dynamics.body, steering_grounded(car.dynamics),
-                    car.steering_input, car.steering_request, car.steering_correction);
+                    car.steering_input, car.steering_request, car.steering_correction, dt);
   }
   steer_wheels();
   if (car.drive.mode == Mode::Steering) return;
@@ -5029,6 +5217,113 @@ void sim_refresh_drive(SimCar& car) {
         car.controlled && car.drive.controls && car.nitro_input > .1f && car.released;
   }
   drive.engaged = car.released;
+}
+
+// --physics-trace (#380): the controlled car's last 0.6 s of solver steps,
+// written out with the next 0.3 s whenever its body takes a vertical
+// acceleration over kTraceTrigger (a kerb, a landing). The physics thread
+// fills it during a batch; the host writes it at the commit.
+constexpr double kTraceTrigger = 1.5 * 9.81;
+struct TraceRow {
+  int event = 0;
+  double time = 0;
+  float y = 0, vy = 0, ay = 0, ax = 0, az = 0, speed = 0, wall = 0, ground = 0;
+  float length[4]{}, travel[4]{}, force[4]{}, normal_y[4]{}, normal_z[4]{};
+  int contact = 0;
+  float hit[3]{}, hit_ny = 0, pitch = 0, roll = 0;  // ground impact point (chassis), body spin
+};
+struct PhysicsTrace {
+  std::string path;
+  std::array<TraceRow, 600> ring{};
+  size_t head = 0, count = 0;
+  int after = 0, events = 0;
+  double time = 0, quiet_until = 0;
+  std::vector<TraceRow> out;
+} physics_trace;
+
+void trace_step(const SimCar& car, physics::Vec3 acceleration, double wall, double ground,
+                unsigned steps) {
+  auto& trace = physics_trace;
+  const auto& body = car.dynamics.body;
+  trace.time += steps * physics::VehicleDynamics::timestep;
+  TraceRow row;
+  row.time = trace.time;
+  row.y = float(body.position.y);
+  row.vy = float(body.velocity.y);
+  const auto local = body.orientation.inverse_rotate(acceleration);
+  row.ay = float(acceleration.y);
+  row.ax = float(local.x);
+  row.az = float(local.z);
+  row.speed = float(body.velocity.length() * 3.6);
+  row.wall = float(wall);
+  row.ground = float(ground);
+  if (ground > 0) {
+    const auto& impact = car.dynamics.ground_impact;
+    const auto at = body.orientation.inverse_rotate(impact.point - body.position) + body.center;
+    row.hit[0] = float(at.x);
+    row.hit[1] = float(at.y);
+    row.hit[2] = float(at.z);
+    row.hit_ny = float(impact.normal.normalized().y);
+  }
+  const auto spin = body.orientation.inverse_rotate(body.omega());
+  row.pitch = float(spin.x);
+  row.roll = float(spin.z);
+  for (size_t i = 0; i < 4; ++i) {
+    const auto& w = car.dynamics.state[i];
+    const auto n = body.orientation.inverse_rotate(w.normal);
+    row.length[i] = float(w.length);
+    row.travel[i] = float(w.speed);
+    row.force[i] = float(w.force);
+    row.normal_y[i] = float(n.y);
+    row.normal_z[i] = float(n.z);
+    row.contact |= w.contact ? 1 << i : 0;
+  }
+  if (trace.after > 0) {
+    row.event = trace.events;
+    trace.out.push_back(row);
+    --trace.after;
+  } else if (std::abs(acceleration.y) > kTraceTrigger && trace.time >= trace.quiet_until) {
+    ++trace.events;
+    for (size_t k = 0; k < trace.count; ++k) {
+      auto old = trace.ring[(trace.head + trace.ring.size() - trace.count + k) % trace.ring.size()];
+      old.event = trace.events;
+      trace.out.push_back(old);
+    }
+    row.event = trace.events;
+    trace.out.push_back(row);
+    trace.after = 300;
+    trace.quiet_until = trace.time + 1;
+    trace.count = 0;
+  }
+  trace.ring[trace.head] = row;
+  trace.head = (trace.head + 1) % trace.ring.size();
+  trace.count = std::min(trace.count + 1, trace.ring.size());
+}
+
+void trace_flush() {
+  auto& trace = physics_trace;
+  if (trace.out.empty() || trace.path.empty()) return;
+  const bool header = !std::filesystem::exists(trace.path);
+  if (FILE* f = std::fopen(trace.path.c_str(), "a")) {
+    if (header) {
+      std::fprintf(f, "event,t,y,vy,ay_g,ax_g,az_g,kph,wall,ground,contact,hit_x,hit_y,hit_z,hit_ny,pitch,roll");
+      for (int i = 0; i < 4; ++i)
+        std::fprintf(f, ",len%d,travel%d,force%d,ny%d,nz%d", i, i, i, i, i);
+      std::fputc(10, f);
+    }
+    for (const auto& r : trace.out) {
+      std::fprintf(f, "%d,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                   r.event, r.time, r.y, r.vy, r.ay / 9.81, r.ax / 9.81, r.az / 9.81, r.speed,
+                   r.wall, r.ground, r.contact, r.hit[0], r.hit[1], r.hit[2], r.hit_ny, r.pitch,
+                   r.roll);
+      for (int i = 0; i < 4; ++i)
+        std::fprintf(f, ",%.4f,%.3f,%.0f,%.3f,%.3f", r.length[i], r.travel[i], r.force[i],
+                     r.normal_y[i], r.normal_z[i]);
+      std::fputc(10, f);
+    }
+    std::fclose(f);
+  }
+  trace.out.clear();
 }
 
 // One shared substep of a stepping car (the records loop of the former
@@ -5049,20 +5344,42 @@ void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep
                                         car.chassis, probe))
         return;
     }
+    // The floor under the car for this step's ~40 floor queries (#380): the
+    // body's XZ box, its travel over the step and a margin for the wheels,
+    // in a patch rebuilt once the car leaves it (3 m of slack).
+    auto& patch = *car.floor_patch;
+    {
+      const auto& body = car.dynamics.body;
+      double x0 = 1e30, x1 = -1e30, z0 = 1e30, z1 = -1e30;
+      for (const auto& p : body.corners()) {
+        x0 = std::min(x0, p.x);
+        x1 = std::max(x1, p.x);
+        z0 = std::min(z0, p.z);
+        z1 = std::max(z1, p.z);
+      }
+      const double margin = 1 + body.velocity.length() * physics::VehicleDynamics::timestep *
+                                    std::max(1u, car.stride);
+      x0 -= margin;
+      z0 -= margin;
+      x1 += margin;
+      z1 += margin;
+      if (!scene_instances_floor_patch_covers(patch, float(x0), float(z0), float(x1),
+                                              float(z1), car.chassis))
+        scene_instances_floor_patch(float(x0 - 3), float(z0 - 3), float(x1 + 3),
+                                    float(z1 + 3), car.chassis, patch);
+    }
     const auto terrain = [&](double x, double z, double ceiling, physics::GroundHit &ground) {
       SceneFloorHit hit;
-      if (!scene_instances_sample_floor(static_cast<float>(x), static_cast<float>(z),
-                                        static_cast<float>(ceiling), car.chassis, hit))
+      if (!scene_instances_sample_floor(patch, static_cast<float>(x), static_cast<float>(z),
+                                        static_cast<float>(ceiling), hit))
         return false;
       ground.height = hit.height;
       ground.normal = {hit.normal[0], hit.normal[1], hit.normal[2]};
       return true;
     };
     // Wind blows on cars out in the world, not in the garage or a preview.
-    constexpr unsigned substeps =
-        physics::VehicleDynamics::frequency / physics::VehicleDynamics::update_frequency;
     const double wind_time =
-        batch.wind_time + (tick * substeps + substep) * physics::VehicleDynamics::timestep;
+        batch.wind_time + (batch.step_base[tick] + substep) * physics::VehicleDynamics::timestep;
     car.dynamics.aero.wind =
         car.released ? physics::wind_velocity(batch.wind, car.dynamics.body.position, wind_time)
                      : physics::Vec3{};
@@ -5077,7 +5394,8 @@ void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep
     car.nitro_active = car.nitro_requested && car.dynamics.engine_running &&
         car.nitro_remaining > 0 && std::isfinite(car.nitro_rate) && car.nitro_rate > 0;
     car.dynamics.drive.nitro = car.nitro_active ? car.nitro_input : 0.;
-    const auto steps = car.dynamics.advance(physics::VehicleDynamics::timestep, terrain);
+    const auto steps =
+        car.dynamics.advance(physics::VehicleDynamics::timestep, terrain, car.stride > 1);
     // MWM 454A42: RPM * .0002 * input * limiter * dt * script rate.
     // Consume once per solver step, never from sampling a curve or collecting
     // a camera/reflection. Empty tanks return to the dry bank next step.
@@ -5100,7 +5418,8 @@ void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep
     // coasting car still hits the world after its driver leaves or is removed.
     if (car.released) {
       const auto wall = collide_chassis(car.dynamics.body, car.probe_shift, before,
-                                        batch.ticks - tick, batch.wake);
+                                        batch.open ? batch.horizon_steps : batch.ticks - tick,
+                                        batch.wake);
       const auto& ground = car.dynamics.ground_impact;
       sim_impact(batch, index, wall.speed >= ground.speed ? wall : ground);
       if (car.controlled && steps) {
@@ -5115,6 +5434,10 @@ void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep
                            local_acceleration.z * .004 * car.head_acceleration, -.15, .15)};
         car.cockpit_offset += (lean - car.cockpit_offset) *
             -std::expm1(-physics::VehicleDynamics::timestep / .14);
+        if (!physics_trace.path.empty())
+          trace_step(car, (body.velocity - velocity_before) /
+                              (steps * physics::VehicleDynamics::timestep),
+                     wall.speed, ground.speed, steps);
       }
       const auto delta = car.dynamics.body.position - before;
       car.mileage += static_cast<float>(std::hypot(delta.x, delta.z) * .1);
@@ -5186,110 +5509,146 @@ void sim_step_car(SimBatch& batch, size_t index, unsigned tick, unsigned substep
   }
 }
 
-// The physics thread's part of a frame: every host tick of the batch, each
-// as shared solver substeps over all its bodies.
-void simulate_batch(SimBatch& batch) {
-  const auto started = perf::now_ticks();
-  constexpr unsigned substeps =
-      physics::VehicleDynamics::frequency / physics::VehicleDynamics::update_frequency;
-  std::vector<size_t> vehicles;
-  vehicles.reserve(batch.cars.size());
-  for (unsigned tick = 0; tick < batch.ticks; ++tick)
-    for (unsigned substep = 0; substep < substeps; ++substep) {
-      // SLRR_rev v221 7441a697 vehicle-physics-world.ts: all bodies share
-      // substeps and each unordered pair is resolved once.
-      vehicles.clear();
-      for (size_t i = 0; i < batch.cars.size(); ++i) {
-        auto& car = batch.cars[i];
-        car.listed = false;
-        if (substep == 0) {
-          car.engine_running = false;
-          car.nitro_active = car.nitro_flame = false;
-          car.dynamics.drive.nitro = 0;
-          car.render_blend = false;
-        }
-        if (car.suspended && !car.pending) continue;
-        if (substep == 0 && tick > 0 && car.configured) sim_refresh_drive(car);
-        sim_step_car(batch, i, tick, substep, vehicles);
+// One solver step of the batch at its cursor (#380): a host tick starts
+// when the cursor is at its first substep. The physics thread calls it in a
+// loop, for a whole planned batch or, free-running, one real-time step at a time.
+void simulate_step(SimBatch& batch) {
+  if (batch.open && batch.substep == 0) {
+    batch.step_base.push_back(batch.steps_done);
+    batch.step_count.push_back(1);
+  }
+  const unsigned tick = batch.tick, substep = batch.substep;
+  const unsigned substeps = batch.step_count[tick];
+  auto& vehicles = batch.vehicles;
+  {
+    // SLRR_rev v221 7441a697 vehicle-physics-world.ts: all bodies share
+    // substeps and each unordered pair is resolved once.
+    vehicles.clear();
+    for (size_t i = 0; i < batch.cars.size(); ++i) {
+      auto& car = batch.cars[i];
+      car.listed = false;
+      if (substep == 0) {
+        car.engine_running = false;
+        car.nitro_active = car.nitro_flame = false;
+        car.dynamics.drive.nitro = 0;
+        car.render_blend = false;
       }
-      // Settled parked cars are passive participants. Two parked showroom cars
-      // do not collide, but a released car can wake one without inventing a driver.
-      for (size_t i = 0; i < batch.cars.size(); ++i) {
-        auto& car = batch.cars[i];
-        if (car.listed || car.fault_reported || (!car.ready && car.pending)) continue;
-        car.previous = car.dynamics.body;
-        try { physics::validate_vehicle_contact_body(car.dynamics.body); }
-        catch (const std::exception& error) { sim_suspend_contact(car, error.what()); continue; }
-        car.listed = true;
-        vehicles.push_back(i);
+      if (car.suspended && !car.pending) continue;
+      if (substep == 0 && tick > 0 && car.configured)
+        sim_refresh_drive(car, substeps * physics::VehicleDynamics::timestep);
+      if (car.stride > 1 && (solver_step_clock + i) % car.stride != 0) {
+        // Not this car's phase: it stays put and is listed as a passive body.
+        car.dynamics.defer(physics::VehicleDynamics::timestep);
+        continue;
       }
-      std::sort(vehicles.begin(), vehicles.end(), [&](size_t a, size_t b) {
-        return batch.cars[a].live_id < batch.cars[b].live_id;
-      });
-      for (size_t i = 0; i < vehicles.size(); ++i) {
-        auto& a = batch.cars[vehicles[i]];
-        if (!sim_live(a)) continue;
-        for (size_t j = i + 1; j < vehicles.size(); ++j) {
-          if (!sim_live(a)) break;
-          auto& b = batch.cars[vehicles[j]];
-          if (!sim_live(b) || (!a.released && !b.released)) continue;
-          auto& body_a = a.dynamics.body;
-          auto& body_b = b.dynamics.body;
-          const auto before_a = body_a, before_b = body_b;
-          std::optional<physics::VehicleContact> hit;
-          try {
-            hit = physics::resolve_swept_vehicle_contact(body_a, body_b, a.previous, b.previous);
-            if (hit) {
-              script_motion(body_a, a.parent);
-              script_motion(body_b, b.parent);
-              if (!finite_frame(body_a.frame()) || !finite_frame(body_b.frame()))
-                throw std::runtime_error("unrepresentable vehicle contact frame");
-            }
-          } catch (const std::exception& error) {
-            body_a = before_a;
-            body_b = before_b;
-            bool bad_a = false, bad_b = false;
-            try { physics::validate_vehicle_contact_body(body_a); } catch (...) { bad_a = true; }
-            try { physics::validate_vehicle_contact_body(body_b); } catch (...) { bad_b = true; }
-            // The kernel is transactional. Isolate a malformed passive car, not
-            // its healthy peer. Finite-body arithmetic failure belongs to this
-            // pair only; unrelated cars and the host/native pump continue.
-            if (bad_a || !bad_b) sim_suspend_contact(a, error.what());
-            if (bad_b || !bad_a) sim_suspend_contact(b, error.what());
-            continue;
-          }
-          if (!hit) continue;
-          if (hit->normal_impulse > 1) {
-            for (auto* car : {&a, &b}) {
-              car->released = true;
-              car->suspended = false;
-              car->pending = false;
-            }
-            sim_publish(a, false);
-            sim_publish(b, false);
-            sim_impact(batch, vehicles[i],
-                       body_pair_impact(before_a, body_a, hit->point, hit->normal,
-                                        hit->normal_impulse, hit->speed));
-            sim_impact(batch, vehicles[j],
-                       body_pair_impact(before_b, body_b, hit->point, -hit->normal,
-                                        hit->normal_impulse, hit->speed));
-          }
-        }
-      }
-      sim_loose_bodies(batch, vehicles);
-      sim_free_bodies(batch, vehicles);
-      for (size_t index : vehicles) {
-        auto& car = batch.cars[index];
-        if (!sim_live(car)) continue;
+      sim_step_car(batch, i, tick, substep, vehicles);
+    }
+    // Settled parked cars are passive participants. Two parked showroom cars
+    // do not collide, but a released car can wake one without inventing a driver.
+    for (size_t i = 0; i < batch.cars.size(); ++i) {
+      auto& car = batch.cars[i];
+      if (car.listed || car.fault_reported || (!car.ready && car.pending)) continue;
+      car.previous = car.dynamics.body;
+      try { physics::validate_vehicle_contact_body(car.dynamics.body); }
+      catch (const std::exception& error) { sim_suspend_contact(car, error.what()); continue; }
+      car.listed = true;
+      vehicles.push_back(i);
+    }
+    std::sort(vehicles.begin(), vehicles.end(), [&](size_t a, size_t b) {
+      return batch.cars[a].live_id < batch.cars[b].live_id;
+    });
+    // Broadphase: a pair whose swept bounding spheres are apart cannot touch
+    // (resolve_swept_vehicle_contact rejects it too, after copying and
+    // validating both bodies). A contact moves its cars: refresh their spheres.
+    auto& spheres = batch.spheres;
+    spheres.resize(vehicles.size());
+    for (size_t i = 0; i < vehicles.size(); ++i) spheres[i] = contact_sphere(batch.cars[vehicles[i]]);
+    for (size_t i = 0; i < vehicles.size(); ++i) {
+      auto& a = batch.cars[vehicles[i]];
+      if (!sim_live(a)) continue;
+      for (size_t j = i + 1; j < vehicles.size(); ++j) {
+        if (!sim_live(a)) break;
+        auto& b = batch.cars[vehicles[j]];
+        if (!sim_live(b) || (!a.released && !b.released)) continue;
+        const double reach = spheres[i].radius + spheres[j].radius;
+        if ((spheres[i].center - spheres[j].center).length() > reach * 1.001 + 1e-6) continue;
+        auto& body_a = a.dynamics.body;
+        auto& body_b = b.dynamics.body;
+        const auto before_a = body_a, before_b = body_b;
+        std::optional<physics::VehicleContact> hit;
         try {
-          physics::validate_vehicle_contact_body(car.dynamics.body);
-          car.dynamics.sync_wheels();
-          sim_publish(car, substep + 1 == substeps);
+          hit = physics::resolve_swept_vehicle_contact(body_a, body_b, a.previous, b.previous);
+          if (hit) {
+            script_motion(body_a, a.parent);
+            script_motion(body_b, b.parent);
+            if (!finite_frame(body_a.frame()) || !finite_frame(body_b.frame()))
+              throw std::runtime_error("unrepresentable vehicle contact frame");
+          }
         } catch (const std::exception& error) {
-          sim_suspend_contact(car, error.what());
+          body_a = before_a;
+          body_b = before_b;
+          bool bad_a = false, bad_b = false;
+          try { physics::validate_vehicle_contact_body(body_a); } catch (...) { bad_a = true; }
+          try { physics::validate_vehicle_contact_body(body_b); } catch (...) { bad_b = true; }
+          // The kernel is transactional. Isolate a malformed passive car, not
+          // its healthy peer. Finite-body arithmetic failure belongs to this
+          // pair only; unrelated cars and the host/native pump continue.
+          if (bad_a || !bad_b) sim_suspend_contact(a, error.what());
+          if (bad_b || !bad_a) sim_suspend_contact(b, error.what());
+          continue;
+        }
+        if (!hit) continue;
+        spheres[i] = contact_sphere(a);
+        spheres[j] = contact_sphere(b);
+        if (hit->normal_impulse > 1) {
+          a.stride = b.stride = 1;  // an impact: both on every step
+          for (auto* car : {&a, &b}) {
+            car->released = true;
+            car->suspended = false;
+            car->pending = false;
+          }
+          sim_publish(a, false);
+          sim_publish(b, false);
+          sim_impact(batch, vehicles[i],
+                     body_pair_impact(before_a, body_a, hit->point, hit->normal,
+                                      hit->normal_impulse, hit->speed));
+          sim_impact(batch, vehicles[j],
+                     body_pair_impact(before_b, body_b, hit->point, -hit->normal,
+                                      hit->normal_impulse, hit->speed));
         }
       }
     }
+    sim_loose_bodies(batch, vehicles);
+    sim_free_bodies(batch, vehicles);
+    for (size_t index : vehicles) {
+      auto& car = batch.cars[index];
+      if (!sim_live(car)) continue;
+      try {
+        physics::validate_vehicle_contact_body(car.dynamics.body);
+        car.dynamics.sync_wheels();
+        sim_publish(car, substep + 1 == substeps);
+      } catch (const std::exception& error) {
+        sim_suspend_contact(car, error.what());
+      }
+    }
+  }
+  ++solver_step_clock;
+  ++batch.steps_done;
+  if (++batch.substep == substeps) {
+    batch.substep = 0;
+    ++batch.tick;
+    if (batch.open) {
+      batch.ticks = batch.tick;
+      batch.solver_steps = batch.steps_done;
+    }
+  }
+}
+
+// The physics thread's part of a frame: every host tick of a planned batch.
+void simulate_batch(SimBatch& batch) {
+  const auto started = perf::now_ticks();
+  batch.vehicles.reserve(batch.cars.size());
+  while (batch.tick < batch.ticks) simulate_step(batch);
   batch.thread_ticks = perf::now_ticks() - started;
 }
 
@@ -5345,12 +5704,26 @@ void suspend_chassis(Object* chassis, Record& rec, GameRefState& node,
 // The host's part before the physics thread runs a batch: everything that
 // reads GameRef, scripts, input or options, with the configuration the
 // former tick did at its first substep.
-SimBatch prepare_batch(unsigned ticks) {
+SimBatch prepare_batch(unsigned ticks, bool open = false, unsigned horizon_steps = 0) {
   SimBatch batch;
-  batch.ticks = ticks;
+  batch.ticks = open ? 0 : ticks;
+  batch.open = open;
+  batch.horizon_steps = std::max(1u, horizon_steps);
+  if (open) ticks = 0;
+  // Solver steps per host tick from one running count, so a rate that 60
+  // does not divide (1000 Hz: 16 or 17) keeps exact time (#380).
+  batch.step_count.resize(ticks);
+  batch.step_base.resize(ticks);
+  unsigned base = 0;
+  for (unsigned t = 0; t < ticks; ++t) {
+    batch.step_base[t] = base;
+    batch.step_count[t] = physics::VehicleDynamics::steps_in_host_tick(host_tick_clock + t);
+    base += batch.step_count[t];
+  }
+  batch.solver_steps = base;
+  host_tick_clock += ticks;
   batch.wind = world_wind;
-  batch.wind_time = wind_clock;
-  wind_clock += double(ticks) / physics::VehicleDynamics::update_frequency;
+  batch.wind_time = wind_clock;  // commit_batch advances wind_clock by the steps run
   const auto* target = gameref_find_live(controlled_vehicle);
   Object* controlled = target ? as_part(static_cast<Object*>(target->key)) : nullptr;
   const auto& options = host_game_options();
@@ -5442,6 +5815,7 @@ SimBatch prepare_batch(unsigned ticks) {
     car.parent = parent;
     car.world = frame;
     car.dynamics = rec.dynamics;
+    car.floor_patch = rec.floor_patch;
     car.ready = rec.physics_ready;
     car.released = rec.physics_released;
     car.suspended = rec.physics_suspended;
@@ -5477,6 +5851,15 @@ SimBatch prepare_batch(unsigned ticks) {
     }
     (active ? stepping : parked).push_back(batch.cars.size());
     batch.cars.push_back(std::move(car));
+  }
+  if (open) {
+    const SimCar* player = nullptr;
+    for (const auto& car : batch.cars)
+      if (car.controlled && car.released) player = &car;
+    for (auto& car : batch.cars)
+      if (player && !car.controlled && car.released && car.dynamics.drive.native_traffic)
+        car.stride = traffic_stride(
+            (car.dynamics.body.position - player->dynamics.body.position).length());
   }
   // Live ids order the pair contacts; give them in the former order: stepping
   // cars first, then parked ones.
@@ -5605,7 +5988,9 @@ SimBatch prepare_batch(unsigned ticks) {
   // chassis during a batch. Only a car that can reach such a body within the
   // batch needs them: the contact test (sim_near) with this batch's travel and
   // a margin for acceleration.
-  const double batch_seconds = ticks / double(physics::VehicleDynamics::update_frequency);
+  const double batch_seconds =
+      open ? horizon_steps * physics::VehicleDynamics::timestep
+           : ticks / double(physics::VehicleDynamics::update_frequency);
   const auto may_meet = [&](const physics::RigidBody& car, const physics::RigidBody& body) {
     const auto gap = body.position - car.position;
     const double reach = ((car.maximum - car.minimum).length() +
@@ -5638,6 +6023,8 @@ SimBatch prepare_batch(unsigned ticks) {
 // apply damage, crush cages, loose-body lifetimes and scene changes in solver
 // order.
 void commit_batch(SimBatch& batch) {
+  trace_flush();
+  wind_clock += batch.solver_steps * physics::VehicleDynamics::timestep;
   std::vector<Object*> released;
   const auto current = [](const SimCar& car) -> GameRefState* {
     if (record(car.chassis) != car.rec) return nullptr;
@@ -5701,15 +6088,21 @@ void commit_batch(SimBatch& batch) {
       dynamics_sync(car.chassis, rec, car.parent, car.publish > 1);
     }
   }
+  // One sound per car per batch, from its hardest hit: at 1000 Hz a crash
+  // reports many ticks' contacts in the same frame.
+  std::unordered_map<size_t, const physics::VehicleDynamics::Impact*> loudest;
   for (const auto& impact : batch.impacts) {
     const auto& car = batch.cars[impact.car];
-    if (current(car))
-      damage_chassis(car.chassis, *car.rec, impact.body, impact.hit, car.controlled, released);
+    if (!current(car)) continue;
+    damage_chassis(car.chassis, *car.rec, impact.body, impact.hit, car.controlled, released);
+    auto& hit = loudest[impact.car];
+    if (!hit || impact.hit.speed > hit->speed) hit = &impact.hit;
   }
+  for (const auto& [car_index, hit] : loudest)
+    if (current(batch.cars[car_index])) play_impact_audio(*batch.cars[car_index].rec, *hit);
   // Crush cages advance by the substeps the batch ran: other parts' cages as
   // the records loop advanced them, each car's by its own solver steps.
-  const unsigned substeps = batch.ticks * (physics::VehicleDynamics::frequency /
-                                           physics::VehicleDynamics::update_frequency);
+  const unsigned substeps = batch.solver_steps;
   for (auto& [part, rec] : records) {
     if (rec.config->native_kind == "car" || !rec.deformation || !rec.deformation->active() ||
         !advance_deformation(part, rec, substeps))
@@ -6939,7 +7332,7 @@ void part_pause_engine_audio(bool paused) {
       if (item.voice) host_sfx_pause_loop(item.voice, paused);
   for (const auto &[part, rec] : records)
     for (const int32_t voice : {rec.traffic_voice[0], rec.traffic_voice[1], rec.traffic_voice[2],
-                                rec.radio_voice})
+                                rec.radio_voice, rec.slide_voice})
       if (voice) host_sfx_pause_loop(voice, paused);
 }
 
@@ -7002,6 +7395,154 @@ PhysicsWorker &physics_worker() {
   static PhysicsWorker worker;
   return worker;
 }
+
+// The free-running physics thread (#380). It steps an open batch one solver
+// step at a time on the wall clock (1 ms at 1000 Hz), independently of the
+// frame rate, and catches up after a short stall. The host pauses it once per
+// frame (part_physics_begin): the thread finishes its current step, the host
+// commits the steps run so far, prepares the next batch from scripts and
+// input, and resumes it. part_physics_join also pauses it, until that sync.
+class PhysicsClock {
+public:
+  using Clock = std::chrono::steady_clock;
+  // `scale` is game seconds per wall second: time warp, 0 while paused.
+  void resume(SimBatch &batch, double scale) {
+    std::lock_guard lock(mutex_);
+    // Game time runs on while the host syncs: re-anchor it at the old scale,
+    // so the steps owed for the pause are run on resume, not lost.
+    const auto now = Clock::now();
+    anchor_game_ = game_time(now);
+    anchor_wall_ = now;
+    scale_ = std::clamp(scale, 0.0, 8.0);
+    batch_ = &batch;
+    batch_base_ = total_steps_ - batch.steps_done;
+    paused_ = false;
+    work_.notify_all();
+  }
+  // Returns once no step is running; the batch is the host's again.
+  void pause() {
+    std::exception_ptr error;
+    {
+      std::unique_lock lock(mutex_);
+      paused_ = true;
+      work_.notify_all();
+      idle_.wait(lock, [&] { return !stepping_; });
+      batch_ = nullptr;
+      std::swap(error, error_);
+    }
+    if (error) std::rethrow_exception(error);
+  }
+  bool on_thread() const { return std::this_thread::get_id() == thread_.get_id(); }
+  // Busy time (profiler ticks) since the last take, once per sync.
+  int64_t take_busy_ticks() { return busy_ticks_.exchange(0); }
+  // Waits, at most `max_seconds`, until the thread has run the steps due now,
+  // so a thread that falls behind slows the frame rate rather than the game
+  // (the time beyond the 0.1 s cap is still dropped). Returns the wait.
+  double catch_up(double max_seconds) {
+    std::unique_lock lock(mutex_);
+    if (!batch_ || paused_ || scale_ <= 0) return 0;
+    const auto start = Clock::now();
+    const uint64_t due = static_cast<uint64_t>(game_time(start) / physics::VehicleDynamics::timestep);
+    if (total_steps_ + 1 >= due) return 0;
+    idle_.wait_until(lock, start + std::chrono::duration_cast<Clock::duration>(
+                                       std::chrono::duration<double>(max_seconds)),
+                     [&] { return paused_ || error_ || total_steps_ + 1 >= due; });
+    return std::chrono::duration<double>(Clock::now() - start).count();
+  }
+  // Game seconds dropped since the last take because the thread fell behind.
+  double take_dropped_seconds() { return dropped_.exchange(0); }
+  // Changes the solver rate while paused, keeping the game time already run.
+  void set_rate(unsigned hz) {
+    std::lock_guard lock(mutex_);
+    const double done = total_steps_ * physics::VehicleDynamics::timestep;
+    physics::VehicleDynamics::set_frequency(hz);
+    total_steps_ = static_cast<uint64_t>(std::llround(done / physics::VehicleDynamics::timestep));
+  }
+
+private:
+  void run(std::stop_token stop) {
+    perf::worker_thread() = true;
+    std::unique_lock lock(mutex_);
+    while (!stop.stop_requested()) {
+      work_.wait(lock, stop, [&] { return batch_ != nullptr && !paused_; });
+      if (stop.stop_requested()) return;
+      const double step = physics::VehicleDynamics::timestep;
+      const auto now = Clock::now();
+      uint64_t due = static_cast<uint64_t>(game_time(now) / step);
+      // After a stall, drop the time beyond a tenth of a second instead of
+      // running a long burst the host would then wait for.
+      const uint64_t cap = total_steps_ + physics::VehicleDynamics::frequency / 10;
+      if (due > cap) {
+        anchor_game_ -= (due - cap) * step;
+        dropped_ = dropped_ + (due - cap) * step;
+        due = cap;
+      }
+      if (total_steps_ < due) {
+        stepping_ = true;
+        SimBatch *batch = batch_;
+        lock.unlock();
+        std::exception_ptr error;
+        const auto started = perf::now_ticks();
+        try {
+          simulate_step(*batch);
+        } catch (...) {
+          error = std::current_exception();
+        }
+        busy_ticks_ += perf::now_ticks() - started;
+        lock.lock();
+        ++total_steps_;
+        stepping_ = false;
+        if (error) {
+          error_ = error;
+          paused_ = true;
+        }
+        idle_.notify_all();
+        continue;
+      }
+      if (scale_ <= 0) {
+        work_.wait(lock, stop, [&] { return paused_ || batch_ == nullptr; });
+        continue;
+      }
+      // The wall time at which game time reaches the next step.
+      const double wait = ((total_steps_ + 1) * step - game_time(now)) / scale_;
+      work_.wait_until(lock, stop, now + std::chrono::duration_cast<Clock::duration>(
+          std::chrono::duration<double>(std::max(0.0, wait))), [&] { return paused_; });
+    }
+  }
+  std::mutex mutex_;
+  std::condition_variable_any work_;
+  std::condition_variable idle_;
+  SimBatch *batch_ = nullptr;
+  bool paused_ = true, stepping_ = false;
+  double game_time(Clock::time_point now) const {
+    if (anchor_wall_ == Clock::time_point{}) return 0;
+    return anchor_game_ + std::chrono::duration<double>(now - anchor_wall_).count() * scale_;
+  }
+  double scale_ = 0;
+  Clock::time_point anchor_wall_{};
+  double anchor_game_ = 0;
+  uint64_t total_steps_ = 0, batch_base_ = 0;
+  std::exception_ptr error_;
+  std::atomic<int64_t> busy_ticks_{0};
+  std::atomic<double> dropped_{0};
+  std::jthread thread_{[this](std::stop_token stop) { run(stop); }};
+};
+PhysicsClock &physics_clock() {
+  static PhysicsClock clock;
+  return clock;
+}
+// Free-running mode (#380): the game turns it on at boot; tests and the
+// fixed-step benchmark keep the frame-locked batches.
+bool physics_free_running = false;
+bool physics_clock_running = false;
+// Adaptive solver rate (#380). The free-running thread must keep real time:
+// when it drops time it halves the rate (down to kMinAdaptiveHz), and it
+// doubles back towards the requested rate once it has room. The Physics Lab
+// gives the same handling from 250 to 1000 Hz.
+constexpr unsigned kMinAdaptiveHz = 250;
+unsigned physics_requested_hz = 0;  // 0: the rate when free-running starts
+PartPhysicsClockStats clock_stats;
+std::chrono::steady_clock::time_point physics_last_sync{};
 bool physics_threaded = true;
 SimBatch physics_batch;
 bool physics_batch_running = false, physics_batch_pending = false;
@@ -7014,17 +7555,173 @@ void part_physics_set_threaded(bool threaded) {
   physics_threaded = threaded;
 }
 
+unsigned part_physics_steps_ahead(unsigned host_ticks) {
+  unsigned steps = 0;
+  for (unsigned t = 0; t < host_ticks; ++t)
+    steps += physics::VehicleDynamics::steps_in_host_tick(host_tick_clock + t);
+  return steps;
+}
+
+PartPhysicsClockStats part_physics_clock_stats() {
+  auto stats = clock_stats;
+  stats.hz = physics::VehicleDynamics::frequency;
+  stats.free_running = physics_threaded && physics_free_running;
+  return stats;
+}
+
+void part_physics_trace(const std::string& path) {
+  part_physics_join();
+  physics_trace = {};
+  physics_trace.path = path;
+}
+
+void part_physics_set_free_running(bool free_running) {
+  part_physics_join();
+  physics_free_running = free_running;
+  physics_requested_hz = physics::VehicleDynamics::frequency;
+}
+
 void part_physics_join() {
+  if (physics_clock_running && !physics_clock().on_thread()) {
+    // Stays paused until the next part_physics_begin resumes it.
+    physics_clock_running = false;
+    physics_clock().pause();
+  }
   if (!physics_batch_running || physics_worker().on_thread()) return;
   physics_batch_running = false;
   physics_worker().wait();
 }
 
+namespace {
+// The host's part after a batch ran: results into the records, then what the
+// frame draws from them.
+void finish_physics_frame(double frame_seconds, double alpha, bool committed) {
+  if (committed) {
+    if (perf::enabled()) perf::add(perf::Zone::Vehicles, physics_batch.thread_ticks);
+    commit_batch(physics_batch);
+    for (auto &[key, rec] : records) {
+      if (rec.config->native_kind == "car") {
+        update_engine_audio(rec, rec.engine_running);
+        // Native traffic is excluded from tyre sounds and marks: with ~100
+        // cars it would cost the frame, and it rarely slides.
+        const bool tyres = !rec.native_vehicle && rec.physics_released && !rec.state.parent;
+        update_slide_audio(rec, tyres);
+        if (tyres) update_skid_marks(rec, frame_seconds);
+      }
+    }
+    update_traffic_engine_audio();
+  }
+  // After the batch, so the hinges see this frame's carrier motion.
+  advance_flaps(frame_seconds);
+  publish_render_poses(alpha);
+  // After the solver, so a flap or a wheel placement cannot put the column back.
+  pose_steering_wheels();
+  pose_cockpit_needles();
+  pose_driver();
+  {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(frame_seconds);}
+}
+
+// Free-running frame (#380): pause the clock, commit what it ran since the
+// last sync, publish, then hand it the next open batch.
+double last_sync_seconds = 0;  // wall time the last sync kept the thread paused
+void free_running_sync(double seconds) {
+  const auto sync_start = std::chrono::steady_clock::now();
+  unsigned rate_change = 0;
+  const double waited = physics_clock_running ? physics_clock().catch_up(.05) : 0.0;
+  part_physics_join();
+  const auto now = std::chrono::steady_clock::now();
+  const double wall = physics_last_sync.time_since_epoch().count()
+      ? std::chrono::duration<double>(now - physics_last_sync).count() : 0.0;
+  physics_last_sync = now;
+  const bool ran = physics_batch.open && physics_batch.steps_done > 0;
+  physics_batch.thread_ticks = physics_clock().take_busy_ticks();
+  {
+    // Statistics over about one second for the telemetry overlay.
+    static double window_wall = 0, window_dropped = 0, window_sync = 0, window_wait = 0;
+    static uint64_t window_steps = 0;
+    static int64_t window_busy = 0;
+    static unsigned room_windows = 0;
+    window_dropped += physics_clock().take_dropped_seconds();
+    window_sync += last_sync_seconds;
+    window_wait += waited;
+    window_wall += wall;
+    window_steps += physics_batch.steps_done;
+    window_busy += physics_batch.thread_ticks;
+    if (window_wall >= 1) {
+      clock_stats.steps_per_second = window_steps / window_wall;
+      clock_stats.thread_load = window_busy * 1e-9 / window_wall;  // profiler ticks are ns
+      clock_stats.dropped = window_dropped / window_wall;
+      clock_stats.host_wait = window_wait / window_wall;
+      // Room for twice the rate: twice the load fits in 80 % of the time
+      // the thread is not paused by the sync.
+      const double room = std::max(0.0, 1 - window_sync / window_wall) * .8;
+      const unsigned hz = physics::VehicleDynamics::frequency;
+      // Behind: time dropped, or frames waiting on the thread for over a tenth
+      // of the time.
+      const bool behind = window_dropped > .02 * window_wall || window_wait > .1 * window_wall;
+      if (behind && hz / 2 >= kMinAdaptiveHz) {
+        rate_change = hz / 2;
+        room_windows = 0;
+      } else if (hz < physics_requested_hz && !behind &&
+                 clock_stats.thread_load * 2 < room) {
+        if (++room_windows >= 3) {
+          rate_change = std::min(physics_requested_hz, hz * 2);
+          room_windows = 0;
+        }
+      } else {
+        room_windows = 0;
+      }
+      window_dropped = 0;
+      window_sync = 0;
+      window_wait = 0;
+      window_wall = 0;
+      window_steps = 0;
+      window_busy = 0;
+    }
+  }
+  {
+    struct Clear {
+      ~Clear() { physics_batch = {}; }
+    } clear;
+    finish_physics_frame(seconds, 1.0, ran);
+  }
+  if (!repair_relink_pending.empty()) {
+    for (Object* part : repair_relink_pending)
+      if (record(part)) relink_one(part);
+    repair_relink_pending.clear();
+  }
+  if (rate_change && rate_change != physics::VehicleDynamics::frequency) {
+    std::fprintf(stderr, "[phys] solver rate %u -> %u Hz (%s)%c",
+                 physics::VehicleDynamics::frequency, rate_change,
+                 rate_change < physics::VehicleDynamics::frequency ? "falling behind real time"
+                                                                   : "room again", 10);
+    physics_clock().set_rate(rate_change);
+  }
+  {perf::Scope scope(perf::Zone::Collision);scene_instances_prepare_physics();}
+  // Contacts and props are prepared for about one and a half frames of travel.
+  const double frame = wall > 0 ? std::min(wall, .1) : kPhysicsTick;
+  const unsigned horizon = static_cast<unsigned>(
+      std::ceil(frame * 1.5 * physics::VehicleDynamics::frequency));
+  physics_batch = prepare_batch(0, true, horizon);
+  physics_batch.vehicles.reserve(physics_batch.cars.size());
+  // Game seconds per wall second: time warp, and 0 while the game is paused.
+  const double scale = wall > 0 ? seconds / wall : (seconds > 0 ? 1.0 : 0.0);
+  physics_clock_running = true;
+  last_sync_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - sync_start).count();
+  physics_clock().resume(physics_batch, scale);
+}
+}  // namespace
+
 void part_physics_begin(double seconds) {
-  // A frame that never reached part_physics_end still commits its batch first.
-  if (physics_batch_pending) part_physics_end();
   if (!std::isfinite(seconds) || seconds < 0)
     throw std::invalid_argument("invalid vehicle elapsed time");
+  if (physics_threaded && physics_free_running) {
+    free_running_sync(seconds);
+    return;
+  }
+  // A frame that never reached part_physics_end still commits its batch first.
+  if (physics_batch_pending) part_physics_end();
   if (!repair_relink_pending.empty()) {
     // One local relink per repaired part, after the complete stock repair walk.
     // The empty-set check is the only steady-state cost.
@@ -7063,22 +7760,10 @@ void part_physics_end() {
       ~Clear() { physics_batch = {}; }
     } clear;
     part_physics_join();
-    if (perf::enabled()) perf::add(perf::Zone::Vehicles, physics_batch.thread_ticks);
-    commit_batch(physics_batch);
-    for (auto &[key, rec] : records) {
-      if (rec.config->native_kind == "car")
-        update_engine_audio(rec, rec.engine_running);
-    }
-    update_traffic_engine_audio();
+    finish_physics_frame(physics_frame_seconds, physics_elapsed / kPhysicsTick, true);
+    return;
   }
-  // After the batch, so the hinges see this frame's carrier motion.
-  advance_flaps(physics_frame_seconds);
-  publish_render_poses(physics_elapsed / kPhysicsTick);
-  // After the solver, so a flap or a wheel placement cannot put the column back.
-  pose_steering_wheels();
-  pose_cockpit_needles();
-  pose_driver();
-  {perf::Scope scope(perf::Zone::Pedestrians);tick_pedestrians(physics_frame_seconds);}
+  finish_physics_frame(physics_frame_seconds, physics_elapsed / kPhysicsTick, false);
 }
 
 void part_physics_advance(double seconds) {
@@ -7146,6 +7831,7 @@ void part_drop_actors() {
   drivers.clear();
   for (auto& entry : crowds) clear_ped_agents(entry.second);
   crowds.clear();
+  skid_marks_clear();
 }
 void part_set_hud_preview(const std::string &path) {
   std::ifstream input(path, std::ios::binary);
@@ -7423,6 +8109,9 @@ bool part_physics_state(Object *key, PartPhysicsState &state) {
   state.steering_correction = rec->steering_correction;
   state.steering_angle = chassis_steering_angle(*rec);
   state.gear = rec->dynamics.gear;
+  state.throttle = rec->dynamics.drive.throttle;
+  state.brake = rec->dynamics.drive.brake;
+  state.clutch = rec->dynamics.drive.clutch;
   for (size_t i = 0; i < 4; ++i) {
     state.length[i] = rec->dynamics.state[i].length;
     state.force[i] = rec->dynamics.state[i].force;
@@ -7433,7 +8122,7 @@ bool part_physics_state(Object *key, PartPhysicsState &state) {
     const auto& wheel = rec->dynamics.state[i];
     state.tires[i] = {rec->dynamics.drive.wheels[i].steer,
                      wheel.slip_speed, wheel.lateral_speed, wheel.tire_force.longitudinal,
-                     wheel.tire_force.lateral};
+                     wheel.tire_force.lateral, wheel.spin * rec->dynamics.wheels[i].radius};
   }
   return true;
 }
