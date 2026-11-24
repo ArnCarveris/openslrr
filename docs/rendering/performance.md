@@ -93,17 +93,12 @@ collection and batching, with in-game measurements.
   Images are byte-identical to the uniform version (cross-build capture of the
   lamp/car-tile scene, and every scene_shadow_gpu pixel count unchanged).
 - Investigations noted while measuring (not fixed):
-  - Half-res GTAO pass 1 still reads the full-resolution D32F prepass:
-    `surfaceNormal` takes 9 depth taps, and each slice sample calls
-    `sampleDelta`, which reads the depth twice (`depthAt`, then `positionAt`).
-    High is 5 slices × 8 steps × 2 sides, so about 170 full-res depth fetches
-    per AO pixel, spread over a screen radius that grows with the world radius
-    (Elias uses 3 m, the harness 1 m, which is why the harness predicted more
-    savings). Filter passes 2 and 3 each rebuild the position and the 9-tap
-    normal again. Likely wins: one fetch per sample, a half-resolution linear
-    depth (R16F/R32F) for all three passes, and a depth mip chain chosen by
-    sample distance (as in XeGTAO); storing the normal once would remove the
-    9-tap reconstruction from passes 2 and 3.
+  - (Resolved by #256, see "GPU time per pass" below for the current AO
+    cost.) The AO pass used to read the full-resolution D32F prepass twice
+    per sample and rebuild the 9-tap normal in every pass. Since #256 the
+    geometry pass stores the AO-resolution linear depth and the normal once,
+    and `sampleDelta` reads that linear depth (one fetch per sample) except in
+    the reference mode.
   - Prop LOD (#252) keeps both meshes of a chain as props, so the collection
     loops visit about twice as many props for the 16,602 chained placements.
     Each runs the frustum test before the LOD test, and `prop_lod_visible`
@@ -677,3 +672,33 @@ costs more CPU than it saves. Read this before retrying occlusion culling.
     an outlier.
   - Weaker GPUs are not measured: the same columns and variants should be
     run there before changing any default.
+
+## AO pass cost (#362)
+
+- Per AO view by day (replay, saved settings with AO on: HBAO High, 3 m,
+  2560x1440 so the AO targets are 1280x720, RTX 4080, idle GPU otherwise):
+  depth prepass (140) 0.20 ms, geometry (141) 0.02 ms, AO (142) 0.57 ms,
+  filters (143, 144) 0.06 and 0.02 ms. The AO pass is the cost.
+- Diagnostics on that pass (one build each, same session):
+
+| Change (not kept) | AO pass |
+| --- | --- |
+| none (HBAO High: 10 directions × 6 steps) | 0.574 ms |
+| `sampleDelta` without `aoFullCentre` (per-sample math) | 0.616 ms |
+| 3 steps instead of 6 | 0.533 ms |
+| 5 directions instead of 10 | 0.461 ms |
+| return after reading depth and normal | 0.010 ms |
+| far samples from 1/2, 1/4, 1/8 linear-depth mips (Scalable AO rule) | 0.716 ms |
+| the same, level chosen per step, not per jittered texel | 0.683 ms |
+
+- Reading: the cost is the sampling loop, but it does not scale with the
+  number of samples (half the samples saves 7–20 %), with the per-sample
+  arithmetic, or with cache misses on far samples: depth mips made it slower,
+  even with a level that neighbouring texels share. No change that keeps
+  High's image made the pass cheaper, so nothing was kept. The real lever is
+  the sample count, which the Medium (6 × 4) and Low (4 × 3) qualities already
+  offer as user choices.
+- What is left to try, with a GPU profiler (Nsight) to see occupancy and
+  stalls first: register pressure of the unrolled loops, interleaved
+  (deinterleaved, HBAO+-style) sampling, which changes the sample positions
+  and so the image slightly, and a compute version of the pass.
