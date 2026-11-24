@@ -823,6 +823,13 @@ class LibBgfxBackend final : public IRenderBackend {
   bool shadow_sun_valid_ = false;
   std::array<float,3> shadow_sun_direction(const SceneSun& sun);
   void update_shadow_crossfade(const std::array<float,3>& sun_direction, uint16_t size);
+  // Sun outer-frustum map props reused across frames (#359).
+  std::shared_ptr<const std::vector<SceneBatch>> sun_batch_cache_;
+  std::array<float,3> sun_batch_focus_{}, sun_batch_direction_{}, sun_batch_origin_{};
+  void* sun_batch_world_ = nullptr;
+  int32_t sun_batch_frame_ = 0;
+  std::shared_ptr<const std::vector<SceneBatch>> sun_prop_batches(const float* relative_focus,
+                                                                 const float* direction, uint16_t resolution);
   // Cascade alternation (#361): which atlas tiles hold a map drawn with
   // shadow_cascade_matrices_ and the current origin, and the last frame
   // that reached the sun cascades.

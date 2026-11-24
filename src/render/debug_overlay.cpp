@@ -404,6 +404,7 @@ void draw_render_passes(DebugOverlay::RenderOptions& options) {
   }
   ImGui::Checkbox("Shadow caching (off: redraw every frame)", &o.shadow_caching);
   ImGui::Checkbox("Far cascades on alternate frames while moving", &o.cascade_alternation);
+  ImGui::Checkbox("Reuse the sun's map props across frames", &o.sun_batch_cache);
   ImGui::Checkbox("Worker encoders (AO prepass, car tiles, sun cascades, reflections)", &o.worker_encoders);
   ImGui::Checkbox("Headlight shadows", &o.headlight_shadows);
   ImGui::Checkbox("Map shadows", &options.map_shadows);

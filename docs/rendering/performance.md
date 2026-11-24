@@ -677,3 +677,33 @@ costs more CPU than it saves. Read this before retrying occlusion culling.
     an outlier.
   - Weaker GPUs are not measured: the same columns and variants should be
     run there before changing any default.
+
+## Sun map props reused across frames (#359, fourth increment)
+
+- On 4 E-cores by day, `sun_collect` (the sun's outer-frustum collection)
+  was 1.2 ms of the main thread: about 0.4 ms for the instances and 0.65 to
+  1.3 ms for 15,000 to 21,000 map-prop placements in batches.
+- `LibBgfxBackend::sun_prop_batches` collects those batches over the outer
+  box widened by 40 m and reuses them while the camera stays within 20 m of
+  where they were collected, the held sun direction (#371), the world and the
+  shadow origin are unchanged, for at most 60 frames (prop LOD follows the
+  main camera). Map props do not move, and every cascade still culls them
+  against its own frustum, so the draws are those of a fresh collection. The
+  instances (dynamic objects included) are still collected every frame.
+  Renderer debug option: "Reuse the sun's map props across frames".
+- Harness (`scene_shadow_gpu`, references regenerated from `main`): city
+  captures byte-identical, threaded and one-thread images identical.
+- Day replay, same session
+  (`assets/validation/perf-baseline/issue359-sun-cache/`); draws unchanged
+  (2,242 by day, all cores):
+
+| Run | Frame | p95 | `sun_collect` | Shadows (host) |
+| --- | --- | --- | --- | --- |
+| day, all, saved | 4.67 → 3.96 ms | 5.39 → 4.83 ms | 0.71 → 0.27 ms | 0.82 → 0.37 ms |
+| day, e4, saved | 7.47 → 6.30 ms | 8.86 → 7.20 ms | 1.24 → 0.40 ms | 1.42 → 0.56 ms |
+| day, all, low | 4.21 → 3.79 ms | 4.80 → 4.55 ms | — | 0.77 → 0.37 ms |
+| day, e4, low | 6.94 → 5.91 ms | 7.83 → 7.08 ms | — | 1.36 → 0.54 ms |
+
+  Worker submission rose by 0.05 to 0.16 ms: each cascade culls the slightly
+  larger cached set. A first measurement with another game running on the
+  GPU read all-core frames as slower; it was discarded.

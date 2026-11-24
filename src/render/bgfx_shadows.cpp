@@ -1147,6 +1147,48 @@ void LibBgfxBackend::update_shadow_crossfade(const std::array<float, 3>& sun_dir
   shadow_blend_ = weight;
 }
 
+// #359: the map props of the sun's outer frustum, reused across frames.
+// They are static map placements, so the collection depends only on the
+// frustum: it is made over the outer box widened by kSunBatchMargin and kept
+// while the camera stays within half that margin of where it was made, the
+// held sun direction (#371), the world and the shadow origin are unchanged,
+// for at most kSunBatchFrames frames (prop LOD follows the main camera). Each
+// cascade still culls the placements against its own frustum, so the cached
+// superset draws exactly what a fresh collection would.
+std::shared_ptr<const std::vector<SceneBatch>> LibBgfxBackend::sun_prop_batches(
+    const float* relative_focus, const float* direction, uint16_t resolution) {
+  constexpr float kSunBatchMargin = 40.f;
+  constexpr int32_t kSunBatchFrames = 60;
+  const std::array<float, 3> focus{relative_focus[0] + shadow_origin_[0], relative_focus[1] + shadow_origin_[1],
+                                   relative_focus[2] + shadow_origin_[2]};
+  const std::array<float, 3> light{direction[0], direction[1], direction[2]};
+  const float moved = std::hypot(focus[0] - sun_batch_focus_[0], focus[1] - sun_batch_focus_[1],
+                                 focus[2] - sun_batch_focus_[2]);
+  if (sun_batch_cache_ && render_debug().sun_batch_cache && moved <= kSunBatchMargin * .5f &&
+      light == sun_batch_direction_ && sun_batch_world_ == scene_instances_world() &&
+      sun_batch_origin_ == shadow_origin_ && frames_ - sun_batch_frame_ >= 0 &&
+      frames_ - sun_batch_frame_ < kSunBatchFrames)
+    return sun_batch_cache_;
+  const auto* caps = bgfx::getCaps();
+  const auto wide = shadow_projection(relative_focus, direction, cascade_radii().back() + kSunBatchMargin,
+                                      resolution, caps->homogeneousDepth, caps->originBottomLeft);
+  auto world_view = wide.view;
+  for (int row = 0; row < 3; ++row)
+    for (int axis = 0; axis < 3; ++axis) world_view[12 + row] -= wide.view[axis * 4 + row] * shadow_origin_[axis];
+  const auto frustum = view_frustum(world_view.data(), wide.projection.data());
+  // A fresh vector: the cascade jobs of earlier frames may still read the
+  // previous one.
+  auto batches = std::make_shared<std::vector<SceneBatch>>();
+  scene_instances_collect_batches(&frustum, *batches);
+  sun_batch_cache_ = std::move(batches);
+  sun_batch_focus_ = focus;
+  sun_batch_direction_ = light;
+  sun_batch_world_ = scene_instances_world();
+  sun_batch_origin_ = shadow_origin_;
+  sun_batch_frame_ = frames_;
+  return sun_batch_cache_;
+}
+
 // #371: a sun direction that rotates every frame (the game clock advances
 // it continuously) rotates the cascade light basis by a tiny angle each
 // frame; texel snapping only absorbs translation, so caster edges flip
@@ -1307,6 +1349,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
     destroy_prev_shadow_atlas();
     atlas_sun_valid_ = false;
+    sun_batch_cache_.reset();  // let an unloaded world's props go
     return;
   }
   if (!debug_overlay_.render_options().map_shadows || !bgfx::isValid(static_shadow_program_))
@@ -1369,7 +1412,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   // after this function returns; nothing writes them after collection.
   struct SunCasters {
     std::vector<SceneInstance> casters;
-    std::vector<SceneBatch> batches;
+    std::shared_ptr<const std::vector<SceneBatch>> batches;
     std::vector<const SceneInstance*> skinned;
     std::vector<float> skinned_distance;
   };
@@ -1377,10 +1420,10 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   {
     perf::Scope collect_scope(perf::Zone::SunCollect);
     sun_casters->casters=scene_instances_collect(&outer_frustum,nullptr,false);
-    scene_instances_collect_batches(&outer_frustum,sun_casters->batches);
+    sun_casters->batches=sun_prop_batches(relative_focus,direction,resolution);
   }
   const auto& casters=sun_casters->casters;
-  const auto& outer_batches=sun_casters->batches;
+  const auto& outer_batches=*sun_casters->batches;
   for(const auto& instance:casters) {
     if(!instance.geometry || instance.sky || instance.vehicle_material || instance.gpu_skin ||
        instance.light_flags || instance.emissive_overlay) continue;
@@ -1483,7 +1526,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     const float cascade_radius=cascade_radii()[cascade];
     queue_or_run([this,sun_casters,frustum,view_id,origin,cascade_radius,conservative] {
     const auto& casters=sun_casters->casters;
-    const auto& outer_batches=sun_casters->batches;
+    const auto& outer_batches=*sun_casters->batches;
     const auto& skinned_casters=sun_casters->skinned;
     const auto& skinned_distance=sun_casters->skinned_distance;
     enc()->touch(view_id);
