@@ -61,6 +61,8 @@ struct RenderDebugOverrides {
   // Seconds over which the shadows crossfade from the previous sun step's
   // atlas to the new one (#371). 0 jumps at once.
   float shadow_crossfade = .75f;
+  // Reuse the sun's outer-frustum map props across frames (#359).
+  bool sun_batch_cache = true;
   float ao_resolution_scale = 1.f; // multiplies the half-res AO buffer (0.25-2, 2 = full)
   bool ao_reference = false;       // AO pass 1 samples the full-res depth (pre-#256)
   float lod_bias = 1.f;            // map prop LOD distance multiplier (>1: lower detail sooner)
@@ -121,6 +123,7 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   }
   flag("shadow caching", o.shadow_caching, d.shadow_caching);
   flag("cascade alternation", o.cascade_alternation, d.cascade_alternation);
+  flag("sun prop cache", o.sun_batch_cache, d.sun_batch_cache);
   flag("worker encoders", o.worker_encoders, d.worker_encoders);
   flag("character casters", o.skinned_casters, d.skinned_casters);
   flag("garage fixture shadows", o.fixture_shadows, d.fixture_shadows);
