@@ -667,7 +667,8 @@ MainLoopFrameResult mainloop_frame(Jvm& jvm, IRenderBackend& render,
     }
   }
 
-  // --- Jvm_PumpFrame @ 0x418D10 — no green-thread budget yet ---
+  // --- Jvm_PumpFrame @ 0x418D10 (script fibers get a time slice in
+  // src/jvm/script_threads.cpp) ---
 
   // LoadingScreen.run is a thread the host does not schedule. show() leaves
   // the dialog up; the script hides it once init has ticked and nothing is

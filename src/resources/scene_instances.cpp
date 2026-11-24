@@ -274,7 +274,7 @@ bool pool_floor_index(const StaticMesh& mesh) {
 
 void index_floor(StaticMesh &mesh) {
   // Static garage triangles are indexed once in script space. Physics asks
-  // for several support samples per 240 Hz tick; rescanning the whole shell
+  // for several support samples per 120 Hz substep; rescanning the whole shell
   // for every wheel/corner is unnecessary.
   const size_t triangles = mesh.indices.size() / 3;
   const size_t workers = pool_floor_index(mesh) && !jobs_inside() ? jobs_concurrency() : 1;

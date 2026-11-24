@@ -967,16 +967,20 @@ Process:
 ## 8. Native coverage at a glance
 
 From [scripting/natives.md](../scripting/natives.md) and
-`assets/progress/native-coverage.json` (12 November 2026): of 376 stock
-signatures, 339 have a body, 3 are explicit no-ops and 34 are missing.
+`assets/progress/native-coverage.json` (18 November 2026, checked on
+24 November): of 376 stock signatures, 358 have a body, 3 are explicit
+no-ops and 15 are missing.
 `scripts/render_native_coverage.py` recomputes these counts from `src/`;
 `--list missing` prints the missing signatures.
 
 | Missing family | Count | Blocks |
 | --- | ---: | --- |
-| `GroundRef` routes, traffic, water | 19 | Navigation, traffic |
+| `GroundRef` water (`setWater` ×2, `addWaterLimit`) | 3 | Water surfaces |
 | `ParticleSystem` | 9 | Smoke, sparks and other effects |
-| Leftovers (`Welder`) | 3 | No stock caller found |
+| Leftovers (`RenderRef.addPoints`, `weld`, `progress`: the welder) | 3 | No stock caller found |
+
+The `GroundRef` route and traffic natives that this table listed are bound
+since #180.
 
 The three `Painter` natives that this table listed are bound since #64;
 see [ui/notes.md "Garage paint booth (#64)"](../ui/notes.md#garage-paint-booth-64).
@@ -994,9 +998,13 @@ reads, and `Part.setSfxLoopParams` stores values without applying them.
 
 ## 9. Where the documentation disagrees with the code
 
+No known disagreement since the 24 November 2026 recheck of #44 (the native
+counts in §8 and two stale code comments were corrected). Add a row here
+when a statement and the code part:
+
 | Statement | Code reality |
 | --- | --- |
-| Stale comments: "no green-thread budget yet" in `src/boot/mainloop.cpp`, "240 Hz tick" in `src/resources/scene_instances.cpp` | Fibers have budgets, physics is 120/60 Hz |
+| None known | — |
 
 ## 10. Open risk register
 
