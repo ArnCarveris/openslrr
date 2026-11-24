@@ -1099,6 +1099,77 @@ void LibBgfxBackend::update_static_shadow(const float *eye, const VideoOptions &
   update_static_shadow_inner(eye, video);
 }
 
+// #371: after a sun step, the atlas of the previous direction stays as it
+// was (with the matrices its tiles were drawn with) and the receivers fade
+// from it to the new atlas over render_debug().shadow_crossfade seconds, so
+// a step moves the shadows smoothly. The two atlases swap; the new one is
+// drawn in full. A crossfade starts only from a complete atlas of the
+// previous frame, and stops if the shadow origin rebases (the previous
+// matrices are relative to the old origin).
+void LibBgfxBackend::update_shadow_crossfade(const std::array<float, 3>& sun_direction, uint16_t size) {
+  const float duration = std::clamp(render_debug().shadow_crossfade, 0.f, 5.f);
+  const double now =
+      std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  const bool stepped = atlas_sun_valid_ && sun_direction != atlas_sun_direction_;
+  const bool complete = sun_cascade_frame_ == frames_ - 1 && shadow_cached_origin_ == shadow_origin_ &&
+                        std::all_of(cascade_tile_valid_.begin(), cascade_tile_valid_.end(),
+                                    [](bool valid) { return valid; });
+  if (stepped && duration > 0.f && complete) {
+    if (!bgfx::isValid(static_shadow_prev_fb_)) {
+      const auto depth = bgfx::createTexture2D(size, size, false, 1, bgfx::TextureFormat::D32F,
+          BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+      if (bgfx::isValid(depth)) {
+        static_shadow_prev_fb_ = bgfx::createFrameBuffer(1, &depth, true);
+        if (bgfx::isValid(static_shadow_prev_fb_)) static_shadow_prev_tex_ = depth;
+        else bgfx::destroy(depth);
+      }
+    }
+    if (bgfx::isValid(static_shadow_prev_fb_)) {
+      std::swap(static_shadow_fb_, static_shadow_prev_fb_);
+      std::swap(static_shadow_tex_, static_shadow_prev_tex_);
+      shadow_cascade_prev_matrices_ = shadow_cascade_matrices_;
+      shadow_blend_start_ = now;
+      shadow_blending_ = true;
+      cascade_tile_valid_.fill(false);
+      shadow_cache_valid_ = false;
+    }
+  }
+  atlas_sun_direction_ = sun_direction;
+  atlas_sun_valid_ = true;
+  float weight = 0.f;
+  if (shadow_blending_) {
+    weight = duration > 0.f ? 1.f - float((now - shadow_blend_start_) / duration) : 0.f;
+    if (weight <= 0.f || shadow_cached_origin_ != shadow_origin_) {
+      shadow_blending_ = false;
+      weight = 0.f;
+    }
+  }
+  shadow_blend_ = weight;
+}
+
+// #371: a sun direction that rotates every frame (the game clock advances
+// it continuously) rotates the cascade light basis by a tiny angle each
+// frame; texel snapping only absorbs translation, so caster edges flip
+// texels everywhere. Hold the direction until the sun has moved a few
+// hundredths of a degree: a shadow then shifts by millimetres at once,
+// every few seconds, and a still camera can reuse the cached atlas.
+std::array<float, 3> LibBgfxBackend::shadow_sun_direction(const SceneSun& sun) {
+  std::array<float, 3> current{sun.direction[0], sun.direction[1], sun.direction[2]};
+  const float length = std::sqrt(current[0] * current[0] + current[1] * current[1] +
+                                 current[2] * current[2]);
+  if (length > 1e-6f)
+    for (auto& axis : current) axis /= length;
+  const float step = std::clamp(render_debug().shadow_sun_step, 0.f, 5.f);
+  if (shadow_sun_valid_ && step > 0.f) {
+    const float cosine = current[0] * shadow_sun_direction_[0] + current[1] * shadow_sun_direction_[1] +
+                         current[2] * shadow_sun_direction_[2];
+    if (cosine >= std::cos(step * 3.14159265f / 180.f)) return shadow_sun_direction_;
+  }
+  shadow_sun_direction_ = current;
+  shadow_sun_valid_ = true;
+  return current;
+}
+
 void LibBgfxBackend::update_static_shadow_inner(const float *eye,
                                           const VideoOptions &video) {
   const uint16_t point_shadow_tile=local_shadow_resolution();
@@ -1113,6 +1184,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   shadow_cascades_active_ = false;
   shadow_meshes_.clear();
   point_shadow_active_ = false;
+  shadow_blend_ = 0.f;
   if (point_light_ && point_light_->valid() && point_light_->casts_shadows &&
       video.shadows != 0 && debug_overlay_.render_options().map_shadows &&
       bgfx::isValid(static_shadow_program_)) {
@@ -1124,6 +1196,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
         bgfx::destroy(static_shadow_fb_);
       static_shadow_fb_ = BGFX_INVALID_HANDLE;
       static_shadow_tex_ = BGFX_INVALID_HANDLE;
+      destroy_prev_shadow_atlas();
       const auto depth = bgfx::createTexture2D(
           point_shadow_width, point_shadow_height, false, 1,
           bgfx::TextureFormat::D32F,
@@ -1232,6 +1305,8 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
+    destroy_prev_shadow_atlas();
+    atlas_sun_valid_ = false;
     return;
   }
   if (!debug_overlay_.render_options().map_shadows || !bgfx::isValid(static_shadow_program_))
@@ -1239,7 +1314,9 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   // The selected world's light is independent of visible terrain geometry.
   // Dealers/addons may contain only ordinary SCX meshes, or no ground in view.
   const auto sun = scene_instances_light();
-  if (!sun.has_direction || sun.direction[1] >= 0.02f) return;
+  if (!sun.has_direction) return;
+  const auto sun_direction = shadow_sun_direction(sun);
+  if (sun_direction[1] >= 0.02f) return;
   const uint16_t size = resolution * 2;
   const bool conservative =
       (bgfx::getCaps()->supported & BGFX_CAPS_CONSERVATIVE_RASTER) != 0;
@@ -1248,6 +1325,7 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
     bgfx::destroy(static_shadow_fb_);
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
+    destroy_prev_shadow_atlas();
   }
   if (!bgfx::isValid(static_shadow_fb_)) {
     const auto depth = bgfx::createTexture2D(
@@ -1266,17 +1344,19 @@ void LibBgfxBackend::update_static_shadow_inner(const float *eye,
   }
   const auto *caps = bgfx::getCaps();
   const float focus[3] = {eye[0], eye[1], -eye[2]};
-  const float direction[3] = {sun.direction[0], sun.direction[1],
-                              -sun.direction[2]};
+  const float direction[3] = {sun_direction[0], sun_direction[1],
+                              -sun_direction[2]};
   static_shadow_eye_ = {focus[0], focus[1], focus[2]};
-  // Refresh moving sunlight every frame; texel-snapped projections remove
-  // camera swimming without an eight-metre cache jump.
+  // The held sun direction (shadow_sun_direction) moves in small steps;
+  // texel-snapped projections remove camera swimming without an
+  // eight-metre cache jump.
   if(shadow_origin_world_!=scene_instances_world()) {
     shadow_cache_valid_=false;
     shadow_origin_world_=scene_instances_world();
     shadow_origin_={focus[0],focus[1],focus[2]};
   }
   shadow_rebase_origin(shadow_origin_,focus,direction,resolution);
+  update_shadow_crossfade(sun_direction, size);
   const float relative_focus[3]={focus[0]-shadow_origin_[0],focus[1]-shadow_origin_[1],focus[2]-shadow_origin_[2]};
   const auto outer = shadow_projection(relative_focus,direction,cascade_radii().back(),resolution,
       caps->homogeneousDepth,caps->originBottomLeft);
@@ -1530,9 +1610,11 @@ void LibBgfxBackend::update_car_depth(const float* position, const VideoOptions&
   }
 
   const auto sun = scene_instances_light();
-  const bx::Vec3 direction = sun.has_direction
-      ? bx::Vec3{sun.direction[0], sun.direction[1], -sun.direction[2]}
-      : bx::Vec3{0.f, -1.f, 0.f};
+  // The same held direction as the cascades (#371): the car map would
+  // otherwise flicker on its own as the sun moves.
+  const auto sun_direction = sun.has_direction ? shadow_sun_direction(sun)
+                                               : std::array<float, 3>{0.f, -1.f, 0.f};
+  const bx::Vec3 direction{sun_direction[0], sun_direction[1], -sun_direction[2]};
   const auto travel = bx::normalize(direction);
   if (travel.y >= 0.02f) return;
   const bx::Vec3 centre{position[0], position[1], -position[2]};

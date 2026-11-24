@@ -452,8 +452,10 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
     if (upload) {
       if (point_shadow_active_)
         enc()->setUniform(u_point_shadow_faces_, point_shadow_matrices_.data(), 6);
-      if (shadow_cascades_active_)
+      if (shadow_cascades_active_) {
         enc()->setUniform(u_shadow_cascades_, shadow_cascade_matrices_.data(), 4);
+        enc()->setUniform(u_shadow_cascades_prev_, shadow_cascade_prev_matrices_.data(), 4);
+      }
       ++bind().light_array_uploads;
       if (bind().uniform_scope) bind().uniform_pending = true;
       bind().light_arrays_view = bind().binding_view;
@@ -488,6 +490,14 @@ void LibBgfxBackend::bind_interior_sun(bool enabled, uint8_t stage) {
                                     : (bgfx::isValid(depth_white_) ? depth_white_ : static_shadow_tex_);
     set_texture(stage, s_static_shadow_,
                      bgfx::isValid(shadow_tex) ? shadow_tex : white_tex_, shadow_sampler);
+    // The previous sun step's atlas during a crossfade (#371), stage 13 in
+    // fs_mesh and fs_vehicle.
+    const bool fading = cascaded && shadow_blend_ > 0.f && bgfx::isValid(static_shadow_prev_tex_);
+    const float blend[4] = {fading ? shadow_blend_ : 0.f, 0.f, 0.f, 0.f};
+    set_uniform(u_shadow_blend_, blend);
+    set_texture(13, s_static_shadow_prev_,
+                fading ? static_shadow_prev_tex_ : bgfx::isValid(depth_white_) ? depth_white_ : white_tex_,
+                shadow_sampler);
 }
 
 bool LibBgfxBackend::bind_point_light(bool enabled) {

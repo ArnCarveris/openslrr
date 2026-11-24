@@ -459,6 +459,8 @@ void draw_render_budgets(DebugOverlay::RenderOptions& options) {
   size_combo("Sun cascade tile", o.sun_shadow_size, 512,
              "From Shadow quality\0" "512\0" "1024\0" "2048\0" "4096\0");
   ImGui::SliderFloat("Cascade radius scale", &o.cascade_scale, .25f, 4.f, "%.2fx");
+  ImGui::SliderFloat("Shadow sun step (0: every frame)", &o.shadow_sun_step, 0.f, .5f, "%.3f deg");
+  ImGui::SliderFloat("Shadow crossfade after a step (0: jump)", &o.shadow_crossfade, 0.f, 3.f, "%.2f s");
   ImGui::SliderFloat("AO resolution scale (2 = full res)", &o.ao_resolution_scale, .25f, 2.f, "%.2fx");
   ImGui::Checkbox("AO reference sampling (full-res depth)", &o.ao_reference);
   ImGui::SliderInt("Reflection faces per frame (0 freezes)", &options.reflection_faces, 0, 6);

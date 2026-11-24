@@ -225,6 +225,9 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     u_static_shadow_params_ = bgfx::createUniform("u_staticShadowParams", bgfx::UniformType::Vec4);
     u_static_shadow_eye_ = bgfx::createUniform("u_staticShadowEye", bgfx::UniformType::Vec4);
     u_shadow_cascades_ = bgfx::createUniform("u_shadowCascades", bgfx::UniformType::Mat4,4);
+    s_static_shadow_prev_ = bgfx::createUniform("s_staticShadowPrev", bgfx::UniformType::Sampler);
+    u_shadow_cascades_prev_ = bgfx::createUniform("u_shadowCascadesPrev", bgfx::UniformType::Mat4, 4);
+    u_shadow_blend_ = bgfx::createUniform("u_shadowBlend", bgfx::UniformType::Vec4);
     u_shadow_origin_ = bgfx::createUniform("u_shadowOrigin", bgfx::UniformType::Vec4);
     u_shadow_ranges_ = bgfx::createUniform("u_shadowRanges", bgfx::UniformType::Vec4);
     u_shadow_filter_=bgfx::createUniform("u_shadowFilter",bgfx::UniformType::Vec4);
@@ -450,6 +453,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     }
     if (bgfx::isValid(static_shadow_program_)) bgfx::destroy(static_shadow_program_);
     if (bgfx::isValid(static_shadow_fb_)) bgfx::destroy(static_shadow_fb_);
+    destroy_prev_shadow_atlas();
     static_shadow_program_ = BGFX_INVALID_HANDLE;
     static_shadow_fb_ = BGFX_INVALID_HANDLE;
     static_shadow_tex_ = BGFX_INVALID_HANDLE;
@@ -480,6 +484,7 @@ static const bgfx::EmbeddedShader k_vehicle[] = {
     for (auto *handle :
          {&s_static_shadow_, &u_static_shadow_mtx_, &u_static_shadow_params_,
           &u_static_shadow_eye_, &u_shadow_cascades_, &u_shadow_ranges_, &u_shadow_filter_,
+          &s_static_shadow_prev_, &u_shadow_cascades_prev_, &u_shadow_blend_,
           &u_shadow_origin_, &u_point_light_color_, &u_point_shadow_faces_,
           &u_point_shadow_params_, &s_interior_sun_, &s_sun_aperture_, &u_interior_sun_mtx_,
           &u_interior_sun_dir_, &u_interior_sun_color_, &u_aperture_params_,
