@@ -364,3 +364,26 @@ save immediately through host graphics persistence. Missing/malformed keys retai
 defaults; stock Config binary layout is unchanged. Menu source and compiled TUFA
 container ship together. Defaults are AO off, medium qualities, soft shadows,
 100 percent strength and 100 cm radius. Debug Renderer controls share these values.
+
+### Controller devices (#345)
+
+`java.io.InputDevices` (OpenSLRR class, `patch/system/Scripts/io`) reads the
+SDL3 device slots for Options > Controls: `count`, `name`, `type`, `power`,
+`connected`, `axes`, `buttons`, `hats`, `battery`, `canRumble`, `activity`,
+`rumble(i, strength, ms)`, `calibrateBegin`, `calibrateEnd`, `calibrateReset`,
+`calibrated`, `calibrating`. Index i is ControlSet device i + 3. Calibrated
+ranges change the raw axis values every binding sees
+(`src/platform/host_input_devices.cpp`). Rumble is only a test pulse:
+`Controller.user_SetAxisForce` still does not drive SDL haptics.
+
+### Advanced video controls (#377)
+
+IDs 13–20 back the Advanced Video Options page: VSync, view distance (500–3000 m),
+prop detail (0–3, a LOD distance multiplier of 2, 1.4, 1 or 0.7 on top of the
+debug LOD bias), fog, car lights, headlight shadows, street lamps and the number
+of shadowed street lamps (0–6). They persist in `save/game/openslrr_options` like
+IDs 0–12. Each one only lowers what the matching F12 Renderer switch allows: the
+renderer checks both (`host_enhanced_graphics()` and `render_debug()`). The
+video page's Preset choice is script-side: `OptionsDialog.applyPreset` calls the
+setters and moves the controls with `MultiChoice.setValue` / `Slider.setValue`,
+which do not send their command.

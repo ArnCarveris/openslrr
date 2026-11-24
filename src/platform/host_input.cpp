@@ -59,6 +59,8 @@ bool captures_binding(Object* focus) {
     const auto it = fields.find(name);
     return it != fields.end() && it->second.tag == ValueTag::Int ? it->second.v.i : -1;
   };
+  // A screen that captures a binding says so (OsdxOptions.capturingInput).
+  if (read("capturingInput") > 0) return true;
   const int group = read("actGroup");
   return read("getKey") >= 0 && group >= 0 &&
          (group == read("redefineGroup") || group == read("redefine2Group") ||
@@ -360,7 +362,8 @@ void host_input_check_hotkeys(Jvm& jvm, Object* controller, Object* focus) {
         host_commit_video_dialog(jvm, hk.handler, video_command->second.v.i))
       continue;
     if (hk.owner) {
-      jvm.invoke("java.render.Osd", "handleEvent", "(Ljava.io.Hotkey;)V",
+      // The owner's own class: java.render.osdx.Osd has its own handleEvent.
+      jvm.invoke(hk.owner->class_name, "handleEvent", "(Ljava.io.Hotkey;)V",
                  {Value::make_obj(hk.owner), Value::make_obj(hk.key)}, false);
     } else if (hk.handler) {
       auto command = hk.key->fields.find("command");

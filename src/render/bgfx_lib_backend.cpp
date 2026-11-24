@@ -626,7 +626,8 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
     view_draws_.fill(0);
     auto video = host_game_options().video;
     const auto& debug_render = debug_overlay_.render_options();
-    video.view_distance = 3000.f;
+    // Advanced video options (#377): 3 km by default.
+    video.view_distance = float(std::clamp(host_enhanced_graphics().view_distance, 500, 3000));
     apply_video_mode(video.mode);
     const bool loading = osd_loading_dialog() || !osd_loading_overlay().empty();
     const bool covered = !osd_loading_overlay().empty() && !video_fmv_block_osd();
@@ -655,7 +656,7 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
                              BGFX_RESET_MSAA_X4, BGFX_RESET_MSAA_X8};
     // Debug overrides (#243) switch MSAA / anisotropy off without saving.
     const auto& overrides = render_debug();
-    const uint32_t flags = (debug_render.vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE)
+    const uint32_t flags = (debug_render.vsync && host_enhanced_graphics().vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE)
                            | (overrides.msaa ? msaa[std::clamp(host_enhanced_graphics().msaa, 0, 3)] : BGFX_RESET_NONE)
                            | (host_enhanced_graphics().anisotropic_filtering && overrides.anisotropic
                                   ? BGFX_RESET_MAXANISOTROPY : 0);
@@ -1158,7 +1159,10 @@ void LibBgfxBackend::cache_scene_mesh(
     // Map prop LOD from the main camera (#252); the other passes reuse it.
     ScenePropLodView lod_view;
     lod_view.eye = {cull_eye_[0], cull_eye_[1], cull_eye_[2]};
-    lod_view.bias = render_debug().lod_bias;
+    // Prop detail option (#377): low, medium, high (the #252 default), ultra.
+    constexpr float kPropDetailBias[4] = {2.f, 1.4f, 1.f, .7f};
+    lod_view.bias = render_debug().lod_bias *
+        kPropDetailBias[std::clamp(host_enhanced_graphics().prop_detail, 0, 3)];
     lod_view.force_highest = render_debug().force_highest_lod;
     lod_view.update = lod_view.valid = true;
     scene_instances_set_lod_view(lod_view);
@@ -1469,7 +1473,7 @@ void LibBgfxBackend::publish_debug_stats() {
 // below. Unshadowed.
 void LibBgfxBackend::update_car_lights() {
     car_lamp_count_ = 0;
-    if (!render_debug().car_lights) return;
+    if (!render_debug().car_lights || !host_enhanced_graphics().car_lights) return;
     std::vector<CarLight> lights = car_lights_override_ ? *car_lights_override_ : part_car_lights();
     if (lights.empty()) return;
     // The followed car (lamp shadow focus) else the eye: its own lights,
@@ -1537,7 +1541,8 @@ void LibBgfxBackend::update_scenery_lights() {
     // shadow beside the sun's.
     const float night = scene_instances_sun_state().night;
     const uint32_t groups = night > kLampNightMin ? kLightGroupCity : 0u;
-    if (!groups || !scenery_lights_count() || !render_debug().lamp_lighting)
+    if (!groups || !scenery_lights_count() || !render_debug().lamp_lighting ||
+        !host_enhanced_graphics().street_lamps)
       return;
     // cull_eye_ is script space (sync_instances); the lights are render space,
     // like the frustum planes of the culled view.
@@ -2590,6 +2595,7 @@ std::string map_texture_key(std::string path) {
       if (!self) return;
       self->lmb_down_ = false;
       self->slider_drag_index_ = -1;
+      osd_cursor_reset();
       self->inventory_drag_source_ = nullptr;
       if (self->inventory_dragging_) host_cursor_set_pointer(self->inventory_drag_cursor_);
       self->inventory_dragging_ = false;
@@ -2640,6 +2646,12 @@ std::string map_texture_key(std::string path) {
         self->lmb_down_ = true;
         float x, y;
         osd_pixel_to_text(self->lmb_x_, self->lmb_y_, self->width_, self->height_, &x, &y);
+        // OSD v2 (attached Osd): the Group receives EC_LDOWN itself.
+        if (!video_fmv_block_osd() && osd_cursor_button(true, x, y)) {
+          self->slider_drag_index_ = -1;
+          self->inventory_drag_source_ = nullptr;
+          return 0;
+        }
         const int slider_hit=osd_hit_index(x,y);
         self->slider_drag_index_=!video_fmv_block_osd() && osd_update_slider_at(slider_hit,x,y) ? slider_hit : -1;
         self->inventory_drag_source_ = video_fmv_block_osd()
@@ -2669,6 +2681,15 @@ std::string map_texture_key(std::string path) {
       }
       if (msg == WM_LBUTTONUP && self && self->lmb_down_ && !in.rmb_down) {
         self->lmb_down_ = false;
+        {
+          float ux, uy;
+          osd_pixel_to_text(static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp)),
+                            self->width_, self->height_, &ux, &uy);
+          if (!video_fmv_block_osd() && osd_cursor_button(false, ux, uy)) {
+            ReleaseCapture();
+            return 0;
+          }
+        }
         if (self->slider_drag_index_ >= 0) {
           float x,y;
           osd_pixel_to_text(static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp)),
@@ -2814,7 +2835,9 @@ std::string map_texture_key(std::string path) {
         if (!in.rmb_down) {
           float ox = 0.f, oy = 0.f;
           osd_pixel_to_text(x, y, self->width_, self->height_, &ox, &oy);
-          if (osd_set_hover_at(ox, oy)) {
+          if (!video_fmv_block_osd() && osd_cursor_move(ox, oy)) {
+            osd_set_hover_at(-100.f, -100.f);
+          } else if (osd_set_hover_at(ox, oy)) {
             const OsdWidget* pointed = osd_widget_at(osd_hover_index());
             if (pointed && !pointed->hidden &&
                 (osd_hover_widget() || pointed->disabled))

@@ -36,6 +36,18 @@ public class OptionsDialog extends Dialog
 	final static int CMD_SHADOW_SMOOTHING = 511;
 	final static int CMD_AO_STRENGTH = 512;
 	final static int CMD_AO_RADIUS = 513;
+	// Presets and the advanced video page (#377).
+	final static int CMD_PRESET = 514;
+	final static int CMD_ADV_VIDEO = 515;
+	final static int CMD_ADV_VIDEO_DONE = 516;
+	final static int CMD_VSYNC = 517;
+	final static int CMD_VIEW_DISTANCE = 518;
+	final static int CMD_PROP_DETAIL = 519;
+	final static int CMD_FOG = 520;
+	final static int CMD_CAR_LIGHTS = 521;
+	final static int CMD_HEADLIGHT_SHADOWS = 522;
+	final static int CMD_STREET_LAMPS = 523;
+	final static int CMD_SHADOWED_LAMPS = 524;
 	final static int RENDERER_FRAMERATE_MODE = 5;
 	public static native int getRendererOption(int option);
 	public static native void setRendererOption(int option, int value);
@@ -130,6 +142,11 @@ public class OptionsDialog extends Dialog
 	int				axisCheckCallerGroup;
 
 	int				mainGroup, optionsGroup, videoGroup, soundGroup, controlGroup, gameGroup, game2Group;
+	int				advVideoGroup;
+	// Video controls a preset updates (#377).
+	MultiChoice		presetMulti, optAA, optRefl, optClouds, optAniso, optAO, optAOQ, optShadows, optSQ, optSmooth;
+	MultiChoice		advVsync, advFog, advDetail, advCarLights, advHeadShadows, advLamps;
+	Slider			advView, advLampShadows;
 	int				redefineSuspGroup, redefineGroup, redefine2Group, redefine3Group, axisCheckGroup;
 
 	int				actGroup;
@@ -176,9 +193,10 @@ public class OptionsDialog extends Dialog
 
 		player=GameLogic.player;
 
-		// The 0–1.5 slider stayed on the saved 0.1 and emptied the streets.
-		// The crowd is the old maximum; the map still sends its day and night base.
-		Config.pedestrianDensity = 1.5;
+		// The 0–1.5 slider stayed on the saved 0.1 and emptied the streets, so the
+		// density was locked at the old maximum. The slider is back (#377) with a
+		// 0.5 floor; an old saved value below it returns to the full crowd.
+		if (Config.pedestrianDensity < 0.5) Config.pedestrianDensity = 1.5;
 
 		osd.globalHandler = this;
 
@@ -422,19 +440,28 @@ public class OptionsDialog extends Dialog
 		occlusion[0] = "OFF"; occlusion[1] = "HBAO"; occlusion[2] = "GTAO";
 		String[] smoothing = new String[3];
 		smoothing[0] = "SHARP"; smoothing[1] = "SOFT"; smoothing[2] = "VERY SOFT";
-		m = osd.createMenu( Menu_Left_Small, -0.50, -0.30, 0 );
-		m.addItem( "ANTI-ALIASING", CMD_RENDERER_FIRST, getRendererOption(0), antialiasing, null );
-		m.addItem( "REFLECTIONS", CMD_RENDERER_FIRST+1, getRendererOption(1), detailTextOO, null );
-		m.addItem( "VOLUMETRIC CLOUDS", CMD_RENDERER_FIRST+2, getRendererOption(2), detailTextOO, null );
-		m.addItem( "ANISOTROPIC FILTERING", CMD_ANISOTROPIC, getRendererOption(6), detailTextOO, null );
-		m.addItem( "AMBIENT OCCLUSION", CMD_AO_METHOD, getRendererOption(7), occlusion, "Screen-space indirect contact shading" );
-		m.addItem( "AO QUALITY", CMD_AO_QUALITY, getRendererOption(8), quality, "Sampling budget and resolution" );
+		String[] presets = new String[5];
+		presets[0] = "CUSTOM"; presets[1] = "LOW"; presets[2] = "MEDIUM"; presets[3] = "HIGH"; presets[4] = "ULTRA";
+		// #377: a preset sets the controls below and the advanced page at once;
+		// changing any of them afterwards shows CUSTOM again.
+		m = osd.createMenu( Menu_Left, -0.30, -0.44, 0 );
+		presetMulti = m.addItem( "PRESET", CMD_PRESET, 0, presets, "Low suits modest PCs, Ultra the fastest" );
+
+		// Labels sit left of each column's x and values right of it: the columns
+		// leave room for the longest label at 1080p (#224 clipped at x = -0.72).
+		m = osd.createMenu( Menu_Left_Small, -0.30, -0.28, 0 );
+		optAA = m.addItem( "ANTI-ALIASING", CMD_RENDERER_FIRST, getRendererOption(0), antialiasing, null );
+		optAniso = m.addItem( "ANISOTROPIC FILTER", CMD_ANISOTROPIC, getRendererOption(6), detailTextOO, null );
+		optRefl = m.addItem( "REFLECTIONS", CMD_RENDERER_FIRST+1, getRendererOption(1), detailTextOO, null );
+		optClouds = m.addItem( "CLOUDS", CMD_RENDERER_FIRST+2, getRendererOption(2), detailTextOO, "Volumetric clouds" );
+		optAO = m.addItem( "AMBIENT OCCLUSION", CMD_AO_METHOD, getRendererOption(7), occlusion, "Screen-space indirect contact shading" );
+		optAOQ = m.addItem( "AO QUALITY", CMD_AO_QUALITY, getRendererOption(8), quality, "Sampling budget and resolution" );
 		int shadowEnabled = 0;
 		if (Config.shadows > 0) shadowEnabled = 1;
-		m = osd.createMenu( Menu_Left_Small, 0.55, -0.30, 0 );
-		m.addItem( "SHADOWS", CMD_ENHANCED_SHADOWS, shadowEnabled, detailTextOO, null );
-		m.addItem( "SHADOW QUALITY", CMD_SHADOW_QUALITY, getRendererOption(9), quality, "Shadow-map resolution" );
-		m.addItem( "SHADOW SMOOTHING", CMD_SHADOW_SMOOTHING, getRendererOption(10), smoothing, "Shadow edge filtering" );
+		m = osd.createMenu( Menu_Left_Small, 0.62, -0.28, 0 );
+		optShadows = m.addItem( "SHADOWS", CMD_ENHANCED_SHADOWS, shadowEnabled, detailTextOO, null );
+		optSQ = m.addItem( "SHADOW QUALITY", CMD_SHADOW_QUALITY, getRendererOption(9), quality, "Shadow-map resolution" );
+		optSmooth = m.addItem( "SHADOW EDGES", CMD_SHADOW_SMOOTHING, getRendererOption(10), smoothing, "Shadow edge filtering" );
 		m.addItem( "MAP SUNLIGHT", CMD_RENDERER_FIRST+3, getRendererOption(3), detailTextOO, null );
 		m.addItem( "LOCAL LIGHTS", CMD_RENDERER_FIRST+4, getRendererOption(4), detailTextOO, null );
 		m.addItem( "SUN FLARE", CMD_FLARES, Config.flares, detailTextOO, null );
@@ -445,10 +472,41 @@ public class OptionsDialog extends Dialog
 		m.setSliderStyle( sld2, sldk );
 		m.addItem( "AO RADIUS", CMD_AO_RADIUS, getRendererOption(12), 25, 300, 12, "Ambient occlusion radius (cm)" ).printValue("%.0f");
 
+		m = osd.createMenu( butt0, -0.98, 0.85, 0 );
+		m.addItem( "ADVANCED", CMD_ADV_VIDEO, "VSync, view distance, detail, fog and lights" );
 		m = osd.createMenu( butt2, 0.98, 0.85, 0 );
 		m.addItem( "BACK", CMD_VIDEO_OPTIONS_DONE );
 		osd.createHotkey( Input.AXIS_CANCEL, Input.VIRTUAL, CMD_VIDEO_OPTIONS_DONE, this );
 		osd.hideGroup( videoGroup = osd.endGroup() );
+
+		//-----------advanced video options menu (#377)--------------
+
+		osd.createBG( RID_GENERALBG );
+		osd.createHeader( "ADVANCED VIDEO OPTIONS" );
+
+		String[] detail = new String[4];
+		detail[0] = "LOW"; detail[1] = "MEDIUM"; detail[2] = "HIGH"; detail[3] = "ULTRA";
+		m = osd.createMenu( Menu_Left_Small, -0.30, -0.50, 0 );
+		advVsync = m.addItem( "VSYNC", CMD_VSYNC, getRendererOption(13), detailTextOO, "Sync to the display refresh" );
+		advDetail = m.addItem( "PROP DETAIL", CMD_PROP_DETAIL, getRendererOption(15), detail, "How far map props keep their detailed models" );
+		advFog = m.addItem( "FOG", CMD_FOG, getRendererOption(16), detailTextOO, null );
+		m = osd.createMenu( Menu_Left_Small, 0.62, -0.50, 0 );
+		advCarLights = m.addItem( "CAR LIGHTS", CMD_CAR_LIGHTS, getRendererOption(17), detailTextOO, "Headlight beams and brake lights" );
+		advHeadShadows = m.addItem( "HEADLIGHT SHADOWS", CMD_HEADLIGHT_SHADOWS, getRendererOption(18), detailTextOO, null );
+		advLamps = m.addItem( "STREET LAMPS", CMD_STREET_LAMPS, getRendererOption(19), detailTextOO, "Street lamps light the city at night" );
+		m = osd.createMenu( Menu_Left_Small, -0.50, 0.20, 0 );
+		m.setSliderStyle( sld2, sldk );
+		advView = m.addItem( "VIEW DISTANCE", CMD_VIEW_DISTANCE, getRendererOption(14), 500, 3000, 11, "Exterior scenery range (m)" );
+		advView.printValue("%.0f m");
+		m = osd.createMenu( Menu_Left_Small, 0.55, 0.20, 0 );
+		m.setSliderStyle( sld2, sldk );
+		advLampShadows = m.addItem( "LAMP SHADOWS", CMD_SHADOWED_LAMPS, getRendererOption(20), 0, 6, 7, "Street lamps that cast shadows" );
+		advLampShadows.printValue("%.0f");
+
+		m = osd.createMenu( butt2, 0.98, 0.85, 0 );
+		m.addItem( "BACK", CMD_ADV_VIDEO_DONE );
+		osd.createHotkey( Input.AXIS_CANCEL, Input.VIRTUAL, CMD_ADV_VIDEO_DONE, this );
+		osd.hideGroup( advVideoGroup = osd.endGroup() );
 
 		//-----------sound options menu--------------
 
@@ -753,6 +811,7 @@ public class OptionsDialog extends Dialog
 		m.addItem( "DRIVER MOVEMENT/ACCELERATION", CMD_HMF_3, Config.head_move_acc, 0.0, 2.0, 0, "HOW THE CARS ACCELERATION AFFECTS THE DRIVERS MOVEMENT"  );
 		m.addSeparator();
 		m.addItem( "TRAFFIC DENSITY", CMD_TRAFFICDENSITY, Config.trafficDensity, 0.0, 1.5, 0, null );
+		m.addItem( "PEDESTRIAN DENSITY", CMD_PEDESTRIANDENSITY, Config.pedestrianDensity, 0.5, 1.5, 0, "Below 0.5 the streets empty out" );
 		m.addSeparator();
 		m.addItem( "FRAMERATE ADAPTIVE BEHAVIOUR", CMD_FRAMERATE_MODE, getRendererOption(RENDERER_FRAMERATE_MODE), framerateText, "CLASSIC: CARS MOVE IN 60 HZ STEPS. ADAPTIVE: SMOOTH AT ANY FRAME RATE" );
 
@@ -868,7 +927,8 @@ public class OptionsDialog extends Dialog
 		else
 		if (command == CMD_OPTIONS)
 		{
-			changeMode (optionsGroup);
+			// OSD v2 demo: the full-screen options built on java.render.osdx.
+			new OsdxOptions( this ).show();
 		}
 		else
 		if (command == CMD_VIDEO_OPTIONS)
@@ -1002,25 +1062,57 @@ public class OptionsDialog extends Dialog
 		}
 		else
 		if (command >= CMD_RENDERER_FIRST && command < CMD_ENHANCED_SHADOWS)
+		{
 			setRendererOption(command - CMD_RENDERER_FIRST, osd.multiValue);
+			if (command <= CMD_RENDERER_FIRST+2) customPreset();
+		}
 		else
 		if (command == CMD_FRAMERATE_MODE)
 			setRendererOption(RENDERER_FRAMERATE_MODE, osd.multiValue);
 		else
-		if (command == CMD_AO_METHOD) setRendererOption(7, osd.multiValue);
-		else if (command == CMD_AO_QUALITY) setRendererOption(8, osd.multiValue);
-		else if (command == CMD_SHADOW_QUALITY) setRendererOption(9, osd.multiValue);
-		else if (command == CMD_SHADOW_SMOOTHING) setRendererOption(10, osd.multiValue);
+		if (command == CMD_AO_METHOD) { setRendererOption(7, osd.multiValue); customPreset(); }
+		else if (command == CMD_AO_QUALITY) { setRendererOption(8, osd.multiValue); customPreset(); }
+		else if (command == CMD_SHADOW_QUALITY) { setRendererOption(9, osd.multiValue); customPreset(); }
+		else if (command == CMD_SHADOW_SMOOTHING) { setRendererOption(10, osd.multiValue); customPreset(); }
 		else if (command == CMD_AO_STRENGTH) setRendererOption(11, osd.sliderValue);
 		else if (command == CMD_AO_RADIUS) setRendererOption(12, osd.sliderValue);
 		else
 		if (command == CMD_ANISOTROPIC)
+		{
 			setRendererOption(6, osd.multiValue);
+			customPreset();
+		}
+		else
+		if (command == CMD_PRESET)
+		{
+			if (osd.multiValue > 0) applyPreset(osd.multiValue);
+		}
+		else
+		if (command == CMD_ADV_VIDEO) changeMode(advVideoGroup);
+		else
+		if (command == CMD_ADV_VIDEO_DONE) changeMode(videoGroup);
+		else
+		if (command == CMD_VSYNC) { setRendererOption(13, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_VIEW_DISTANCE) { setRendererOption(14, osd.sliderValue); customPreset(); }
+		else
+		if (command == CMD_PROP_DETAIL) { setRendererOption(15, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_FOG) { setRendererOption(16, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_CAR_LIGHTS) { setRendererOption(17, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_HEADLIGHT_SHADOWS) { setRendererOption(18, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_STREET_LAMPS) { setRendererOption(19, osd.multiValue); customPreset(); }
+		else
+		if (command == CMD_SHADOWED_LAMPS) { setRendererOption(20, osd.sliderValue); customPreset(); }
 		else
 		if (command == CMD_ENHANCED_SHADOWS)
 		{
 			Config.shadows = osd.multiValue * 2;
 			System.getConfigOptions();
+			customPreset();
 		}
 		else
 		if(command == CMD_LP)
@@ -1117,6 +1209,10 @@ public class OptionsDialog extends Dialog
 		if (command == CMD_TRAFFICDENSITY)
 		{
 			Config.trafficDensity = osd.sliderValue;
+		}
+		if (command == CMD_PEDESTRIANDENSITY)
+		{
+			Config.pedestrianDensity = osd.sliderValue;
 		}
 		if (command == CMD_SKIDMARK)
 		{
@@ -1333,6 +1429,53 @@ public class OptionsDialog extends Dialog
 			//send command to cursor
 			Input.cursor.config();
 		}
+	}
+
+	// #377: any manual change to a setting a preset covers shows CUSTOM.
+	public void customPreset()
+	{
+		if (presetMulti) presetMulti.setValue(0);
+	}
+
+	// #377: 1 low, 2 medium, 3 high, 4 ultra. Applies every setting the
+	// preset covers and moves the controls to match.
+	public void applyPreset(int preset)
+	{
+		int i = preset-1;
+		int[] aa = new int[4];      aa[0]=0; aa[1]=1; aa[2]=2; aa[3]=3;
+		int[] refl = new int[4];    refl[0]=0; refl[1]=1; refl[2]=1; refl[3]=1;
+		int[] clouds = new int[4];  clouds[0]=0; clouds[1]=0; clouds[2]=1; clouds[3]=1;
+		int[] ao = new int[4];      ao[0]=0; ao[1]=1; ao[2]=1; ao[3]=2;
+		int[] aoq = new int[4];     aoq[0]=0; aoq[1]=0; aoq[2]=1; aoq[3]=2;
+		int[] sq = new int[4];      sq[0]=0; sq[1]=1; sq[2]=2; sq[3]=2;
+		int[] edges = new int[4];   edges[0]=0; edges[1]=1; edges[2]=1; edges[3]=2;
+		int[] view = new int[4];    view[0]=1500; view[1]=2000; view[2]=3000; view[3]=3000;
+		int[] detail = new int[4];  detail[0]=0; detail[1]=1; detail[2]=2; detail[3]=3;
+		int[] headSh = new int[4];  headSh[0]=0; headSh[1]=0; headSh[2]=1; headSh[3]=1;
+		int[] lampSh = new int[4];  lampSh[0]=0; lampSh[1]=2; lampSh[2]=6; lampSh[3]=6;
+
+		setRendererOption(0, aa[i]);       optAA.setValue(aa[i]);
+		setRendererOption(6, 1);           optAniso.setValue(1);
+		setRendererOption(1, refl[i]);     optRefl.setValue(refl[i]);
+		setRendererOption(2, clouds[i]);   optClouds.setValue(clouds[i]);
+		setRendererOption(7, ao[i]);       optAO.setValue(ao[i]);
+		setRendererOption(8, aoq[i]);      optAOQ.setValue(aoq[i]);
+		setRendererOption(9, sq[i]);       optSQ.setValue(sq[i]);
+		setRendererOption(10, edges[i]);   optSmooth.setValue(edges[i]);
+		setRendererOption(13, 1);          advVsync.setValue(1);
+		setRendererOption(14, view[i]);    advView.setValue(view[i]);
+		setRendererOption(15, detail[i]);  advDetail.setValue(detail[i]);
+		setRendererOption(16, 1);          advFog.setValue(1);
+		setRendererOption(17, 1);          advCarLights.setValue(1);
+		setRendererOption(18, headSh[i]);  advHeadShadows.setValue(headSh[i]);
+		setRendererOption(19, 1);          advLamps.setValue(1);
+		setRendererOption(20, lampSh[i]);  advLampShadows.setValue(lampSh[i]);
+		if (Config.shadows == 0)
+		{
+			Config.shadows = 2;
+			System.getConfigOptions();
+		}
+		optShadows.setValue(1);
 	}
 
 	public void changeMode(int group)

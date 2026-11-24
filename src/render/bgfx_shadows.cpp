@@ -176,6 +176,7 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
   if (garage_ || night < kLampShadowNightMin || sun.shadowing || !scenery_lights_count() ||
       video.shadows == 0 ||
       !render_debug().lamp_shadows || !render_debug().lamp_lighting ||
+      !host_enhanced_graphics().street_lamps ||
       !debug_overlay_.render_options().map_shadows ||
       !host_enhanced_graphics().local_lights ||
       !bgfx::isValid(static_shadow_program_)) {
@@ -238,8 +239,10 @@ void LibBgfxBackend::update_lamp_shadows(const VideoOptions &video) {
     return -1;
   };
   // Debug budget (#243): fewer shadowed lamps; extra held slots fade out.
-  const size_t shadow_budget = size_t(render_debug_budget(render_debug().shadowed_lamps,
-      int(kLampShadows), int(kLampShadows)));
+  // The saved option (#377) sets the default; the debug budget can lower it.
+  const int saved_lamps = std::clamp(host_enhanced_graphics().shadowed_lamps, 0, int(kLampShadows));
+  const size_t shadow_budget = size_t(std::min(saved_lamps,
+      render_debug_budget(render_debug().shadowed_lamps, int(kLampShadows), int(kLampShadows))));
   // 1. Held lamps keep their slot while their light still reaches the focus.
   for (auto &slot : lamp_shadow_slots_) {
     if (!slot.source) continue;
@@ -686,6 +689,7 @@ void LibBgfxBackend::update_headlight_shadows(const VideoOptions &video) {
   const size_t budget = size_t(render_debug_budget(render_debug().headlight_tiles,
       int(kHeadlightShadows), int(kHeadlightShadows)));
   if (garage_ || video.shadows == 0 || !render_debug().headlight_shadows || !budget ||
+      !host_enhanced_graphics().headlight_shadows || !host_enhanced_graphics().car_lights ||
       !render_debug().car_lights || !host_enhanced_graphics().local_lights ||
       !bgfx::isValid(static_shadow_program_))
     return;

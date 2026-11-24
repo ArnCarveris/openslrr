@@ -1,5 +1,6 @@
 #include "slrr/host_game_options.hpp"
 #include "slrr/jvm.hpp"
+#include "host_input_devices.hpp"
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -35,6 +36,8 @@ void load_host_options(const std::string& root) {
   if (!host_options_path.empty() && host_options_path.back() != '\\' &&
       host_options_path.back() != '/')
     host_options_path.push_back('\\');
+  host_input_devices().set_calibration_file(
+      host_options_path + "save\\game\\openslrr_axis_calibration");
   host_options_path += "save\\game\\openslrr_options";
   host_enhanced_graphics() = {};
   framerate_mode = FramerateMode::Adaptive;
@@ -52,12 +55,20 @@ void load_host_options(const std::string& root) {
             integer_option(line,"ao_strength",graphics.ao_strength,0,200) ||
             integer_option(line,"ao_radius",graphics.ao_radius,25,300) ||
             integer_option(line,"shadow_quality",graphics.shadow_quality,0,2) ||
-            integer_option(line,"shadow_smoothing",graphics.shadow_smoothing,0,2)) {}
+            integer_option(line,"shadow_smoothing",graphics.shadow_smoothing,0,2) ||
+            integer_option(line,"view_distance",graphics.view_distance,500,3000) ||
+            integer_option(line,"prop_detail",graphics.prop_detail,0,3) ||
+            integer_option(line,"shadowed_lamps",graphics.shadowed_lamps,0,6)) {}
     else for (const auto& entry : {std::pair{"anisotropic_filtering", &graphics.anisotropic_filtering},
                                   std::pair{"dynamic_reflections", &graphics.dynamic_reflections},
                                   std::pair{"volumetric_clouds", &graphics.volumetric_clouds},
                                   std::pair{"dynamic_lighting", &graphics.dynamic_lighting},
-                                  std::pair{"local_lights", &graphics.local_lights}}) {
+                                  std::pair{"local_lights", &graphics.local_lights},
+                                  std::pair{"vsync", &graphics.vsync},
+                                  std::pair{"fog", &graphics.fog},
+                                  std::pair{"car_lights", &graphics.car_lights},
+                                  std::pair{"headlight_shadows", &graphics.headlight_shadows},
+                                  std::pair{"street_lamps", &graphics.street_lamps}}) {
       if (line == std::string(entry.first) + "=0") *entry.second = false;
       if (line == std::string(entry.first) + "=1") *entry.second = true;
     }
@@ -82,7 +93,15 @@ bool save_host_options() {
       << "ao_strength=" << std::clamp(graphics.ao_strength,0,200) << '\n'
       << "ao_radius=" << std::clamp(graphics.ao_radius,25,300) << '\n'
       << "shadow_quality=" << std::clamp(graphics.shadow_quality,0,2) << '\n'
-      << "shadow_smoothing=" << std::clamp(graphics.shadow_smoothing,0,2) << '\n';
+      << "shadow_smoothing=" << std::clamp(graphics.shadow_smoothing,0,2) << '\n'
+      << "vsync=" << graphics.vsync << '\n'
+      << "view_distance=" << std::clamp(graphics.view_distance,500,3000) << '\n'
+      << "prop_detail=" << std::clamp(graphics.prop_detail,0,3) << '\n'
+      << "fog=" << graphics.fog << '\n'
+      << "car_lights=" << graphics.car_lights << '\n'
+      << "headlight_shadows=" << graphics.headlight_shadows << '\n'
+      << "street_lamps=" << graphics.street_lamps << '\n'
+      << "shadowed_lamps=" << std::clamp(graphics.shadowed_lamps,0,6) << '\n';
   out.close();
   if (!out) std::fprintf(stderr, "[options] could not save %s\n", host_options_path.c_str());
   return bool(out);
