@@ -54,6 +54,13 @@ struct RenderDebugOverrides {
   int local_shadow_tile = 0;       // 0: from Shadow quality, else 256/512/1024
   int sun_shadow_size = 0;         // 0: from Shadow quality, else 1024/2048/4096
   float cascade_scale = 1.f;       // multiplies the four cascade radii
+  // The sun shadow maps keep their light direction until the sun has moved
+  // this many degrees (#371): a direction rotating every frame flips caster
+  // texels everywhere. 0 follows the sun every frame.
+  float shadow_sun_step = .05f;
+  // Seconds over which the shadows crossfade from the previous sun step's
+  // atlas to the new one (#371). 0 jumps at once.
+  float shadow_crossfade = .75f;
   float ao_resolution_scale = 1.f; // multiplies the half-res AO buffer (0.25-2, 2 = full)
   bool ao_reference = false;       // AO pass 1 samples the full-res depth (pre-#256)
   float lod_bias = 1.f;            // map prop LOD distance multiplier (>1: lower detail sooner)
@@ -140,6 +147,8 @@ inline std::string render_debug_overrides_text(const RenderDebugOverrides &o) {
   number("local shadow tile", o.local_shadow_tile, d.local_shadow_tile, " px");
   number("sun cascade tile", o.sun_shadow_size, d.sun_shadow_size, " px");
   number("cascade radius scale", o.cascade_scale, d.cascade_scale, "x");
+  number("shadow sun step", o.shadow_sun_step, d.shadow_sun_step, " deg");
+  number("shadow crossfade", o.shadow_crossfade, d.shadow_crossfade, " s");
   number("AO resolution scale", o.ao_resolution_scale, d.ao_resolution_scale, "x");
   flag("AO reference sampling", o.ao_reference, d.ao_reference);
   number("prop LOD bias", o.lod_bias, d.lod_bias, "x");

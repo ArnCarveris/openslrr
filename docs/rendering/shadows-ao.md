@@ -25,7 +25,8 @@ Contract: [contract.md](contract.md#shadows).
   radial projections with fixed light-space basis and texel-snapped X/Y.
 - `src/render/bgfx_shadows.cpp:LibBgfxBackend::update_static_shadow` renders
   four outdoor atlas tiles each frame, keeping garage local shadows separate.
-  Radial splits are 32/100/320/1,000 m; off-camera scenery participates.
+  Radial splits are 64/160/400/1,000 m since #371 (32/100/320/1,000 before);
+  off-camera scenery participates.
 - `shaders/scene_shadow.sh` selects adjacent levels and crossfades their
   visibility. See rendering/roadmap.md for memory/CPU cost, cache retirement,
   the separate short-range vehicle-caster path and scene-detection limits.
@@ -43,6 +44,39 @@ Contract: [contract.md](contract.md#shadows).
   atlas re-creation, an origin rebase or a frame that did not reach the sun
   cascades (no sun, point light in the same atlas, shadows off). Consequence
   for later work: a far tile may hold casters one frame old.
+
+## Sun steps, crossfade and cascade radii (#371)
+
+- Flicker: the game clock moves the sun every frame (`GameLogic.time` x
+  `timeFactor`). The cascade light basis then rotated a little every frame;
+  texel snapping absorbs translation, not rotation, so caster edges flipped
+  texels everywhere. With the clock speed at 0 the flicker stopped.
+- `LibBgfxBackend::shadow_sun_direction` holds the shadow light direction
+  until the sun has moved `render_debug().shadow_sun_step` degrees (0.05 by
+  default, about every 3 s at `timeFactor` 4). The cascades and the car depth
+  map use it; scene lighting keeps the live sun. A still camera can reuse
+  the cached atlas again. Step 0 follows the sun every frame.
+- Crossfade (`update_shadow_crossfade`): on a step, the atlas of the previous
+  direction stays as drawn, with the matrices of its tiles
+  (`shadow_cascade_prev_matrices_`); the two atlases swap and the new one is
+  drawn in full. Receivers fade from the previous atlas to the new one over
+  `render_debug().shadow_crossfade` seconds (0.75 by default): the cascade
+  sampling functions live in `shaders/scene_shadow_cascade.sh`, included
+  twice by `scene_shadow.sh`, the second time on `s_staticShadowPrev`
+  (stage 13 in `fs_mesh` and `fs_vehicle`) with `u_shadowCascadesPrev`. Where
+  the previous atlas does not cover a receiver (the camera moved), the new
+  atlas alone is used. A crossfade starts only from a complete atlas of the
+  previous frame and stops if the shadow origin rebases. It costs a second
+  atlas of the same size (64 MB at High) and a second cascade lookup only
+  during the fade; no extra shadow rendering.
+- Radii: the first cascade reached 32 m, beyond which thin shadows faded
+  out as one texel grew from 3.4 to 10.7 cm (reported as shadows appearing
+  and disappearing while driving). The radii are now 64/160/400/1,000 m
+  (texels at 2048: 6.9, 17, 43 and 107 cm); each divides the 8,000 m common
+  step of `shadow_rebase_origin`.
+- The GPU harness runs with the crossfade off (captures are compared at
+  once); `real_world_cache` tests the held direction, the step, step 0 and
+  the crossfade swap and fade.
 
 ## Cascade CPU cost, filtering and anisotropy (#201)
 

@@ -356,7 +356,7 @@ bgfx_compile_shaders(
 foreach(_shadow_receiver IN ITEMS mesh vehicle)
   add_custom_command(
     OUTPUT "${SLRR_SHADER_OUT}/dxbc/fs_${_shadow_receiver}.sc.bin.h"
-    APPEND DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_shadow.sh" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ambient_occlusion.sh"
+    APPEND DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_shadow.sh" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene_shadow_cascade.sh" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ambient_occlusion.sh"
   )
 endforeach()
 

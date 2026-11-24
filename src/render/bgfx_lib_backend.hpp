@@ -571,6 +571,26 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::ProgramHandle static_shadow_program_ = BGFX_INVALID_HANDLE;
   bgfx::FrameBufferHandle static_shadow_fb_ = BGFX_INVALID_HANDLE;
   bgfx::TextureHandle static_shadow_tex_ = BGFX_INVALID_HANDLE;
+  // The sun atlas of the previous held direction while the shadows
+  // crossfade after a sun step (#371). The two atlases swap on each step.
+  bgfx::FrameBufferHandle static_shadow_prev_fb_ = BGFX_INVALID_HANDLE;
+  bgfx::TextureHandle static_shadow_prev_tex_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle s_static_shadow_prev_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_shadow_cascades_prev_ = BGFX_INVALID_HANDLE;
+  bgfx::UniformHandle u_shadow_blend_ = BGFX_INVALID_HANDLE;
+  std::array<std::array<float,16>,4> shadow_cascade_prev_matrices_{};
+  float shadow_blend_ = 0.f;          // weight of the previous atlas this frame
+  bool shadow_blending_ = false;
+  double shadow_blend_start_ = 0.;    // seconds, steady clock
+  std::array<float,3> atlas_sun_direction_{};
+  bool atlas_sun_valid_ = false;
+  void destroy_prev_shadow_atlas() {
+    if (bgfx::isValid(static_shadow_prev_fb_)) bgfx::destroy(static_shadow_prev_fb_);
+    static_shadow_prev_fb_ = BGFX_INVALID_HANDLE;
+    static_shadow_prev_tex_ = BGFX_INVALID_HANDLE;
+    shadow_blending_ = false;
+    shadow_blend_ = 0.f;
+  }
   bgfx::UniformHandle s_static_shadow_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_static_shadow_mtx_ = BGFX_INVALID_HANDLE;
   bgfx::UniformHandle u_static_shadow_params_ = BGFX_INVALID_HANDLE;
@@ -797,6 +817,12 @@ class LibBgfxBackend final : public IRenderBackend {
   bgfx::UniformHandle u_lamp_shadow_params_=BGFX_INVALID_HANDLE;
   std::vector<ShadowCasterStamp> shadow_cached_casters_;
   std::array<float,3> shadow_cached_origin_{};
+  // Light direction of the sun shadow maps (#371), held until the sun has
+  // moved render_debug().shadow_sun_step degrees.
+  std::array<float,3> shadow_sun_direction_{};
+  bool shadow_sun_valid_ = false;
+  std::array<float,3> shadow_sun_direction(const SceneSun& sun);
+  void update_shadow_crossfade(const std::array<float,3>& sun_direction, uint16_t size);
   // Cascade alternation (#361): which atlas tiles hold a map drawn with
   // shadow_cascade_matrices_ and the current origin, and the last frame
   // that reached the sun cascades.
