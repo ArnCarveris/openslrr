@@ -201,8 +201,9 @@ also exists. Bodies and native_noop remain distinct per exact registration.
 Validation: nine standard-library Python tests cover primitive/object/array
 returns, omitted V, exact priority, overloads, missing bindings, slash and syntax
 errors, source diagnostic locations and CLI --check failure before output
-writes. The full source audit and regenerated-output --check pass; counts remain
-339 bodies / 3 explicit no-ops / 34 missing (376 total). Generated coverage JSON
+writes. The full source audit and regenerated-output --check pass; counts were
+then 339 bodies / 3 explicit no-ops / 34 missing (376 total; 358 / 3 / 15 since
+#180, see the table at the top). Generated coverage JSON
 now states the exact-descriptor scope; README and scripting/natives.md agree. No
 runtime source, executable, stock manifest or production Java changed, so no
 new game compilation or in-game validation is needed for this audit-only fix.
