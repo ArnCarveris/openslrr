@@ -909,6 +909,8 @@ void LibBgfxBackend::apply_video_mode(const VideoMode& mode) {
       // Runtime reports only active-world nitrous children. Never submit this
       // optical glow to previews/reflection/shadow passes or the light arrays.
       if (video.flares) draw_nitro_flares(view, render_proj, world_view);
+      // Tyre marks after the world's opaque and blended draws.
+      if (world_cam) draw_skid_marks(world_view);
     }
     // Previews start at view 8. OSD plates under the cars are view 7; the
     // rest of the interface is view 70.

@@ -406,6 +406,7 @@ class LibBgfxBackend final : public IRenderBackend {
   void apply_base_view_order();
   void draw_sun_flare(const float* view, const float* projection, uint16_t view_id);
   void draw_nitro_flares(const float* view, const float* projection, uint16_t view_id);
+  void draw_skid_marks(uint16_t view_id);
 
   void draw_previews();
 

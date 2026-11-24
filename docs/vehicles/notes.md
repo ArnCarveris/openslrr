@@ -393,3 +393,69 @@ python scripts/check_knowledge_refs.py
 [after](../../assets/validation/physics-position/after.txt).
 In-game validation remains pending: inspect moving PhysicsRef readback and
 navigate menu focus with the arrow keys. There is no in-game screenshot yet.
+
+## Tyre squeal, skid marks and collision sounds
+
+Cause: the host never played the stock tyre or impact clips and drew no tyre
+marks; only the SfxTable engine loops, nitrous, horn and radio sounded.
+
+Stock data: `sound.rpk` has `surface/slide` (0x06, SLIP3.WAV), `surface/roll`
+(0x08) and `collision` (0x0b, Collision.wav); `collision/chassis` (0x13) and
+`collision/window` (0x14) have empty payloads, so the parent 0x0b holds the
+clip. The exe reads per-material `skid_PS`/`skid_SM`/`skid_SMcolor`/`skid_SFX`
+from map SCM files and `particles/scripts/skids/sliding/*.cfg` (maxcount 100,
+width, uv, fade) for marks. None of that is read yet. SLRR_rev 4ca11c2
+implements squeal and impacts (`SLRR_rev:src/audio/vehicle-audio.ts`) and marks
+(`SLRR_rev:src/render/tire-effects.ts`); both were migrated.
+
+Fix:
+
+- `update_slide_audio` (`part_runtime.cpp`): one SLIP3 loop per car from its
+  most slipping wheel in contact (not a hub on the road), gain
+  `clamp((slip - 2) / 10) * 0.3 * skidLoudness(speed)`, pitch 0.92-1.15 with
+  the slip (a host addition; SLRR_rev keeps 1). One loop per car, not per
+  wheel, keeps the mixer's 24-loop budget for engines. A sideways snap above
+  14 m/s with 3.4 m/s lateral slip plays `surface/skid_ok.wav` once.
+- `play_impact_audio`: `commit_batch` keeps each car's hardest impact of the
+  batch (at 1000 Hz one crash reports many ticks) and plays Collision.wav,
+  plus `MetalHit2.WAV` above 7 m/s and `Metal_plane_hit_04.WAV` above 14 m/s,
+  at most every 160 ms per car.
+- `skid_marks.cpp`: SLRR_rev's mark strips without the smoke. Per wheel, a
+  scrub over the threshold (load >= 300 N and slip ratio > 0.25 with slip
+  speed > 2 m/s, or lateral speed > 5.5 m/s) starts a track; 0.28 m quads
+  follow the contact patch, fade in and out over 0.45 m, and a still burnout
+  adds a short quad every 0.14 s. A ring of 1400 quads caps the count.
+  `update_skid_marks` samples the published wheel state once per host frame
+  in `finish_physics_frame`, so the 1000 Hz free-running clock adds no work.
+  Map unload (`part_drop_actors`) clears the ring.
+- `draw_skid_marks` (`bgfx_lighting.cpp`): one transient draw in the world
+  view after the world, multiplicative blend (the mark only darkens),
+  emission path over a white mask so sun, shadow and fog do not touch it,
+  SLRR_rev's road colour 0x17191a at 0.62.
+- Both audio paths use the inverse distance gain of SLRR_rev's panner (ref 2
+  or 3 m, rolloff 0.25, silent past 55 or 70 m) on the world camera distance;
+  the host mixer has no 3D one-shots. Marks skip cars past 120 m.
+- Native traffic (`native_vehicle`) gets neither squeal nor marks, so ~100
+  traffic cars cost nothing here.
+
+Validation:
+
+- Compilation: `slrr_host` Release builds.
+- In game (`build/Release/perf-roots/saved`, Baiern CoupeSport on ValoCity,
+  13:00), with temporary env-gated hooks since removed:
+  - Stock bench launch: rear slip stays under 1 m/s (soft auto clutch) and ABS
+    braking holds the slip near 15 % (1.4 m/s), so no squeal or mark there,
+    as with SLRR_rev's thresholds.
+  - ABS off, full brake and full lock from 37 km/h: the wheels lock, 143 quads
+    are laid, and a screenshot after driving on shows two dark rear-wheel
+    tracks behind the car, depth-tested.
+  - An earlier needle-game launch with 13-15 m/s slip started the SLIP3 loop
+    (gain 0.18), and an 8.9 m/s hit played Collision.wav.
+  - A free-running (`--bench-realtime`) drive exited cleanly.
+- Not listened to: the sounds were confirmed by trace only.
+
+Limitations: no ground materials (grass/sand marks and clips, `surface/roll`
+rolling noise, SCM `skid_SM` colours, the stock skid textures), marks are flat
+quads, so a strip crossing a kerb step floats across it; no tyre smoke; no
+object `material` impact sounds (`material 0 0 0x567 500` on map objects); no
+stereo pan on one-shots; traffic leaves no marks.

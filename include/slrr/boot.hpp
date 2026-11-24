@@ -33,9 +33,14 @@ struct BootOptions {
   // path frame by frame however fast it renders.
   float bench_drive_seconds = 0.f;
   bool bench_realtime=false; // Preserve wall-clock stalls/catch-up while profiling.
+  bool physics_batch=false;
+  std::string physics_trace;  // --physics-trace FILE (#380)  // --physics-batch: frame-locked physics instead of the free-running thread (#380)
   // --bench-map: from the garage, start the GameLogic.MapBox track whose
   // script class name contains this text (ValoCity_Track for the city).
   std::string bench_map;
+  // --bench-traffic: java.util.Config.trafficDensity for the bench map
+  // (0..1; -1 keeps the saved option). Measures physics with traffic (#380).
+  float bench_traffic = -1.f;
   std::string bench_career; // Relative save directory, for reproducing career performance.
   // --bench-time: game hour set when the benchmark drive starts (-1 keeps it).
   float bench_hour = -1.f;

@@ -15,6 +15,7 @@
 
 #include <imgui/imgui.h>
 
+#include <cfloat>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -687,7 +688,47 @@ std::string vehicle_label(Object* vehicle) {
   return name + " #" + std::to_string(vehicle_id(vehicle));
 }
 
+// Rolling telemetry history for the Vehicle tab (#380), one sample per frame.
+struct TelemetryHistory {
+  static constexpr int kSize = 600;
+  float speed[kSize]{}, rpm[kSize]{}, yaw[kSize]{}, slip_angle[kSize]{}, rear_slip[kSize]{};
+  int next = 0;
+  void push(const PartPhysicsState& state) {
+    speed[next] = static_cast<float>(state.speed_kph);
+    rpm[next] = static_cast<float>(state.rpm);
+    yaw[next] = static_cast<float>(state.yaw_rate * kDegrees);
+    const auto& rl = state.tires[2];
+    const auto& rr = state.tires[3];
+    const double road = std::max(1.5, std::abs((rl.wheel_speed - rl.slip_speed +
+                                                rr.wheel_speed - rr.slip_speed) * .5));
+    slip_angle[next] = static_cast<float>(
+        std::atan2((rl.lateral_speed + rr.lateral_speed) * .5, road) * kDegrees);
+    rear_slip[next] = static_cast<float>((rl.slip_speed + rr.slip_speed) * .5);
+    next = (next + 1) % kSize;
+  }
+};
+
+void plot(const char* label, const float* values, int offset, const char* unit) {
+  char overlay[64];
+  std::snprintf(overlay, sizeof overlay, "%.1f %s",
+                values[(offset + TelemetryHistory::kSize - 1) % TelemetryHistory::kSize], unit);
+  ImGui::PlotLines(label, values, TelemetryHistory::kSize, offset, overlay, FLT_MAX, FLT_MAX,
+                   ImVec2(0, 48));
+}
+
 void draw_vehicle(const PartPhysicsState& state) {
+  static TelemetryHistory history;
+  history.push(state);
+  const auto clock = part_physics_clock_stats();
+  ImGui::Text("Solver %u Hz | %s | %.0f steps/s | thread %.1f %%", clock.hz,
+              clock.free_running ? "free-running" : "frame-locked", clock.steps_per_second,
+              clock.thread_load * 100.);
+  if (clock.dropped > 0 || clock.host_wait > .01)
+    ImGui::TextColored(ImVec4(1, .55f, .2f, 1),
+                       "Behind real time: frame waits %.0f %% | %.0f ms/s dropped",
+                       clock.host_wait * 100., clock.dropped * 1e3);
+  ImGui::Text("Throttle %.2f | Brake %.2f | Clutch %.2f", state.throttle, state.brake,
+              state.clutch);
   ImGui::Text("%.1f km/h | %.0f rpm | Gear %d", state.speed_kph, state.rpm, state.gear);
   ImGui::Text("Physics %s | Mass %.0f kg | Yaw %.1f deg/s",
               state.active ? "active" : "inactive", state.mass, state.yaw_rate * kDegrees);
@@ -697,9 +738,15 @@ void draw_vehicle(const PartPhysicsState& state) {
   ImGui::Text("Ticks %llu | Backlog %llu",
               static_cast<unsigned long long>(state.ticks),
               static_cast<unsigned long long>(state.backlog));
-  if (!ImGui::BeginTable("wheels", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+  plot("Speed", history.speed, history.next, "km/h");
+  plot("RPM", history.rpm, history.next, "rpm");
+  plot("Yaw rate", history.yaw, history.next, "deg/s");
+  plot("Rear slip angle", history.slip_angle, history.next, "deg");
+  plot("Rear wheelspin", history.rear_slip, history.next, "m/s");
+  if (!ImGui::BeginTable("wheels", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
     return;
-  for (const char* name : {"Wheel", "Load / steer", "Slip X / Y", "Force X / Y"})
+  for (const char* name : {"Wheel", "Load / steer", "Wheel speed", "Slip ratio / angle",
+                           "Slip X / Y", "Force X / Y"})
     ImGui::TableSetupColumn(name);
   ImGui::TableHeadersRow();
   const char* names[] = {"FL", "FR", "RL", "RR"};
@@ -710,6 +757,15 @@ void draw_vehicle(const PartPhysicsState& state) {
     ImGui::Text("%s %s", names[i], state.contact[i] ? "ground" : "air");
     ImGui::TableNextColumn();
     ImGui::Text("%.0f N / %+.1f deg", state.force[i], tire.steer * kDegrees);
+    ImGui::TableNextColumn();
+    ImGui::Text("%.2f m/s", tire.wheel_speed);
+    ImGui::TableNextColumn();
+    {
+      const double road = tire.wheel_speed - tire.slip_speed;
+      const double reference = std::max(1.5, std::abs(road));
+      ImGui::Text("%+.2f / %+.1f deg", tire.slip_speed / reference,
+                  std::atan2(tire.lateral_speed, reference) * kDegrees);
+    }
     ImGui::TableNextColumn();
     ImGui::Text("%+.2f / %+.2f m/s", tire.slip_speed, tire.lateral_speed);
     ImGui::TableNextColumn();

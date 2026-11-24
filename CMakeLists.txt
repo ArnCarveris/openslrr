@@ -57,6 +57,13 @@ target_link_libraries(compile_game_sources PRIVATE slrr_script_compiler)
 target_include_directories(compile_game_sources PRIVATE include)
 target_compile_options(compile_game_sources PRIVATE /utf-8)
 
+# Physics Lab (#380): offline vehicle-solver bench, any solver rate.
+add_executable(physics_lab tools/physics_lab.cpp
+  src/physics/vehicle_dynamics.cpp src/physics/tire_model.cpp
+  src/physics/suspension_geometry.cpp src/physics/dyno_model.cpp)
+target_include_directories(physics_lab PRIVATE include)
+target_compile_options(physics_lab PRIVATE /utf-8)
+
 add_executable(slrr_host
   src/main.cpp
   src/jvm/script_compiler.cpp
@@ -97,6 +104,7 @@ add_executable(slrr_host
   src/resources/scene_sun.cpp
   src/resources/part_config.cpp
   src/resources/part_runtime.cpp
+  src/resources/skid_marks.cpp
   src/resources/pedestrian_lines.cpp
   src/formats/walk.cpp
   src/formats/rest.cpp
@@ -164,12 +172,12 @@ set_property(SOURCE src/boot/boot.cpp APPEND PROPERTY
 
 target_include_directories(slrr_host PRIVATE include "${CMAKE_BINARY_DIR}/generated")
 
-# Investigation-only solver-rate override (#203); preserve the shipped default.
-# The shared-world caller uses integer substeps per 60 Hz host tick.
-set(SLRR_VEHICLE_PHYSICS_HZ 120 CACHE STRING "Experimental solver rate (multiple of 60 Hz)")
-math(EXPR _slrr_tick_remainder "${SLRR_VEHICLE_PHYSICS_HZ} % 60")
-if(SLRR_VEHICLE_PHYSICS_HZ LESS 60 OR NOT _slrr_tick_remainder EQUAL 0)
-  message(FATAL_ERROR "SLRR_VEHICLE_PHYSICS_HZ must be a positive multiple of 60; exactly 1000 Hz needs a shared-world scheduler change.")
+# Vehicle solver rate (#380): 1000 Hz on the free-running physics thread.
+# --physics-hz changes it at run time; any rate from 60 Hz works (a 60 Hz host
+# tick runs floor((n+1) f / 60) - floor(n f / 60) solver steps when frame-locked).
+set(SLRR_VEHICLE_PHYSICS_HZ 1000 CACHE STRING "Vehicle solver rate (Hz)")
+if(SLRR_VEHICLE_PHYSICS_HZ LESS 60)
+  message(FATAL_ERROR "SLRR_VEHICLE_PHYSICS_HZ must be at least 60")
 endif()
 target_compile_definitions(slrr_host PRIVATE SLRR_VEHICLE_PHYSICS_HZ=${SLRR_VEHICLE_PHYSICS_HZ})
 

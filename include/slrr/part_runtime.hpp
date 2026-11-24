@@ -114,6 +114,13 @@ void part_physics_end();
 void part_physics_advance(double seconds);
 // Waits for a running batch without publishing it. A no-op without one.
 void part_physics_join();
+// Free-running physics thread (#380): the solver steps on the wall clock,
+// independently of the frame rate; the host syncs with it once per frame.
+// The fixed-step benchmark turns it off (frame-locked batches).
+void part_physics_set_free_running(bool free_running);
+// --physics-trace: appends the controlled car's solver steps around each
+// vertical jolt over 1.5 g (0.6 s before, 0.3 s after) to a CSV file.
+void part_physics_trace(const std::string& path);
 // False runs each batch on the calling thread (--physics-inline).
 void part_physics_set_threaded(bool threaded);
 // The wind on released cars: m/s at 10 m height, blowing towards
@@ -153,6 +160,7 @@ struct PartPhysicsState {
   struct TireSample {
     double steer = 0, slip_speed = 0, lateral_speed = 0;
     double longitudinal_force = 0, lateral_force = 0;
+    double wheel_speed = 0;  // spin x radius, m/s (#380 telemetry)
   };
   std::array<TireSample, 4> tires{};
   double speed_kph = 0, rpm = 0, yaw_rate = 0;
@@ -161,7 +169,22 @@ struct PartPhysicsState {
   double steering_help = 0, steering_request = 0, steering_angle = 0;
   double steering_correction = 0;
   int gear = 0;
+  // Drive inputs the solver applies (#380 telemetry).
+  double throttle = 0, brake = 0, clutch = 0;
 };
+// Solver statistics over the last second (#380): rate, steps actually run
+// per second and the physics thread's busy fraction (free-running mode).
+struct PartPhysicsClockStats {
+  unsigned hz = 0;
+  double steps_per_second = 0, thread_load = 0;
+  double dropped = 0;  // game seconds per second dropped: the thread fell behind
+  double host_wait = 0;  // share of wall time the frame waited for the thread
+  bool free_running = false;
+};
+PartPhysicsClockStats part_physics_clock_stats();
+// Solver steps the next `host_ticks` frame-locked 60 Hz host ticks will run
+// (2 per tick at 120 Hz, 16 or 17 at 1000 Hz).
+unsigned part_physics_steps_ahead(unsigned host_ticks);
 bool part_physics_state(Object *car, PartPhysicsState &state);
 Object* part_controlled_chassis();
 // Top-level cars of the active world, for trigger volumes: the chassis key,

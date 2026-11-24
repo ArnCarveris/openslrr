@@ -240,7 +240,9 @@ career loader; use a copied game/save root for repeatable measurements because
 normal career working files and options can be written. `--bench-realtime` keeps
 wall-clock frame deltas, including stalls/catch-up, rather than the default
 fixed 1/60 s simulation benchmark. Its two-second warm-up and drive duration are
-wall-clock durations.
+wall-clock durations. `--bench-traffic 0..1` sets the city traffic density for
+the run (the perf roots have none); with 1, about 100 cars share the physics
+thread.
 
 Opening the debug overlay starts frame timing automatically. The Renderer tab
 shows CPU scripts, traffic, physics (with vehicle, pedestrian and collision

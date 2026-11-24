@@ -226,14 +226,33 @@ submission. Physics steps on its own thread (#203, `PhysicsWorker` in
 step on their own worker (`PedSim` in `part_runtime.cpp`), and audio and video
 decoders keep their library threads.
 
-The physics thread runs one batch per frame: the 60 Hz host ticks the frame
-owes, each as shared solver substeps over every car, loose body and free
-PhysicsRef body. `part_physics_begin` prepares the batch on the host just
-before `render.flush()` and starts it; `part_physics_end`, after the flush,
-waits for it and publishes it. The host owns everything outside that window,
-so scripts, natives and callbacks never run concurrently with a batch, and
-they see the ticked state as before; the frame drawn during a batch shows the
-state before its ticks.
+In the game the physics thread is free-running (#380): it runs one solver
+step at a time (1 ms at the default 1000 Hz) on the wall clock, independently
+of the frame rate, over every car, loose body and free PhysicsRef body of an
+open batch (`PhysicsClock` in `part_runtime.cpp`). `part_physics_begin` is
+the sync point: it pauses the thread after its current step, commits the
+steps run since the last sync, publishes the poses this frame draws, prepares
+the next batch and resumes the thread. Game time keeps running during the
+sync (the thread catches up, up to 0.1 s), and its rate follows the frame's
+simulation time (time warp, 0 while paused). The host owns the records only
+between the pause and the resume, so scripts, natives and callbacks still
+never run concurrently with a step on the records they read. In free-running
+mode each solver step is its own host tick.
+
+The free-running thread keeps real time first: when it falls behind, the sync
+waits up to 50 ms for the steps due (the frame rate drops, not the game
+speed), and the solver rate halves down to 250 Hz, then doubles back to the
+requested rate once there is room (`free_running_sync`). Distant native
+traffic steps at about 125 Hz, or 60 Hz beyond 150 m, as merged steps of its
+owed time; crush cages step at their own 120 Hz. A host function called every
+frame must join only when it changes what the thread reads: a join pauses the
+thread until the next sync.
+
+The fixed-step benchmark, `--physics-batch` and the tests keep the
+frame-locked mode: one batch per frame of the 60 Hz host ticks the frame
+owes, each as `VehicleDynamics::steps_in_host_tick` solver substeps (2 at
+120 Hz, 16 or 17 at 1000 Hz); `part_physics_begin` starts it before
+`render.flush()` and `part_physics_end` waits for it and publishes it.
 
 A batch works on copies taken while the host owns everything: bodies, drive
 and steering inputs, options, nitrous capacity, crush-cage probe shifts, car
@@ -244,8 +263,9 @@ impacts, props to wake, loose bodies to settle and diagnostics for the commit,
 which applies them in solver order with the chassis as it was when hit. Host
 code that may run while a batch is in flight and changes what a batch reads
 calls `part_physics_join()` first: the scene collision mutators,
-`part_destroy` and the debug overlay's tyre tuning do. `--physics-inline`
-runs the same batch on the host thread; from the same starting state the
+`part_destroy` and the debug overlay's tyre tuning do. In free-running mode
+the join pauses the thread until the next sync. `--physics-inline` runs the
+frame-locked batch on the host thread; from the same starting state the
 fixed-step benchmark gives the same states either way.
 
 Loading work that only reads files goes to the shared worker pool in
@@ -939,6 +959,13 @@ script-less cars (traffic, fake racers) have no SfxTables; they use the
 speed-modelled host loop of `update_traffic_engine_audio` (distance gain, stereo
 pan, mass-dependent pitch, plus the CFG `sfx_loop` radio), bounded to the
 nearest four cars, and its voices stop with the car like the SfxTable loops.
+Tyre squeal, skid marks and collision sounds are host-driven (SLRR_rev
+`vehicle-audio.ts`, `tire-effects.ts`): each released non-traffic car holds one
+`sound.rpk` `surface/slide` loop scaled by its most slipping wheel, lays
+`skid_marks` quads sampled once per host frame (never per solver step), and
+`commit_batch` plays one stock `collision` clip per car and batch from its
+hardest impact (160 ms apart). Ground materials are not read yet, so every
+surface uses the road clip and mark colour.
 
 Simultaneous voices are deliberately bounded, and menu repeats are handled
 separately. Installing a kit can produce many install events: avoid adding
