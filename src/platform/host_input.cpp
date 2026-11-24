@@ -263,6 +263,19 @@ void host_input_update_controller(Object* controller, float dt) {
         *controller->input, host_input_physical_axis, pad,
         [](int device, int axis) { return host_input_devices().analog_axis(device, axis); },
         physical_available);
+    // Steering skips the stock ControlSet smoothing (#383): its power 1.5
+    // curve gave a half-turned wheel or stick 35 % of the lock, and its rate
+    // (Config.steerSpeed 0.01) lagged about 400 ms behind the input. An analog
+    // wheel or stick now steers directly; a key is shaped by steering_filter.
+    // A script-forced steer still wins.
+    // The STEERING GAMMA option (the axis' ControlSet power) still shapes it.
+    const auto& input = *controller->input;
+    if (input.forced_axes.find(1) == input.forced_axes.end()) {
+      float steer = std::clamp(mapped_axis(input, 1), -1.f, 1.f);
+      if (const auto smooth = input.smoothing.find(1); smooth != input.smoothing.end())
+        steer = std::copysign(std::pow(std::abs(steer), smooth->second.power), steer);
+      in.drive_steer = steer;
+    }
   }
   in.drive_throttle = axis(28);
   in.drive_brake = axis(29);

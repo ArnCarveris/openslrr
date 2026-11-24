@@ -28,6 +28,14 @@ struct EnhancedGraphics {
   bool operator==(const EnhancedGraphics&) const = default;
 };
 EnhancedGraphics& host_enhanced_graphics();
+// Host-only input settings (#383), saved with the graphics ones.
+struct InputTuning {
+  // How much an analog wheel or stick's full lock shrinks with speed, in
+  // percent: 0 keeps full lock at any speed, 100 narrows it like keyboard
+  // steering (the angle a 1.2 g turn needs plus the tyre's peak slip).
+  int steer_speed_sensitivity = 50;
+};
+InputTuning& host_input_tuning();
 // Persist host-only graphics alongside the stock options, without changing Config.
 bool host_save_graphics_options();
 // Options -> Advanced Game Options -> Framerate Adaptive Behaviour.

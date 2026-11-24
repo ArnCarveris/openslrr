@@ -13,28 +13,39 @@ stock physics; do not restore the earlier solver just to make its old tests
 pass. The follow-up work awaiting approval is in
 [the vehicle-dynamics migration plan](dynamics-plan.md).
 
-`configure_drive` copies the tyre script's `WheelRef` values, but the active
-curve scales a reference tyre rather than interpreting those values as exact
-force-curve coefficients:
+`configure_drive` copies the tyre script's `WheelRef` values. Since #383 the
+tyre is one combined-slip Magic Formula curve, the structure of the original
+law (as recovered from the Steam EXE by nicolas-found42/sl-remastered,
+00454500), with OpenSLRR's own peak friction:
 
-- Friction, stiffness and sliction are divided by `TireParameters` defaults
-  (1.76863, 17.6839 and 0.814), then clamped respectively to 0.2–2.5,
-  0.4–2.5 and 0.3–1.5. Width, compound, profile and inflation enter through
-  these script-derived inputs, not through independent width parameters.
-- Slip ratio uses the greater of 1.5 m/s, road speed and wheel surface speed;
-  slip angle uses road speed with a 1.5 m/s floor. The base lateral Magic
-  Formula has B=11.5, C=1.32, E=0.35; the longitudinal one B=14, C=1.55,
-  E=0.45. Stiffness scales B, not an exact `stiffness × load` zero-slip slope.
-- `setMaxLoad` introduces progressive load efficiency above half capacity.
-  An arctangent factor blended by `setLoadSmooth × load_sensitivity` further
-  scales the lateral peak. The nominal lateral/longitudinal peak multipliers
-  are 1.42 and `0.85 × 1.76863`, before load efficiency, sliding, tuning and
-  `setFrictn_x` (longitudinal only); neither is a guaranteed measured peak mu.
-- Sliction scales the grip as combined slip grows; longitudinal slip also
-  reduces lateral B. A final friction ellipse bounds combined demand.
-  Low-slip forces are additionally capped in proportion to slip speed and
-  load. `TireTuning` exposes lateral grip/response, longitudinal grip and load
-  sensitivity. `setRollRes` supplies the wheel's rolling torque.
+- Slip ratio kappa = (wheel - road) / road speed and slip angle
+  alpha = atan(lateral / road speed), both with a 1.5 m/s floor. The curve
+  takes the combined slip sqrt(sin(alpha)^2 + (cos(alpha) kappa frictn_x)^2)
+  and splits the force by its direction, so wheelspin or a locked wheel uses
+  up the cornering grip (power oversteer, drifts, burnouts).
+- D = effective load × peak friction. The effective load is the original's:
+  above `setMaxLoad` it grows by an arctangent, blended by
+  `setLoadSmooth × load_sensitivity`. The peak friction is 1.15 for the stock
+  tyre (`kPeakFriction`), times `setFriction` / 1.76863 (clamped 0.2–2.5).
+  Width, compound, profile and inflation enter through these script inputs.
+- C from `setSliction`, the slide/grip ratio its script documents: the curve
+  ends at sliction × the peak (sliction clamped to 0.4–1; 1 keeps the peak).
+- B = stiffness / (C × peak friction): `setStiffness` is the zero-slip slope
+  per unit load, as in the original (clamped 4–60, times `lateral_response`).
+- E = -1, the original's `setPacejka(8)` value.
+- Stock tyre at 3500 N: lateral peak 1.07 at 8.1 degrees, 0.99 at 20 degrees;
+  longitudinal peak 1.07 at 14 % slip, 0.91 locked; at 6 degrees the lateral
+  force falls from 1.05 to 0.48 with 20 % wheelspin.
+- Low-slip forces are capped in proportion to the sliding speed and load.
+  `TireTuning` scales the lateral and longitudinal force (grip), the slope
+  (lateral response) and the load smoothing (load sensitivity).
+  `setRollRes` supplies the wheel's rolling torque.
+- `VehicleDynamics` feeds the curve a relaxed slip angle: the tyre's lateral
+  deflection builds over 0.3 m of rolling (`kLateralRelaxation`), integrated
+  implicitly, a 12 ms lag at 90 km/h.
+- Not used yet: the surface friction and rolling resistance of the map's SCM
+  materials (`friction`, `rollres`), which multiply the tyre's in the
+  original.
 
 Wheel alignment now scales load by the square of the hub-down/road-normal
 cosine, with a 0.25 floor. The copied `setCPatch` tolerance (`patch_angle`) is

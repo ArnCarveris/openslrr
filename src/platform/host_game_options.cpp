@@ -40,6 +40,7 @@ void load_host_options(const std::string& root) {
       host_options_path + "save\\game\\openslrr_axis_calibration");
   host_options_path += "save\\game\\openslrr_options";
   host_enhanced_graphics() = {};
+  host_input_tuning() = {};
   framerate_mode = FramerateMode::Adaptive;
   auto& graphics = host_enhanced_graphics();
   std::ifstream in(host_options_path);
@@ -58,7 +59,9 @@ void load_host_options(const std::string& root) {
             integer_option(line,"shadow_smoothing",graphics.shadow_smoothing,0,2) ||
             integer_option(line,"view_distance",graphics.view_distance,500,3000) ||
             integer_option(line,"prop_detail",graphics.prop_detail,0,3) ||
-            integer_option(line,"shadowed_lamps",graphics.shadowed_lamps,0,6)) {}
+            integer_option(line,"shadowed_lamps",graphics.shadowed_lamps,0,6) ||
+            integer_option(line,"steer_speed_sensitivity",
+                           host_input_tuning().steer_speed_sensitivity,0,100)) {}
     else for (const auto& entry : {std::pair{"anisotropic_filtering", &graphics.anisotropic_filtering},
                                   std::pair{"dynamic_reflections", &graphics.dynamic_reflections},
                                   std::pair{"volumetric_clouds", &graphics.volumetric_clouds},
@@ -101,7 +104,9 @@ bool save_host_options() {
       << "car_lights=" << graphics.car_lights << '\n'
       << "headlight_shadows=" << graphics.headlight_shadows << '\n'
       << "street_lamps=" << graphics.street_lamps << '\n'
-      << "shadowed_lamps=" << std::clamp(graphics.shadowed_lamps,0,6) << '\n';
+      << "shadowed_lamps=" << std::clamp(graphics.shadowed_lamps,0,6) << '\n'
+      << "steer_speed_sensitivity="
+      << std::clamp(host_input_tuning().steer_speed_sensitivity,0,100) << '\n';
   out.close();
   if (!out) std::fprintf(stderr, "[options] could not save %s\n", host_options_path.c_str());
   return bool(out);
@@ -156,6 +161,10 @@ GameOptions read_options(Jvm& jvm) {
   options.pedestrian_density = read("pedestrianDensity", .1f);
   return options;
 }
+}
+InputTuning& host_input_tuning() {
+  static InputTuning tuning;
+  return tuning;
 }
 EnhancedGraphics& host_enhanced_graphics() {
   static EnhancedGraphics graphics;

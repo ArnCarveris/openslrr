@@ -360,6 +360,8 @@ public class OsdxOptions extends GameType implements EventReceiver, Animated
 			sl.printValue( "%.0f", 20.0 );
 			deadSlider[i] = sl;
 		}
+		sl = m.addItem( "STEERING SPEED SENS.", OptionsDialog.CMD_STEER_SPEED, OptionsDialog.getRendererOption(21), 0.0, 100.0, 21, "How much a wheel or stick's full lock narrows with speed (percent). 0 keeps full lock at any speed." );
+		sl.printValue( "%.0f" );
 		sl = m.addItem( "FORCE FEEDBACK", OptionsDialog.CMD_FFB + 0, Config.FFB_strength, 0.0, 1.0, 0, "Force feedback strength on wheels that support it (percent)." );
 		sl.printValue( "%.0f", 100.0 );
 		sl = m.addItem( "EMULATED FFB", OptionsDialog.CMD_FFB + 1, Config.FFB_strength_emulated, 0.0, 0.1, 0, "Steering resistance emulated on devices without force feedback." );
