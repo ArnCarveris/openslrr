@@ -878,10 +878,11 @@ Physics:
   (`src/jvm/jvm.cpp:advance_sim_time`), and at most four host ticks run per
   frame, so below 15 FPS the simulation slows down.
 - The intended vehicle solver is maintainer revision `8ac2ba9`, not the
-  earlier #48 curve. `src/physics/tire_model.cpp:tire_forces` scales reference
-  Magic Formula curves by clamped ratios of script friction, stiffness and
-  sliction, with progressive load efficiency, lateral load smoothing and a
-  combined friction ellipse. Stiffness is a B multiplier, not an exact slope.
+  earlier #48 curve, with the #383 tyre: `src/physics/tire_model.cpp:tire_forces`
+  is one combined-slip Magic Formula curve (C from sliction, B from
+  stiffness, E -1, peak friction 1.15 × script friction ratio, the original's
+  load smoothing), fed a relaxed slip angle
+  ([driving model](../vehicles/driving-model.md)).
   `setCPatch` tolerance and `setInstantCenter` data are copied/stored but have
   no active solver effect; there is no jacking or shared lateral impulse
   bound. The approved brake fix consumes one impulse budget before tyre
@@ -957,7 +958,7 @@ Process:
 | SFX voices | 32 total, 3 menu, 2 copies per cue, 35 ms coalescing | `src/platform/host_sfx.cpp:host_sfx_play_file` |
 | Ambient start range | 250 m beyond the CFG radius | `src/resources/scene_ambience.cpp:scene_ambience_audible` |
 | Chassis wall probe | four spheres of 0.18 m | `src/resources/part_runtime.cpp:collide_chassis` |
-| Tyre reference scaling (`8ac2ba9`) | friction / 1.76863, stiffness / 17.6839, sliction / 0.814, each clamped; nominal lateral peak multiplier 1.42 before load/slip factors | `src/physics/tire_model.cpp:tire_forces` |
+| Tyre curve (#383) | peak friction 1.15 × friction / 1.76863; C from sliction (slide/grip ratio); B = stiffness / (C × peak); E -1; lateral relaxation 0.3 m | `src/physics/tire_model.cpp:tire_forces` |
 | Hinged panel step / latch release / tear-off / script spring | 240 Hz / 3.5 m/s local impact speed / 4.5 m/s contact speed or 0.15 m blocked overlap / 60 s⁻² toward 95% open (build 606), damping 2.3 s⁻¹ | `src/resources/part_runtime.cpp:kFlapStep`, `include/slrr/flap_hinge.hpp:FlapTuning` |
 | Prop cell | 64 m | `src/resources/scene_instances.cpp:kPropCellSize` |
 | Shadow maps | 2048² | `src/render/bgfx_lib_backend.hpp:kShadowResolution` |
@@ -1150,7 +1151,7 @@ Each answer names its evidence.
     idempotent request and consumes it at the physics boundary
     (`src/resources/gameref.cpp:gameref_process_collision_requests`).
 13. *Which tyre model drives the car?* `src/physics/tire_model.cpp:tire_forces`,
-    not `sl2_pacejka.cpp`. Revision `8ac2ba9` scales reference curves by script
+    not `sl2_pacejka.cpp`. Since #383 one combined-slip curve shaped by script
     friction, stiffness, sliction, load capacity/smoothing and `frictn_x`;
     `configure_drive` also copies the patch tolerance, but the solver does
     not use that field (`src/resources/part_runtime.cpp:configure_drive`).

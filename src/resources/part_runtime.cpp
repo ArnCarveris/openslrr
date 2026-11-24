@@ -541,8 +541,29 @@ Selection select(Object *child, Object *root, int own, int target,
           if (consider(parent, &mount, &mate))
             return true;
     }
-    for (const auto &entry : p->children)
-      if (visit(visit, entry.second))
+    // Children in the order the parent's CFG declares their slots, then any
+    // other slot by id (#383). `children` is a hash map: walking it as is
+    // gave the first free slot in an arbitrary order, so the stock lists
+    // (front left, front right, rear left, rear right) put a GT III's rear
+    // rims and tyres on its left side and the front ones on its right.
+    std::vector<Object *> ordered;
+    ordered.reserve(p->children.size());
+    for (const auto &mount : p->config->slots)
+      if (const auto it = p->children.find(mount.id); it != p->children.end())
+        ordered.push_back(it->second);
+    if (ordered.size() < p->children.size()) {
+      std::vector<std::pair<int, Object *>> rest;
+      for (const auto &entry : p->children)
+        if (std::find_if(p->config->slots.begin(), p->config->slots.end(),
+                         [&](const auto &slot) { return slot.id == entry.first; }) ==
+            p->config->slots.end())
+          rest.push_back(entry);
+      std::sort(rest.begin(), rest.end(),
+                [](const auto &a, const auto &b) { return a.first < b.first; });
+      for (const auto &entry : rest) ordered.push_back(entry.second);
+    }
+    for (Object *next : ordered)
+      if (visit(visit, next))
         return true;
     return false;
   };
@@ -1281,6 +1302,7 @@ double chassis_steering_angle(const Record& rec) {
 // steer between host ticks without reading the record (#203).
 struct SteeringGeometry {
   float max_steer = 0, ackermann = 0, ackermann_length = 0, help = 0;
+  float speed_sensitivity = .5f;  // analog lock narrowing with speed, 0-1
   std::array<double, 4> factor{}, center_x{};
 };
 SteeringGeometry steering_geometry(const Record& rec) {
@@ -1289,6 +1311,7 @@ SteeringGeometry steering_geometry(const Record& rec) {
   out.ackermann = rec.ackermann;
   out.ackermann_length = rec.config->ackermann_length;
   out.help = rec.steering_help;
+  out.speed_sensitivity = std::clamp(host_input_tuning().steer_speed_sensitivity, 0, 100) / 100.f;
   for (size_t corner = 0; corner < 4; ++corner) {
     const auto& wheel = rec.wheels[corner];
     out.factor[corner] = wheel.steer_set ? wheel.steer
@@ -3101,6 +3124,35 @@ void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
   const float help = in.analog ? 0.f : geometry.help;
   float target = steer;
   const float wheelbase = geometry.ackermann > 0 ? geometry.ackermann : geometry.ackermann_length;
+  // An analog wheel or stick gets the same window, blended by the steering
+  // speed sensitivity option (0: full lock at any speed).
+  const float narrowing = in.analog ? geometry.speed_sensitivity : 1.f;
+  if (narrowing > 0 && wheelbase > 0 && speed > 1) {
+    // Keyboard steering, with or without the game's steering help (#383): a
+    // key is all or nothing, so full lock at speed is a slide. Cap the wheel
+    // angle at what a turn at 1.2 g needs plus 8 degrees of tyre slip, about
+    // the tyre's peak: at 50 km/h 17 degrees, at 72 km/h 12.5, at 144 km/h
+    // 9.1; full lock below about 27 km/h on a 2.65 m wheelbase.
+    constexpr double grip = 1.2 * 9.81, slip_margin = .14;
+    const double limit = std::atan(wheelbase * grip / (speed * speed)) + slip_margin;
+    // The window follows the slide: countersteer may reach the direction the
+    // front axle travels in, plus the same margin. Capped around the body
+    // alone, it stopped near 9 degrees at 72 km/h, and a rear sliding at 20
+    // degrees could not be caught.
+    const auto local_velocity = body.orientation.inverse_rotate(velocity);
+    const auto local_spin = body.orientation.inverse_rotate(body.omega());
+    const physics::Vec3 front_axle{0, 0, -.5 * wheelbase};
+    const auto front = local_velocity + local_spin.cross(front_axle);
+    // Positive steer points towards local -X; forward is local -Z.
+    const double travel =
+        -front.z > 1 ? std::clamp(-std::atan2(front.x, -front.z), -double(max_steer),
+                                  double(max_steer))
+                     : 0.;
+    const double high = std::min(double(max_steer), std::max(0., travel) + limit);
+    const double low = std::min(double(max_steer), std::max(0., -travel) + limit);
+    const double window = std::lerp(double(max_steer), target > 0 ? high : low, double(narrowing));
+    target *= static_cast<float>(window / max_steer);
+  }
   if (help > 0 && wheelbase > 0 && speed > 0) {
     // For keyboard steering, bound the requested curvature as speed rises.
     // A rate limit alone still asks for full lock after a short button hold.
@@ -3113,7 +3165,9 @@ void steering_filter(const SteeringGeometry &geometry, const SteeringInput &in,
   const double normalized_speed = speed / 15;
   const float helped_rate = static_cast<float>(
       std::max(.2, 2. / (1 + normalized_speed * normalized_speed)));
-  const float rate = std::lerp(2.f, helped_rate, unwinding ? 0.f : help);
+  // Keyboard steering turns in more slowly as speed rises and always
+  // returns at 2 rad/s; an analog wheel or stick follows the hand (6 rad/s).
+  const float rate = in.analog ? 6.f : unwinding ? 2.f : helped_rate;
   const float max_delta = static_cast<float>(rate * dt / max_steer);
   steering_input += std::clamp(target - steering_input, -max_delta, max_delta);
 
@@ -6268,7 +6322,11 @@ void pose_steering_wheels() {
         break;
       }
     PartMatrix spin = eye_matrix();
-    const float angle = static_cast<float>(chassis_steering_angle(rec));
+    // A road car's steering ratio (#383): 14 degrees of steering wheel per
+    // degree at the road wheels, about 1.4 turns to lock. The column used to
+    // turn like the road wheels, a few degrees at speed.
+    constexpr double kSteeringRatio = 14;
+    const float angle = static_cast<float>(chassis_steering_angle(rec) * kSteeringRatio);
     const float c = std::cos(angle), s = std::sin(angle);
     spin[0] = c;
     spin[1] = s;

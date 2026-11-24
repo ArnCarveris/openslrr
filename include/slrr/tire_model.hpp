@@ -5,13 +5,14 @@ namespace slrr::physics {
 // The values a tyre script writes through WheelRef (stock Tyre.java), in the
 // units that script uses. Defaults are the stock Baiern 205/55 sport tyre.
 struct TireParameters {
-  // setFriction: compound/width input, divided by the reference tyre's
-  // default and clamped to scale grip; not itself the resulting peak mu.
+  // setFriction: compound/width input. The peak friction is 1.15 times its
+  // ratio to this stock value (#383).
   double friction = 1.76863;
-  // setStiffness: reference-scaled Magic Formula B multiplier (the script
-  // derives it from profile, rim fit and inflation), not an exact slope.
+  // setStiffness: the curve's slope at zero slip per unit load (B C D =
+  // load x stiffness); the script derives it from profile, rim fit and
+  // inflation.
   double stiffness = 17.6839;
-  // setSliction: reference-scaled grip multiplier as combined slip grows.
+  // setSliction: slide/grip ratio, the share of the peak a full slide keeps.
   double sliction = .814;
   // setMaxLoad / setLoadSmooth: reference load and lateral smoothing.
   // Load efficiency decreases above half capacity; zero keeps load linear.
@@ -35,15 +36,15 @@ struct TireTuning {
 };
 TireTuning& tire_tuning();
 
-// Force-ellipse axes with zero-slip grip scaling (N). Static holding can use
-// these bounds without requiring motion; this is not a finite-speed force.
+// Peak force along and across the tyre (N): the curve's D with host grip
+// tuning. Static holding uses these bounds without requiring motion.
 TireForces tire_friction_limits(double load, double alignment,
                                 const TireParameters& tire);
 
-// Reference Magic Formula curves, scaled by the script inputs and host
-// tuning, with progressive load efficiency and a combined friction ellipse.
-// Positive longitudinal pushes along the wheel heading; lateral opposes
-// lateral_speed. alignment scales the load before the curve is evaluated.
+// One Magic Formula curve on the combined slip (#383), shaped by the script
+// inputs and host tuning. Positive longitudinal pushes along the wheel
+// heading; lateral opposes lateral_speed. alignment scales the load before
+// the curve is evaluated.
 TireForces tire_forces(double load, double alignment, double wheel_speed,
                        double road_speed, double lateral_speed,
                        const TireParameters& tire);

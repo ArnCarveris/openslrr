@@ -459,3 +459,103 @@ rolling noise, SCM `skid_SM` colours, the stock skid textures), marks are flat
 quads, so a strip crossing a kerb step floats across it; no tyre smoke; no
 object `material` impact sounds (`material 0 0 0x567 500` on map objects); no
 stereo pan on one-shots; traffic leaves no marks.
+
+## Tyre model (#383)
+
+Cause: the tyre law put the lateral peak near 16 degrees of slip angle and
+kept 99 % of it at 20 degrees; the longitudinal and lateral curves were
+separate, joined by an ellipse; peak friction was about 1.42 sideways and 1.50
+lengthwise for the stock tyre; and `sliction` was divided by the stock value,
+so it did nothing for the stock tyre. The cars could not break loose, slide
+or burn out. The original law (nicolas-found42/sl-remastered, recovered from
+the Steam EXE at 00454500) uses one Magic Formula curve on the combined slip,
+with C from `setSliction`, B from `setStiffness` and E = -1; its stock C
+(0.81) has no peak at all.
+
+Fix (`src/physics/tire_model.cpp`, [driving model](driving-model.md)): one
+combined-slip curve with the original's structure and load smoothing; C set
+from sliction read as the slide/grip ratio its script documents; peak
+friction 1.15 for the stock tyre; a 0.3 m lateral relaxation length in
+`VehicleDynamics`.
+
+Validation (Physics Lab, 1000 Hz, `tyre_curve` and the driving scenarios):
+
+| | Before | After |
+|---|---|---|
+| Lateral peak (3500 N) | 1.314 at 15.8 deg | 1.072 at 8.1 deg |
+| Lateral at 20 deg | 1.309 | 0.988 |
+| Longitudinal peak / locked | 1.493 at 14.4 % / 1.161 | 1.072 at 14 % / 0.913 |
+| Lateral at 6 deg, with 20 % wheelspin | 0.819 | 0.482 |
+| Skidpad | 1.111 g | 0.985 g |
+| 100-0 km/h, locked wheels (no ABS) | 30.8 m | 43.0 m |
+| 0-100 km/h, ASR | 7.64 s | 7.69 s |
+| Burnout, rear wheel speed | 2.4 m/s | 11.8 m/s |
+| Power oversteer at 40 km/h, rear slip angle | 4.8 deg | 24.7 deg |
+
+The suites pass; three `vehicle_dynamics` tests pinned the old curve and were
+restated for the new one, the coasting grip test now opens the clutch (in
+first gear at 72 km/h the engine braking locked the rear wheels and spun the
+car), and the race AI gets 7 s to stop from 166 km/h. Its line error on the
+ROC fell from 12.6 m to 6.6 m (8.4 m on the second lap; the test allows 9 m). In game, the bench drive in Valo City runs as
+before; the handling itself is not judged yet.
+
+Keyboard steering: with the game's steering help at 0 (a career save's
+`player_steeringhelp`), a key turned the wheels to full lock at 2 rad/s at any
+speed, which with a peak near 8 degrees was a slide: "very lively on the
+keyboard". `steering_filter` now shapes digital steering whatever the help:
+the wheel angle is capped at what a 1.2 g turn needs plus 8 degrees of slip,
+about the tyre's peak (17 degrees at 50 km/h, 12.5 at 72, 9.1 at 144, full
+lock below about 27 km/h; first 1 g and 5 degrees, which felt too tight on
+every device), and it turns in at 2 / (1 + (v / 15 m/s)^2) rad/s (0.72 at
+72 km/h), returning at 2 rad/s. The help still adds its curvature bound and
+counter-steer. An analog wheel is unchanged.
+
+The window follows the slide: towards the inside of the turn the cap above
+holds, but countersteer may reach the direction the front axle travels in,
+plus the same margin. Capped around the body alone it stopped near 9 degrees
+at 72 km/h, so a rear sliding at 20 degrees could not be caught; that showed
+on the AWD Focer (its stock tyre's stiffness 22 against the Baiern's 17.7
+puts its peak near 6 degrees). The Focer's script and CFG values are
+consistent: 1475 kg, 47/53 front/rear, 50 % drive per wheel, diff lock 0.2,
+springs 46/42 kN/m, yaw inertia 2350 kg m2.
+
+Steering input on every device: the stock ControlSet smoothing of
+AXIS_TURN_LEFTRIGHT (`ControlSet.java`: power `Config.steeringPower` 1.5,
+rate `Config.steerSpeed` 0.01) gave a half-turned wheel or stick 35 % of the
+lock and lagged about 400 ms. `host_input_update_controller` now reads the
+steering axis directly (a script-forced steer still wins): an analog device
+steers linearly and follows at up to 6 rad/s, a key is shaped by
+`steering_filter` alone. The cockpit steering wheel turned like the road
+wheels, a few degrees at speed; `pose_steering_wheels` now applies a 14:1
+ratio (about 1.4 turns to the 0.65 rad lock every stock car has).
+
+Steering options (Options → Controls → Response): the direct steering axis
+still applies the STEERING GAMMA slider (the ControlSet power) and its STEERING
+DEAD ZONE. The pad's left stick lost its fixed XInput dead zone (7849 of
+32767, 24 %, which felt like a dead zone on the steering) for a 5 % noise
+floor (`kLeftStickFloor`), so the slider's dead zone is the one that counts.
+A new STEERING SPEED SENS. slider (host option 21, `InputTuning`, saved in
+`openslrr_options`) blends an analog device's full lock towards the keyboard
+window as speed rises: 0 keeps full lock, 50 (default) halfway, 100 like the
+keyboard. `SteeringGeometry::speed_sensitivity` carries it to the physics
+thread.
+
+Stock assembly slot order: `Chassis.addStockParts` installs the rims and
+tyres of a list in order (front left, front right, rear left, rear right),
+each with `addPart` on the chassis, and the native install takes the first
+free compatible slot (`Part.addPart` leaves `installCheck` commented out). The
+host's `select` walked a part's children from an `unordered_map`, so that first
+slot came in hash order: a newly assembled Baiern CoupeSport GT III got its
+295 rear rims and tyres on the left side and its 255 front ones on the right.
+`select` now walks children in the order the parent's CFG declares their slots
+(501-504: front left, front right, rear left, rear right), then any other by
+id. Cars already saved keep the tyres they were assembled with. With the
+staggered tyres in place the Lab's GT III (`physics_lab --gt3`) holds 1.25 g on
+the skidpad, stops from 100 km/h in 34 m on locked wheels and keeps 9 degrees
+of rear slip in the power oversteer test; with the left/right swap (`--mixed`)
+its rear slid to 28 degrees.
+
+Limitations: at 120 Hz (`--physics-hz 120`) full-throttle wheelspin in a
+turn runs away and spins the car (stable from 160 Hz; the adaptive rate never
+goes below 250 Hz). The SCM surface friction is not read yet. No
+longitudinal relaxation, camber or aligning torque.

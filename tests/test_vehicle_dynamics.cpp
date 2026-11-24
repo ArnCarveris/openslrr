@@ -163,11 +163,11 @@ SLRR_TEST(tyre_grip_follows_the_tyre_script) {
   // A wider tyre of the same compound grips more; a softer compound too.
   SLRR_REQUIRE(peak_lateral(tyre(245), 3500) > peak_lateral(tyre(195), 3500) * 1.08);
   SLRR_REQUIRE(peak_lateral(tyre(205, 1.687), 3500) > peak_lateral(tyre(205, 1.495), 3500) * 1.08);
-  // Pin a reference-curve sample of the intended 8ac2ba9 model, rather
-  // than asserting the old script-friction / 1.68 peak interpretation.
+  // Pin a sample of the combined-slip curve (#383): stock tyre, 3500 N,
+  // 5.7 degrees of slip angle.
   const auto reference = tire_forces(3500, 1, 20, 20, 2, TireParameters{});
   SLRR_REQUIRE(reference.longitudinal == 0);
-  SLRR_REQUIRE(std::abs(reference.lateral + 4347.597081) < 1e-5);
+  SLRR_REQUIRE(std::abs(reference.lateral + 3886.494694) < 1e-5);
 }
 
 SLRR_TEST(tyre_stiffness_and_sliction_shape_the_curve) {
@@ -179,18 +179,20 @@ SLRR_TEST(tyre_stiffness_and_sliction_shape_the_curve) {
   };
   SLRR_REQUIRE(small(stiff) > small(soft) * 2.5);
   auto capped = stiff, above_cap = stiff;
-  capped.stiffness = TireParameters{}.stiffness * 2.5;
-  above_cap.stiffness = capped.stiffness * 10;
+  capped.stiffness = 60;  // the clamp
+  above_cap.stiffness = 600;
   SLRR_REQUIRE(std::abs(small(capped) - small(above_cap)) < 1e-9);
-  // At saturated slip reference-scaled sliction multiplies grip, not
-  // force divided by the curve's own peak.
+  // sliction is the slide/grip ratio (#383): a low one loses most of the
+  // peak in a full slide, 1 or more keeps it.
   auto low = tyre(205), high = low;
   low.sliction = .4;
   high.sliction = 1.2;
   const auto sliding = [](const TireParameters& t) {
-    return std::abs(tire_forces(3000, 1, 20, 20, 50, t).lateral);
+    return std::abs(tire_forces(3000, 1, 20, 20, 20 * std::tan(1.4), t).lateral);
   };
-  SLRR_REQUIRE(std::abs(sliding(low) / sliding(high) - 1. / 3) < 1e-9);
+  SLRR_REQUIRE(sliding(low) < sliding(high) * .6);
+  SLRR_REQUIRE(sliding(high) > peak_lateral(high, 3000) * .97);
+  SLRR_REQUIRE(sliding(low) < peak_lateral(low, 3000) * .6);
 }
 
 SLRR_TEST(tyre_load_capacity_has_progressive_efficiency) {
@@ -256,7 +258,11 @@ SLRR_TEST(more_grip_corners_harder) {
     car.run(1, 0, 0, 0);
     car.dynamics.body.velocity = car.dynamics.body.orientation.rotate({0, 0, -20});
     for (auto& wheel : car.dynamics.state) wheel.spin = 20 / .31;
-    car.run(3, .4, 0, .2);
+    // Coasting, clutch open: launched at 72 km/h, the box would pick first and
+    // the engine braking would lock the rear wheels, which with the combined
+    // slip tyre (#383) spins the car instead of measuring its grip.
+    car.dynamics.drive.engaged = false;
+    car.run(2, 0, 0, .1);
     const auto omega = car.dynamics.body.omega();
     lateral[i] = std::abs(omega.y) * car.speed();
   }

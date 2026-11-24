@@ -84,6 +84,8 @@ void register_script_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           case 18: return Value::make_int(graphics.headlight_shadows);
           case 19: return Value::make_int(graphics.street_lamps);
           case 20: return Value::make_int(graphics.shadowed_lamps);
+          // Controls (#383).
+          case 21: return Value::make_int(host_input_tuning().steer_speed_sensitivity);
           default: return Value::make_int(0);
         }
       });
@@ -119,6 +121,7 @@ void register_script_natives(Jvm& jvm, RpkIndex& rpk, SectionMachine& sections) 
           case 18: graphics.headlight_shadows = value != 0; break;
           case 19: graphics.street_lamps = value != 0; break;
           case 20: graphics.shadowed_lamps = std::clamp(value, 0, 6); break;
+          case 21: host_input_tuning().steer_speed_sensitivity = std::clamp(value, 0, 100); break;
           default: return Value::make_void();
         }
         host_save_graphics_options();

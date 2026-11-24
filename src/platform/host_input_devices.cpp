@@ -164,8 +164,13 @@ void HostInputDevices::poll(bool focused) {
     return std::clamp((SDL_GetGamepadAxis(gamepad, axis) / 32767.f - 30.f / 255.f) /
                       (1.f - 30.f / 255.f), 0.f, 1.f);
   };
-  // Preserve the old split-positive channels, deadzones and SDL's inverted Y.
-  pad_ = {stick(-lx, 7849), stick(lx, 7849), stick(-ly, 7849), stick(ly, 7849),
+  // Preserve the old split-positive channels and SDL's inverted Y. The left
+  // stick steers: its dead zone is only a noise floor (5 %), and the
+  // control set's STEERING DEAD ZONE adds the player's own. The XInput
+  // default (7849, 24 %) cut a quarter of the stick (#383).
+  constexpr int kLeftStickFloor = 1600;
+  pad_ = {stick(-lx, kLeftStickFloor), stick(lx, kLeftStickFloor),
+          stick(-ly, kLeftStickFloor), stick(ly, kLeftStickFloor),
           stick(-rx, 8689), stick(rx, 8689), stick(-ry, 8689), stick(ry, 8689),
           trigger(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), trigger(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)};
   constexpr SDL_GamepadButton buttons[] = {

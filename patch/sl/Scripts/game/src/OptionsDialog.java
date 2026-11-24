@@ -48,6 +48,8 @@ public class OptionsDialog extends Dialog
 	final static int CMD_HEADLIGHT_SHADOWS = 522;
 	final static int CMD_STREET_LAMPS = 523;
 	final static int CMD_SHADOWED_LAMPS = 524;
+	// Controls (#383): host option 21.
+	final static int CMD_STEER_SPEED = 525;
 	final static int RENDERER_FRAMERATE_MODE = 5;
 	public static native int getRendererOption(int option);
 	public static native void setRendererOption(int option, int value);
@@ -1075,6 +1077,7 @@ public class OptionsDialog extends Dialog
 		else if (command == CMD_SHADOW_QUALITY) { setRendererOption(9, osd.multiValue); customPreset(); }
 		else if (command == CMD_SHADOW_SMOOTHING) { setRendererOption(10, osd.multiValue); customPreset(); }
 		else if (command == CMD_AO_STRENGTH) setRendererOption(11, osd.sliderValue);
+		else if (command == CMD_STEER_SPEED) setRendererOption(21, osd.sliderValue);
 		else if (command == CMD_AO_RADIUS) setRendererOption(12, osd.sliderValue);
 		else
 		if (command == CMD_ANISOTROPIC)

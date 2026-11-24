@@ -151,6 +151,9 @@ struct WheelState {
   Quaternion hub_rotation;
   double spin = 0, rotation = 0;
   double slip_speed = 0, lateral_speed = 0;
+  // Relaxed tan(slip angle): the tyre's lateral deflection builds over its
+  // relaxation length instead of following the slip at once (#383).
+  double slip_angle = 0;
   // Unspent brake/bearing budget at the patch (N s), not free tyre grip.
   double holding_impulse = 0;
   TireForces tire_force{};

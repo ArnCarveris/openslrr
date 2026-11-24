@@ -942,6 +942,9 @@ void solve_anti_roll(RigidBody& body, const std::array<WheelConfig, 4>& wheels,
 }
 
 constexpr double rpm_per_rad = 9.54929658551372;
+// Distance the tyre rolls for its lateral force to build (about a wheel
+// radius for a road tyre; a typical value, #383).
+constexpr double kLateralRelaxation = .3;
 constexpr double wheel_inertia = 1.6;
 
 Vec3 wheel_forward(const RigidBody &body, double steer, Quaternion hub = {}) {
@@ -1229,9 +1232,16 @@ void VehicleDynamics::step_drive() {
 
     if (!s.contact || s.force <= 0) {
       s.spin *= 1 - .25 * dt_ / wheel_inertia;
+      s.slip_angle = 0;
     } else {
       s.slip_speed = s.spin * wheel.radius - road;
       s.lateral_speed = lateral;
+      // Relaxation length, integrated implicitly: the deflection follows
+      // lateral / speed with a lag of relaxation / speed (12 ms at 90 km/h).
+      const double reference = std::max(1.5, std::abs(road));
+      s.slip_angle = (kLateralRelaxation * s.slip_angle + lateral * dt_) /
+                     (kLateralRelaxation + reference * dt_);
+      const double relaxed_lateral = s.slip_angle * reference;
       const double tilt =
           body.orientation.rotate(s.hub_rotation.rotate({0, -1, 0}))
               .dot(s.normal);
@@ -1243,7 +1253,8 @@ void VehicleDynamics::step_drive() {
         const double factor = slip > 1e-9 ? .4 * s.force / slip : 0;
         force = {s.slip_speed * factor, -lateral * factor};
       } else {
-        force = tire_forces(s.force, alignment, s.spin * wheel.radius, road, lateral, cfg.tyre);
+        force = tire_forces(s.force, alignment, s.spin * wheel.radius, road, relaxed_lateral,
+                            cfg.tyre);
       }
 
       const Vec3 arm = s.patch - body.position;

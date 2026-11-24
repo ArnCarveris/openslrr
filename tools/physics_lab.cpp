@@ -37,6 +37,11 @@ TireParameters sport_tyre(double width) {
 // WheelRef receives it from Spring.java / ShockAbsorber.java (11 cm of travel,
 // about 7 cm of it in bump from static).
 bool sport_suspension = false;
+// --gt3: the Baiern CoupeSport GT III as the game assembles it (1167 kg, race
+// tyres mu 2.27/2.11 with stiffness 40, 122 kN/m springs with about 2.5 cm of
+// travel each way, rear drive). --mixed keeps the left/right tyre swap the
+// game's assembly produced.
+bool gt3 = false, gt3_mixed = false;
 
 struct Car {
   VehicleDynamics dynamics;
@@ -57,6 +62,20 @@ struct Car {
       w.bump_damping = w.rebound_damping = 1500;
       w.unsprung = 25;
       w.half_width = .1025;  // 205 mm tyre
+      if (gt3) {
+        // 295 rear tyres where the game put them: left side when --mixed.
+        const bool wide = gt3_mixed ? i % 2 == 0 : i >= 2;
+        w.radius = wide ? .300 : .305;
+        w.half_width = wide ? .147 : .127;
+        w.anchor = .39;
+        w.center.y = .131 + (i < 2 ? .02 : -.02);
+        w.rest = i < 2 ? .187 : .214;
+        w.minimum = i < 2 ? .140 : .165;
+        w.maximum = i < 2 ? .191 : .216;
+        w.spring = 122625;
+        w.bump_damping = w.rebound_damping = i < 2 ? 6100 : 5700;
+        w.unsprung = 10;
+      }
       if (sport_suspension) {
         w.anchor = .39;
         w.center.y = .131;  // hub at .30 m with the static length (about .22 m)
@@ -77,6 +96,22 @@ struct Car {
       d.brake = 2000;
       d.handbrake = i < 2 ? 0 : 2000;
       d.tyre = sport_tyre(205);
+      if (gt3) {
+        const bool wide = gt3_mixed ? i % 2 == 0 : i >= 2;
+        d.tyre.friction = wide ? 2.272 : 2.113;
+        d.tyre.stiffness = 40;
+        d.tyre.sliction = .836;
+        d.tyre.maximum_load = wide ? 12413 : 10437;
+        d.tyre.load_smoothing = .4;
+      }
+    }
+    if (gt3) {
+      dynamics.body.configure(1167, {-.87, .15, -2.1}, {.87, 1.3, 2.1}, {0, .42, .07},
+                              {1788, 1969, 313});
+      Matrix f{};
+      f[0] = f[5] = f[10] = f[15] = 1;
+      f[13] = .05f;
+      dynamics.body.set_frame(f);
     }
     auto& drive = dynamics.drive;
     drive.gears = 5;
@@ -88,6 +123,7 @@ struct Car {
     drive.brake_scale = drive.handbrake_scale = 1;
     drive.engaged = drive.automatic_shift = drive.auto_clutch = true;
     drive.torque = [](double rpm) { return std::clamp(150 + rpm * .02, 0., 235.); };
+    if (gt3) drive.torque = [](double rpm) { return rpm < 1000 ? 200 : 375.; };
     dynamics.engine_running = true;
     dynamics.engine_omega = 800 / 9.549;
     Matrix frame{};
@@ -366,6 +402,73 @@ std::string curb_fast(const std::string& csv) { return kerb_case("curb_fast", cs
 std::string curb_angle(const std::string& csv) { return kerb_case("curb_angle", csv, 20, 20); }
 std::string curb_side(const std::string& csv) { return kerb_case("curb_side", csv, 20, 8); }
 
+// The steady-state tyre curves of the Lab tyre at 3500 N and 20 m/s: peak
+// lateral friction and its slip angle, what is left at 20 degrees, peak
+// longitudinal friction and its slip ratio, a locked wheel, and the lateral
+// friction left at 6 degrees with 20 % wheelspin (combined slip).
+std::string tyre_curve(const std::string& csv) {
+  const auto tyre = sport_tyre(205);
+  constexpr double load = 3500, road = 20, pi = 3.141592653589793;
+  const auto lateral_mu = [&](double degrees, double kappa) {
+    const double lateral = road * std::tan(degrees * pi / 180);
+    return std::abs(tire_forces(load, 1, road * (1 + kappa), road, lateral, tyre).lateral) / load;
+  };
+  const auto longitudinal_mu = [&](double kappa) {
+    return std::abs(tire_forces(load, 1, road * (1 + kappa), road, 0, tyre).longitudinal) / load;
+  };
+  double peak_y = 0, peak_alpha = 0, peak_x = 0, peak_kappa = 0;
+  FILE* f = nullptr;
+  if (!csv.empty()) {
+    std::filesystem::create_directories(csv);
+    f = std::fopen((csv + "/tyre_curve.csv").c_str(), "w");
+    if (f) std::fprintf(f, "slip_angle_deg,mu_y,slip_ratio,mu_x%c", 10);
+  }
+  for (int i = 0; i <= 600; ++i) {
+    const double alpha = i * .05, kappa = -i * .002;  // braking side
+    const double y = lateral_mu(alpha, 0), x = longitudinal_mu(kappa);
+    if (y > peak_y) { peak_y = y; peak_alpha = alpha; }
+    if (x > peak_x) { peak_x = x; peak_kappa = -kappa; }
+    if (f && i % 5 == 0) std::fprintf(f, "%.2f,%.4f,%.3f,%.4f%c", alpha, y, -kappa, x, 10);
+  }
+  if (f) std::fclose(f);
+  char out[240];
+  std::snprintf(out, sizeof out,
+                "lat peak %.3f at %.1f deg, at 20 deg %.3f | long peak %.3f at %.1f %%, locked %.3f | "
+                "lat at 6 deg: %.3f, with 20 %% spin %.3f",
+                peak_y, peak_alpha, lateral_mu(20, 0), peak_x, peak_kappa * 100,
+                longitudinal_mu(-1), lateral_mu(6, 0), lateral_mu(6, .2));
+  return out;
+}
+
+// Power oversteer: a steady 40 km/h turn, then full throttle for 2 s with
+// the same steering. Reports the largest rear slip angle and yaw rate, and
+// whether the car spun (rear slip angle past 45 degrees).
+std::string power_oversteer(const std::string& csv) {
+  Run run("power_oversteer");
+  SpeedHold control{40 / kKph};
+  const double steer = .12;
+  while (run.t < 10) run.step(control(run.speed(), steer));
+  const double t0 = run.t, yaw0 = std::abs(run.samples.back().yaw);
+  double rear = 0, yaw = 0;
+  while (run.t < t0 + 2) {
+    Inputs in;
+    in.throttle = 1;
+    in.steer = steer;
+    run.step(in);
+    const auto& d = run.car.dynamics;
+    const Vec3 v = d.body.point_velocity(d.state[2].patch);
+    const Vec3 fwd = d.body.orientation.rotate({0, 0, -1});
+    const Vec3 right = d.body.orientation.rotate({1, 0, 0});
+    rear = std::max(rear, std::abs(std::atan2(v.dot(right), std::abs(v.dot(fwd)))) * 57.29578);
+    yaw = std::max(yaw, std::abs(run.samples.back().yaw));
+  }
+  run.write_csv(csv, VehicleDynamics::frequency);
+  char out[200];
+  std::snprintf(out, sizeof out, "rear slip angle max %.1f deg, yaw %.2f -> %.2f rad/s%s", rear,
+                yaw0, yaw, rear > 45 ? " (spun)" : "");
+  return out;
+}
+
 std::string burnout(const std::string& csv) {
   Run run("burnout");
   double spin = 0, moved = 0;
@@ -403,6 +506,10 @@ int main(int argc, char** argv) {
       only = argv[++i];
     } else if (!std::strcmp(argv[i], "--asr") && i + 1 < argc) {
       launch_help = std::atof(argv[++i]);
+    } else if (!std::strcmp(argv[i], "--gt3")) {
+      gt3 = true;
+    } else if (!std::strcmp(argv[i], "--mixed")) {
+      gt3_mixed = true;
     } else if (!std::strcmp(argv[i], "--sport")) {
       sport_suspension = true;
     } else if (!std::strcmp(argv[i], "--csv") && i + 1 < argc) {
@@ -416,7 +523,9 @@ int main(int argc, char** argv) {
   const Scenario scenarios[] = {{"launch", launch}, {"brake", brake}, {"skidpad", skidpad},
                                 {"step_steer", step_steer}, {"burnout", burnout},
                                 {"curb", curb}, {"curb_fast", curb_fast},
-                                {"curb_angle", curb_angle}, {"curb_side", curb_side}};
+                                {"curb_angle", curb_angle}, {"curb_side", curb_side},
+                                {"tyre_curve", tyre_curve},
+                                {"power_oversteer", power_oversteer}};
   for (const auto& s : scenarios) {
     if (only != "all" && only != s.name) continue;
     for (unsigned hz : rates) {
