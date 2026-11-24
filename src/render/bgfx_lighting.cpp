@@ -235,7 +235,7 @@ void LibBgfxBackend::draw_sun_flare(const float* view, const float* projection, 
 // src/render/vehicle-flare.ts documents mode-2's glow tile and cm camera offset.
 void LibBgfxBackend::draw_nitro_flares(const float* view, const float* projection,
                                       uint16_t view_id) {
-  if (!render_debug().car_lights || !(projection[5] > 0.f)) return;
+  if (!render_debug().car_lights || !host_enhanced_graphics().car_lights || !(projection[5] > 0.f)) return;
   const auto lights = car_lights_override_ ? *car_lights_override_ : part_car_lights();
   float camera[16], combined[16], inverse[16], identity[16];
   bx::mtxInverse(camera, view);
@@ -580,7 +580,7 @@ bool LibBgfxBackend::bind_point_light(bool enabled) {
       set_uniform(u_sun_amb_, amb);
     }
     const float fog_color[4] = {fog_color_[0], fog_color_[1], fog_color_[2],
-                                fog_enabled_ && render_debug().fog ? 1.f : 0.f};
+                                fog_enabled_ && render_debug().fog && host_enhanced_graphics().fog ? 1.f : 0.f};
     const float fog_range[4] = {fog_near_, fog_far_, 0.f, 0.f};
     const float fog_eye[4] = {fog_eye_[0], fog_eye_[1], fog_eye_[2], 0.f};
     if (bgfx::isValid(u_fog_color_)) set_uniform(u_fog_color_, fog_color);

@@ -15,6 +15,16 @@ struct EnhancedGraphics {
   bool volumetric_clouds = true;
   bool dynamic_lighting = true;
   bool local_lights = true;
+  // Advanced video options (#377). The F12 debug switches still turn each
+  // feature off on top of these.
+  bool vsync = true;
+  int view_distance = 3000;      // metres of exterior scenery, 500-3000
+  int prop_detail = 2;           // map prop LOD: 0 low, 1 medium, 2 high, 3 ultra
+  bool fog = true;
+  bool car_lights = true;        // headlight beams and brake lights
+  bool headlight_shadows = true;
+  bool street_lamps = true;      // street lamps light the scene at night
+  int shadowed_lamps = 6;        // street lamps with a shadow tile, 0-6
   bool operator==(const EnhancedGraphics&) const = default;
 };
 EnhancedGraphics& host_enhanced_graphics();

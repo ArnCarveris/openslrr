@@ -4,11 +4,15 @@
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_joystick.h>
+#include <SDL3/SDL_properties.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <fstream>
 #include <iterator>
+#include <sstream>
 #include <utility>
 
 namespace slrr {
@@ -131,8 +135,14 @@ void HostInputDevices::poll(bool focused) {
     }
     if (!focused) continue;
     int channel = 0;
-    for (int i = 0; i < device.axes; ++i)
-      device.values[channel++] = normalized(SDL_GetJoystickAxis(device.joystick, i));
+    for (int i = 0; i < device.axes; ++i) {
+      const float raw = normalized(SDL_GetJoystickAxis(device.joystick, i));
+      if (device.calibrating) {
+        device.seen_lo[i] = std::min(device.seen_lo[i], raw);
+        device.seen_hi[i] = std::max(device.seen_hi[i], raw);
+      }
+      device.values[channel++] = calibrated(device, i, raw);
+    }
     for (int i = 0; i < device.buttons; ++i)
       device.values[channel++] = SDL_GetJoystickButton(device.joystick, i) ? 1.f : 0.f;
     for (int i = 0; i < device.hats; ++i) {
@@ -231,6 +241,148 @@ bool HostInputDevices::available(int slot, int axis) const {
   if (!d || !d->joystick || axis >= static_cast<int>(d->values.size())) return false;
   if (axis >= d->axes) return true;
   return SDL_GetJoystickAxisInitialState(d->joystick, axis, nullptr);
+}
+
+void HostInputDevices::refresh() {
+  if (!initialized_) return;
+  SDL_UpdateJoysticks();
+  poll(focused_);
+}
+
+float HostInputDevices::calibrated(const Device& device, int axis, float raw) const {
+  if (device.calibrating) return raw;
+  const auto dev = calibration_.find(device.name);
+  if (dev == calibration_.end()) return raw;
+  const auto range = dev->second.find(axis);
+  if (range == dev->second.end() || range->second.hi - range->second.lo < .05f) return raw;
+  return std::clamp((raw - range->second.lo) / (range->second.hi - range->second.lo) * 2.f - 1.f,
+                    -1.f, 1.f);
+}
+
+HostInputDevices::Info HostInputDevices::info(int index) const {
+  Info out;
+  if (index < 0 || index >= count()) return out;
+  const Device& d = devices_[static_cast<size_t>(index)];
+  out.name = d.name;
+  // The bracketed hash only tells identical products apart.
+  if (const auto cut = out.name.find(" ["); cut != std::string::npos) out.name.resize(cut);
+  out.axes = d.axes;
+  out.buttons = d.buttons;
+  out.hats = d.hats;
+  out.calibrating = d.calibrating;
+  out.calibrated = calibration_.count(d.name) != 0;
+  out.connected = d.joystick != nullptr;
+  if (!d.joystick) return out;
+  switch (SDL_GetJoystickType(d.joystick)) {
+    case SDL_JOYSTICK_TYPE_GAMEPAD: out.type = "GAMEPAD"; break;
+    case SDL_JOYSTICK_TYPE_WHEEL: out.type = "WHEEL"; break;
+    case SDL_JOYSTICK_TYPE_ARCADE_STICK: out.type = "ARCADE STICK"; break;
+    case SDL_JOYSTICK_TYPE_FLIGHT_STICK: out.type = "FLIGHT STICK"; break;
+    case SDL_JOYSTICK_TYPE_DANCE_PAD: out.type = "DANCE PAD"; break;
+    case SDL_JOYSTICK_TYPE_GUITAR: out.type = "GUITAR"; break;
+    case SDL_JOYSTICK_TYPE_DRUM_KIT: out.type = "DRUM KIT"; break;
+    case SDL_JOYSTICK_TYPE_ARCADE_PAD: out.type = "ARCADE PAD"; break;
+    case SDL_JOYSTICK_TYPE_THROTTLE: out.type = "THROTTLE"; break;
+    default: out.type = "JOYSTICK"; break;
+  }
+  if (d.gamepad) {
+    switch (SDL_GetGamepadType(d.gamepad)) {
+      case SDL_GAMEPAD_TYPE_XBOX360: out.type = "XBOX 360 PAD"; break;
+      case SDL_GAMEPAD_TYPE_XBOXONE: out.type = "XBOX PAD"; break;
+      case SDL_GAMEPAD_TYPE_PS3: out.type = "PS3 PAD"; break;
+      case SDL_GAMEPAD_TYPE_PS4: out.type = "PS4 PAD"; break;
+      case SDL_GAMEPAD_TYPE_PS5: out.type = "PS5 PAD"; break;
+      case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: out.type = "SWITCH PRO PAD"; break;
+      default: break;
+    }
+  }
+  int percent = -1;
+  switch (SDL_GetJoystickPowerInfo(d.joystick, &percent)) {
+    case SDL_POWERSTATE_ON_BATTERY: out.power = "BATTERY"; break;
+    case SDL_POWERSTATE_CHARGING: out.power = "CHARGING"; break;
+    case SDL_POWERSTATE_CHARGED: out.power = "CHARGED"; break;
+    case SDL_POWERSTATE_NO_BATTERY: out.power = "WIRED"; break;
+    default: break;
+  }
+  out.battery = percent;
+  out.rumble = SDL_GetBooleanProperty(SDL_GetJoystickProperties(d.joystick),
+                                      SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN, false);
+  return out;
+}
+
+float HostInputDevices::activity(int index) const {
+  if (index < 0 || index >= count()) return 0.f;
+  const Device& d = devices_[static_cast<size_t>(index)];
+  float strongest = 0.f;
+  for (int i = 0; i < static_cast<int>(d.values.size()); ++i) {
+    const float v = i < d.axes ? std::abs(d.values[i] - calibrated(d, i, d.rest[i])) * .5f
+                               : d.values[i];
+    strongest = std::max(strongest, v);
+  }
+  return std::clamp(strongest, 0.f, 1.f);
+}
+
+bool HostInputDevices::rumble(int index, float strength, int milliseconds) {
+  if (index < 0 || index >= count() || !devices_[static_cast<size_t>(index)].joystick) return false;
+  const auto level = static_cast<Uint16>(std::clamp(strength, 0.f, 1.f) * 65535.f);
+  return SDL_RumbleJoystick(devices_[static_cast<size_t>(index)].joystick, level, level,
+                            static_cast<Uint32>(std::clamp(milliseconds, 0, 5000)));
+}
+
+void HostInputDevices::set_calibration_file(std::string path) {
+  calibration_file_ = std::move(path);
+  calibration_.clear();
+  std::ifstream in(calibration_file_);
+  // One axis per line: device name, tab, axis, minimum, maximum.
+  for (std::string line; std::getline(in, line);) {
+    const auto tab = line.rfind('\t');
+    if (tab == std::string::npos) continue;
+    std::istringstream fields(line.substr(tab + 1));
+    int axis = -1;
+    Range range;
+    if (fields >> axis >> range.lo >> range.hi && axis >= 0 && range.hi > range.lo)
+      calibration_[line.substr(0, tab)][axis] = range;
+  }
+}
+
+void HostInputDevices::save_calibration() const {
+  if (calibration_file_.empty()) return;
+  std::ofstream out(calibration_file_, std::ios::trunc);
+  for (const auto& [name, axes] : calibration_)
+    for (const auto& [axis, range] : axes)
+      out << name << '\t' << axis << ' ' << range.lo << ' ' << range.hi << '\n';
+  if (!out) std::fprintf(stderr, "[input] could not save %s\n", calibration_file_.c_str());
+}
+
+void HostInputDevices::calibrate_begin(int index) {
+  if (index < 0 || index >= count()) return;
+  Device& d = devices_[static_cast<size_t>(index)];
+  d.calibrating = true;
+  d.seen_lo.assign(static_cast<size_t>(d.axes), 1.f);
+  d.seen_hi.assign(static_cast<size_t>(d.axes), -1.f);
+}
+
+bool HostInputDevices::calibrate_end(int index) {
+  if (index < 0 || index >= count()) return false;
+  Device& d = devices_[static_cast<size_t>(index)];
+  if (!d.calibrating) return false;
+  d.calibrating = false;
+  std::map<int, Range> axes;
+  // An axis that never moved keeps the full range.
+  for (int i = 0; i < d.axes; ++i)
+    if (d.seen_hi[i] - d.seen_lo[i] >= .2f) axes[i] = Range{d.seen_lo[i], d.seen_hi[i]};
+  if (axes.empty()) return false;
+  calibration_[d.name] = std::move(axes);
+  save_calibration();
+  return true;
+}
+
+void HostInputDevices::calibrate_reset(int index) {
+  if (index < 0 || index >= count()) return;
+  Device& d = devices_[static_cast<size_t>(index)];
+  d.calibrating = false;
+  calibration_.erase(d.name);
+  save_calibration();
 }
 
 HostInputDevices& host_input_devices() {

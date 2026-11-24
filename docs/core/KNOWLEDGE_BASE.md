@@ -276,7 +276,9 @@ flare, FMV, OSD and HUD, previews, ImGui, `bgfx::frame`.
   native or empty method it looks up a host leaf with `native_has_alias`.
   A registered host leaf also overrides a Java body (`src/jvm/jvm.cpp:invoke`).
 - `invoke_by_name` scores overloads by live argument tags and redirects some
-  OSD builder names to `java.render.Osd` (`src/jvm/jvm.cpp:invoke_by_name`).
+  OSD builder names to the class of the dialog's Osd (`java.render.Osd`, or
+  `java.render.osdx.Osd`) (`src/jvm/jvm.cpp:invoke_by_name`). OSD v2 and the
+  osdx package: [ui/osd-v2.md](../ui/osd-v2.md).
 - An unbound native is **not** fatal outside Init. A script call logs
   `[jvm] native/empty TREE without host binding …` to stderr and returns
   void; a non-native empty method returns a default value. Only while Init

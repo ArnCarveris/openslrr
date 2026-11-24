@@ -855,7 +855,7 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
     std::unordered_map<int32_t, std::array<std::vector<IconDraw>, 3>> icon_passes;
     // Classify once per frame. Keep registry order within each layer/pass.
     for (const auto& w : widgets) {
-      if (w.hidden || w.dead) continue;
+      if (w.hidden || w.dead || w.plain) continue;
       const uint32_t local = w.icon_id & 0xFFFFu;
       // frontend:0x00AF is Empty.ptx. A disabled pager keeps that texture
       // and shows frontend:0x013C only while Gadget.focus is on it.
@@ -894,7 +894,8 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
       // and has to cover the car, so it stays with the buttons. The parts
       // strip is the exception: the slot cameras draw into it.
       for (const OsdWidget& w : widgets) {
-        if (w.layer != layer || w.hidden || w.dead || w.disabled || !w.background)
+        if (w.layer != layer || w.hidden || w.dead || w.disabled || !w.background ||
+            w.plain)
           continue;
         if (w.icon_path.empty()) continue;  // RRT_NONE — no mesh (Osd.java)
         if ((opening_retired_ || movie || other_plate) &&
@@ -912,6 +913,35 @@ void LibBgfxBackend::draw_vehicle_hud(const VehicleHudState& hud) {
         draw_osd_quad(w);
       }
       osd_view_ = kOsdView;
+      // OSD v2 (docs/ui/osd-v2.md): an attached Osd's rectangles draw as
+      // written, back to front by their matrix z (Osd priority), each with
+      // its OsdHost.tint. Empty.ptx with a tint is a solid colour quad.
+      {
+        std::vector<const OsdWidget*> plain;
+        for (const OsdWidget& w : widgets)
+          if (w.plain && w.layer == layer && !w.hidden && !w.dead && !w.hit_only)
+            plain.push_back(&w);
+        std::stable_sort(plain.begin(), plain.end(),
+                         [](const OsdWidget* a, const OsdWidget* b) { return a->z < b->z; });
+        for (const OsdWidget* w : plain) {
+          OsdWidget quad = *w;
+          std::string low = quad.icon_path;
+          for (char& c : low)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          const bool blank = (quad.icon_id & 0xFFFFu) == 0x00AFu ||
+                             low.find("empty.ptx") != std::string::npos;
+          if (blank) {
+            if (quad.tint == 0xFFFFFFFFu) continue;
+            quad.icon_path.clear();
+          } else if (quad.icon_path.empty()) {
+            continue;
+          }
+          const float a = float(quad.tint >> 24) / 255.f * quad.fade;
+          draw_osd_quad(quad, float((quad.tint >> 16) & 255) / 255.f * a,
+                        float((quad.tint >> 8) & 255) / 255.f * a,
+                        float(quad.tint & 255) / 255.f * a, a);
+        }
+      }
       if (const OsdWidget* hw = osd_hover_widget()) {
         // Text buttons hover the label, same as the main menu. The hl
         // texture stays on icon buttons. Sliders retain their own track/knob.

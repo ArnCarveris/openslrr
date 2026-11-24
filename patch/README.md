@@ -1,8 +1,8 @@
 # OpenSLRR Enhanced
 
-Copy the `sl`, `system`, `parts` and `cars` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class`, the `parts` classes (the base `Swaybar.class`, the three port-flow classes and `AirFuelDeliverySystem.class`), 24 racer classes and 17 racer chassis CFGs (`_main_*.cfg`). `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`); they replace nothing. Install the three `parts` port-flow classes together: the block classes call the updated CylinderHead helper. `AirFuelDeliverySystem.class` adds fuel heat. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
+Copy the `sl`, `system`, `parts` and `cars` folders from this patch into the game root and accept the replacement of `OptionsDialog.class`, `Garage.class`, `Catalog.class`, the `parts` classes (the base `Swaybar.class`, the three port-flow classes and `AirFuelDeliverySystem.class`), 24 racer classes and 17 racer chassis CFGs (`_main_*.cfg`). `system` adds four new classes in `system/Scripts/render` (`LightSource`, `PointLight`, `SpotLight`, `RectLight`) and the `system/Scripts/render/osdx` package (the CRC 2005 OSD ported to SLRR, with its `dialog` folder); they replace nothing. `sl/Scripts/game` also adds `OsdxOptions.class`, and `system/Scripts/io` adds `InputDevices.class` (the SDL3 controller list for the Devices tab). Install the three `parts` port-flow classes together: the block classes call the updated CylinderHead helper. `AirFuelDeliverySystem.class` adds fuel heat. The Java sources are shipped next to their compiled classes, under `src/`. Use the Enhanced v3 Release.
 
-The **Video Options** menu applies the resolution and the Enhanced settings in game. Exterior scenery range is 3 km. The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
+**Options** (main menu and in-game menu) opens a full-screen screen built on `java.render.osdx` ([docs/ui/osd-v2.md](../docs/ui/osd-v2.md)): Video, Graphics, Sound, Controls (live axis meters, gamma, dead zones, force feedback), Devices (connected controllers, battery, rumble test, axis calibration) and Game tabs, an info panel that explains the setting under the pointer, and a notification when a preset is applied. Key redefinition, axes and the control files open the classic pages. The classic pages below are still in `OptionsDialog`. The **Video Options** menu applies the resolution and the Enhanced settings in game. A **Preset** choice (Low, Medium, High, Ultra) sets them all at once; changing one setting afterwards shows Custom. **Advanced** opens a second page: VSync, prop detail, fog, car lights, headlight shadows, street lamps, view distance (500–3,000 m, 3 km by default) and the number of street lamps that cast shadows. **Advanced Game Options** has the pedestrian density slider again (0.5–1.5; an old saved value below 0.5 returns to 1.5). The scenery shadow map and the vehicle shadow map each use a resolution of 2048 × 2048. **Ctrl+F12 → Renderer** also sets how many reflection faces are computed per frame.
 
 ## Anti-roll bars (#300)
 
@@ -58,6 +58,14 @@ bars when it is newly assembled (dealer, used cars, opponents):
 | 10 | Shadow smoothing | 0 sharp, 1 soft (default), 2 very soft |
 | 11 | AO strength | 0–200 percent (default 100) |
 | 12 | AO radius | 25–300 centimetres (default 100) |
+| 13 | VSync | 0 off, non-zero on (default on) |
+| 14 | View distance | 500–3,000 metres (default 3,000) |
+| 15 | Prop detail | 0 low, 1 medium, 2 high (default), 3 ultra |
+| 16 | Fog | 0 off, non-zero on (default on) |
+| 17 | Car lights | 0 off, non-zero on (default on): headlight beams and brake lights |
+| 18 | Headlight shadows | 0 off, non-zero on (default on) |
+| 19 | Street lamps | 0 off, non-zero on (default on) |
+| 20 | Shadowed street lamps | 0–6 (default 6) |
 
 The menu and ImGui share all of these options. They are saved in `save/game/openslrr_options` and persist across launches. Local lights (4) are independent of scenery sunlight (3): turning sunlight off keeps the garage lamps and their shadows. Resolution, the global shadow toggle, and flares use the game's existing configuration.
 

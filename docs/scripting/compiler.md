@@ -114,6 +114,28 @@ units, and 1/1 Garage unit producing three classes (94,397 bytes with the three 
 `W_UNVERIFIED` warnings for constructs already in the MWM source (a final
 static method, an empty `else ;`).
 
+### OSD v2 classes (osdx and the Options screen)
+
+`patch/system/Scripts/render/osdx` (the CRC 2005 OSD, see
+[ui/osd-v2.md](../ui/osd-v2.md)) compiles before the game classes that use
+it: copy the folder into the compile root, run
+`compile_game_sources.exe <root> system/Scripts/render/osdx`, then
+`compile_game_sources.exe <root> sl/Scripts/game` with `OptionsDialog.java`
+and `OsdxOptions.java` in `sl/Scripts/game/src`. Results: 49 osdx classes
+(37 + 12 dialogs) and the game classes, with `W_UNVERIFIED` warnings only.
+
+The class index takes the first class file of a name in directory order, so
+remove backup folders (for example `_openslrr_backup_235/`) from the compile
+root: an old `OptionsDialog.class` there hides the fields of the current one.
+For the same reason copy only the `src/` folders of osdx into the compile
+root, not its `.class` files: an existing class file wins over its source, so
+the other classes would compile against the old declarations.
+
+A single-class import now shadows the classes of a star import, as in Java
+(`third_party/slrrc/classes.cpp:lookup`): `import java.render.osdx.Osd;`
+wins over `import java.render.*;`. No shipped source uses a single-class
+import, so their output is unchanged.
+
 ### Patched car classes: stock anti-roll bars
 
 The installed MWM 2.2.1 car classes differ from the `sources/` tree (MWM added
