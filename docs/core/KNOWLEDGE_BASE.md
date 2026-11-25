@@ -168,8 +168,7 @@ current gaps to SLRR_rev code are in
 - Runtime environment variables: `SLRR_GAME_ROOT` (`src/main.cpp`),
   `SLRR_VLC_DIR` (`src/platform/video_fmv_vlc.cpp`) and `SLRR_AMBIENCE_LOG`
   (`src/resources/scene_ambience.cpp`, debug logging of random ambience
-  requests). `SLRR_FMOD_SDK_DIR` and `SLRR_TOOLS_CACHE_DIR` are build-time
-  only (see README.md).
+  requests). `SLRR_TOOLS_CACHE_DIR` is build-time only (see README.md).
 - Automated checks on `main`: the only CTest target is `audio_recovery`
   (`-DBUILD_TESTING=ON`, `CMakeLists.txt`). Every other regression is a
   standalone `tests/test_<name>.cpp` built and run by
@@ -584,7 +583,7 @@ this section is the working guide.
 | Worker pool, one per logical CPU minus one | `src/platform/job_system.cpp:jobs_parallel_for` | Data-parallel batches started by the host thread |
 | Exterior map parser | `src/natives/natives_resref.cpp:spawn_ground_shell` (`std::async`) | `scene_instances_ground_map` for the next chained map file |
 | Pedestrian stepper | `src/resources/part_runtime.cpp:PedSim` | Walker steering on copies of the walker records |
-| Audio and video | FMOD Core (effects/music/Cinepak PCM), optional VLC/Windows codecs | Their own decode and output threads |
+| Audio and video | SDL3_mixer (effects/music/Cinepak PCM), optional VLC/Windows codecs | Their own decode and output threads |
 
 **Physics thread (#203).** `part_physics_begin` prepares a batch on the host
 and starts it; `part_physics_end`, after `render.flush()`, waits for it and

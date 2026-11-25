@@ -1,5 +1,6 @@
 #include "slrr/host_audio.hpp"
-#include <fmod_errors.h>
+#include <SDL3/SDL.h>
+#include <SDL3_mixer/SDL_mixer.h>
 #include <cstdio>
 
 namespace slrr {
@@ -8,37 +9,39 @@ std::weak_ptr<HostAudio>& shared_audio() {
   static std::weak_ptr<HostAudio> audio;
   return audio;
 }
+MIX_Mixer* open_group(const char* name) {
+  // Each call opens a new logical device on the default output. SDL follows
+  // the default device when the hardware changes.
+  MIX_Mixer* mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
+  host_audio_check(mixer != nullptr, name);
+  return mixer;
+}
 }
 
-bool host_audio_check(FMOD_RESULT result, const char* operation) {
-  if (result == FMOD_OK) return true;
-  std::fprintf(stderr, "[audio] FMOD %s: %s (%d)\n", operation, FMOD_ErrorString(result), result);
-  return false;
+bool host_audio_check(bool ok, const char* operation) {
+  if (!ok) std::fprintf(stderr, "[audio] SDL_mixer %s: %s\n", operation, SDL_GetError());
+  return ok;
 }
 
 HostAudio::~HostAudio() {
-  if (effects) effects->release();
-  if (music) music->release();
-  if (fmv) fmv->release();
-  if (system) system->release();
+  if (effects) MIX_DestroyMixer(effects);
+  if (music) MIX_DestroyMixer(music);
+  if (fmv) MIX_DestroyMixer(fmv);
+  if (initialized) MIX_Quit();
 }
 
 std::shared_ptr<HostAudio> host_audio_acquire() {
   if (auto audio = shared_audio().lock()) return audio;
   auto audio = std::make_shared<HostAudio>();
-  if (!host_audio_check(FMOD::System_Create(&audio->system), "create") ||
-      // 32 admitted effects plus music; leave room to prepare a replacement
-      // before retiring its victim, without FMOD stealing an existing loop.
-      !host_audio_check(audio->system->init(64, FMOD_INIT_NORMAL, nullptr), "init") ||
-      !host_audio_check(audio->system->createChannelGroup("effects", &audio->effects), "effects group") ||
-      !host_audio_check(audio->system->createChannelGroup("music", &audio->music), "music group") ||
-      !host_audio_check(audio->system->createChannelGroup("fmv", &audio->fmv), "FMV group")) return {};
+  audio->initialized = host_audio_check(MIX_Init(), "init");
+  if (!audio->initialized || !(audio->effects = open_group("effects mixer")) ||
+      !(audio->music = open_group("music mixer")) || !(audio->fmv = open_group("FMV mixer")))
+    return {};
   shared_audio() = audio;
-  std::fprintf(stderr, "[audio] FMOD Core %08x initialized\n", FMOD_VERSION);
+  const int version = MIX_Version();
+  std::fprintf(stderr, "[audio] SDL_mixer %d.%d.%d initialized (%s)\n",
+               SDL_VERSIONNUM_MAJOR(version), SDL_VERSIONNUM_MINOR(version),
+               SDL_VERSIONNUM_MICRO(version), SDL_GetCurrentAudioDriver());
   return audio;
-}
-
-void host_audio_update() {
-  if (auto audio = shared_audio().lock()) host_audio_check(audio->system->update(), "update");
 }
 } // namespace slrr

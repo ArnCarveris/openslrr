@@ -1,5 +1,7 @@
 #include "slrr/host_sfx.hpp"
 #include "slrr/host_audio.hpp"
+#include <SDL3/SDL.h>
+#include <SDL3_mixer/SDL_mixer.h>
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -16,9 +18,10 @@ std::string root;
 #ifdef _WIN32
 struct WaveData {
   std::shared_ptr<HostAudio> audio;
-  FMOD::Sound* sound = nullptr;
-  unsigned int bytes = 0;
-  ~WaveData() { if (sound) sound->release(); }
+  MIX_Audio* sound = nullptr;
+  size_t bytes = 0;
+  // Tracks hold their own reference, so a playing sound outlives eviction.
+  ~WaveData() { if (sound) MIX_DestroyAudio(sound); }
 };
 struct CachedWave { std::shared_ptr<const WaveData> data; uint64_t used=0; };
 std::unordered_map<std::string,CachedWave> wave_cache;
@@ -27,7 +30,7 @@ uint64_t wave_clock=0,wave_reads=0,wave_hits=0,rejected=0;
 constexpr size_t kVoiceLimit=32,kLoopLimit=24,kWaveCacheBytes=16*1024*1024,kWaveCacheEntries=64;
 struct Voice {
   int32_t id = 0;
-  FMOD::Channel* source = nullptr;
+  MIX_Track* source = nullptr;
   std::shared_ptr<const WaveData> data;
   std::string cue;
   float gain = 1.f;
@@ -36,7 +39,7 @@ struct Voice {
   std::chrono::steady_clock::time_point last_request;
   ~Voice() {
     if (source)
-      source->stop();
+      MIX_DestroyTrack(source);
   }
 };
 struct Audio {
@@ -55,25 +58,25 @@ struct Audio {
       }
       // Correlated copies can add coherently. 1/N keeps their combined
       // peak within one instance's requested gain, unlike 1/sqrt(N).
-      v->source->setVolume(v->gain / static_cast<float>(copies));
+      MIX_SetTrackGain(v->source, v->gain / static_cast<float>(copies));
     }
   }
   bool init() {
     if (!engine) engine = host_audio_acquire();
-    return engine && host_audio_check(engine->effects->setVolume(volume), "effects volume");
+    return engine && host_audio_check(MIX_SetMixerGain(engine->effects, volume), "effects volume");
   }
   void reap() {
     voices.erase(std::remove_if(voices.begin(), voices.end(),
                                 [](const auto &v) {
-                                  bool playing = false;
-                                  return v->source->isPlaying(&playing) != FMOD_OK || !playing;
+                                  return !MIX_TrackPlaying(v->source) && !MIX_TrackPaused(v->source);
                                 }),
                  voices.end());
     rebalance();
   }
 } audio;
 float finite_pitch(float pitch) {
-  return std::isfinite(pitch) ? std::clamp(pitch, 1.f / 1024.f, 1024.f) : 1.f;
+  // SDL_mixer accepts frequency ratios from 0.01 to 100.
+  return std::isfinite(pitch) ? std::clamp(pitch, .01f, 100.f) : 1.f;
 }
 std::shared_ptr<const WaveData> wave_data(const std::string& path,const std::string& cue) {
   if (auto it=wave_cache.find(cue);it!=wave_cache.end()) {
@@ -86,19 +89,21 @@ std::shared_ptr<const WaveData> wave_data(const std::string& path,const std::str
   const auto size = std::filesystem::file_size(path, ec);
   if (ec || size < 12 || size > 64 * 1024 * 1024) return {};
   const auto utf8 = std::filesystem::path(path).u8string();
-  // Probe decoded size before allocating a sample: a small compressed cue
-  // must not bypass the old per-wave bound by expanding in memory.
-  if (!host_audio_check(data->audio->system->createSound(
-          reinterpret_cast<const char*>(utf8.c_str()), FMOD_2D | FMOD_OPENONLY,
-          nullptr, &data->sound), "inspect effect") ||
-      !host_audio_check(data->sound->getLength(&data->bytes, FMOD_TIMEUNIT_PCMBYTES), "effect size") ||
-      !data->bytes || data->bytes > 64 * 1024 * 1024) return {};
-  data->sound->release();data->sound=nullptr;
-  // Prepare interpolation across the boundary even if the first channel is
-  // a one-shot; the same cached sound can later be used by a loop.
-  if (!host_audio_check(data->audio->system->createSound(
-          reinterpret_cast<const char*>(utf8.c_str()), FMOD_2D | FMOD_CREATESAMPLE | FMOD_LOOP_NORMAL,
-          nullptr, &data->sound), "load effect")) return {};
+  const char* file = reinterpret_cast<const char*>(utf8.c_str());
+  // Probe the decoded size before decoding: a small compressed cue must not
+  // bypass the per-wave bound by expanding in memory. Predecoded audio is
+  // held as 32-bit float samples.
+  MIX_Audio* probe = MIX_LoadAudio(audio.engine->effects, file, false);
+  if (!host_audio_check(probe != nullptr, "inspect effect")) return {};
+  SDL_AudioSpec spec{};
+  const Sint64 frames = MIX_GetAudioDuration(probe);
+  const bool known = MIX_GetAudioFormat(probe, &spec) && frames > 0 && spec.channels > 0;
+  MIX_DestroyAudio(probe);
+  if (!known || static_cast<uint64_t>(frames) * spec.channels * sizeof(float) > 64 * 1024 * 1024) return {};
+  data->bytes = static_cast<size_t>(frames) * spec.channels * sizeof(float);
+  // One decoded copy is shared by every one-shot and loop of this cue.
+  data->sound = MIX_LoadAudio(audio.engine->effects, file, true);
+  if (!host_audio_check(data->sound != nullptr, "load effect")) return {};
   const size_t bytes=data->bytes;
   if (bytes<=kWaveCacheBytes) {
     while (!wave_cache.empty() && (wave_cache_bytes+bytes>kWaveCacheBytes || wave_cache.size()>=kWaveCacheEntries)) {
@@ -193,10 +198,10 @@ int32_t host_sfx_play_file(const std::string &path, float pitch, float volume,
     printf("[sfx] cannot load/play %s\n", path.c_str());
     return 0;
   }
-  if (!host_audio_check(audio.engine->system->playSound(
-          v->data->sound, audio.engine->effects, true, &v->source), "play effect") ||
-      !host_audio_check(v->source->setMode(loop ? FMOD_LOOP_NORMAL : FMOD_LOOP_OFF), "effect loop") ||
-      !host_audio_check(v->source->setPitch(finite_pitch(pitch)), "effect pitch")) return 0;
+  v->source = MIX_CreateTrack(audio.engine->effects);
+  if (!host_audio_check(v->source != nullptr, "effect track") ||
+      !host_audio_check(MIX_SetTrackAudio(v->source, v->data->sound), "effect audio") ||
+      !host_audio_check(MIX_SetTrackFrequencyRatio(v->source, finite_pitch(pitch)), "effect pitch")) return 0;
   if (victim_id) host_sfx_stop(victim_id); // Retire only once replacement is ready.
   while (host_sfx_is_playing(audio.next))
     audio.next = audio.next == INT32_MAX ? 1 : audio.next + 1;
@@ -205,7 +210,11 @@ int32_t host_sfx_play_file(const std::string &path, float pitch, float volume,
   int32_t id = v->id;
   audio.voices.push_back(std::move(v));
   audio.rebalance();
-  if (!host_audio_check(audio.voices.back()->source->setPaused(false), "start effect")) {
+  const SDL_PropertiesID options = SDL_CreateProperties();
+  if (options) SDL_SetNumberProperty(options, MIX_PROP_PLAY_LOOPS_NUMBER, loop ? -1 : 0);
+  const bool started = options && MIX_PlayTrack(audio.voices.back()->source, options);
+  if (options) SDL_DestroyProperties(options);
+  if (!host_audio_check(started, "start effect")) {
     audio.voices.pop_back();
     audio.rebalance();
     return 0;
@@ -230,7 +239,8 @@ void host_sfx_pause_loop(int32_t id, bool paused) {
   if (id <= 0) return;
   for (const auto& voice : audio.voices) {
     if (voice->id != id || !voice->loop) continue;
-    voice->source->setPaused(paused);
+    if (paused) MIX_PauseTrack(voice->source);
+    else MIX_ResumeTrack(voice->source);
     return;
   }
 #endif
@@ -240,8 +250,8 @@ void host_sfx_update_loop(int32_t id, float pitch, float volume) {
   for (const auto &voice : audio.voices) {
     if (voice->id != id || !voice->loop) continue;
     voice->gain = std::isfinite(volume)?std::clamp(volume,0.f,1.f):1.f;
-    voice->source->setVolume(voice->gain);
-    voice->source->setPitch(finite_pitch(pitch));
+    MIX_SetTrackGain(voice->source, voice->gain);
+    MIX_SetTrackFrequencyRatio(voice->source, finite_pitch(pitch));
     break;
   }
 #endif
@@ -250,7 +260,10 @@ void host_sfx_set_loop_pan(int32_t id, float pan) {
 #ifdef _WIN32
   for (const auto &voice : audio.voices) {
     if (voice->id != id || !voice->loop) continue;
-    voice->source->setPan(std::isfinite(pan) ? std::clamp(pan, -1.f, 1.f) : 0.f);
+    // Balance: the far side fades out, the near side stays at full gain.
+    const float p = std::isfinite(pan) ? std::clamp(pan, -1.f, 1.f) : 0.f;
+    const MIX_StereoGains gains{p > 0 ? 1.f - p : 1.f, p < 0 ? 1.f + p : 1.f};
+    MIX_SetTrackStereo(voice->source, &gains);
     break;
   }
 #endif
@@ -258,10 +271,8 @@ void host_sfx_set_loop_pan(int32_t id, float pan) {
 bool host_sfx_is_playing(int32_t id) {
 #ifdef _WIN32
   for (const auto &v : audio.voices)
-    if (v->id == id) {
-      bool playing = false;
-      return v->source->isPlaying(&playing) == FMOD_OK && playing;
-    }
+    if (v->id == id)
+      return MIX_TrackPlaying(v->source) || MIX_TrackPaused(v->source);
 #endif
   return false;
 }
@@ -269,8 +280,15 @@ void host_sfx_set_volume(float volume) {
 #ifdef _WIN32
   audio.volume = std::isfinite(volume) ? std::clamp(volume, 0.f, 1.f) : 1.f;
   if (audio.engine)
-    audio.engine->effects->setVolume(audio.volume);
+    MIX_SetMixerGain(audio.engine->effects, audio.volume);
 #endif
+}
+MIX_Track* host_sfx_track(int32_t id) {
+#ifdef _WIN32
+  for (const auto &v : audio.voices)
+    if (v->id == id) return v->source;
+#endif
+  return nullptr;
 }
 HostSfxStats host_sfx_stats() {
 #ifdef _WIN32

@@ -120,7 +120,7 @@ silently replacing it with a collision-filter toggle.
   `cars/traffic/sounds/engines/diesel_5.0L` samples, cross-faded by an RPM
   modelled from speed through a stepped gearbox. The gain falls with the
   distance to the world camera and the loop is panned left/right by the car's
-  side (`host_sfx_set_loop_pan`; plain stereo pan, not FMOD 3D). Pitch follows
+  side (`host_sfx_set_loop_pan`; plain stereo balance through `MIX_SetTrackStereo`, not 3D positioning). Pitch follows
   the CFG mass plus a stable per-car offset, so heavy and light cars differ.
   The CFG `sfx_loop` (`PartConfig::sfx_loop`; Erbilac and Wagon, a radio
   music loop) plays as that car's own loop within 40 m. Only the four nearest

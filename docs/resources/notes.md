@@ -119,15 +119,15 @@ coalescing is retained. Rejected loop requests increment diagnostics without
 reading their WAV. This is a common loop budget, not new engine-vs-ambient
 priority; a 25th loop can still be denied until another loop stops.
 
-FMOD decoded sample sounds are shared between voices and held in a
-16 MiB decoded-PCM / 64-entry LRU cache. Samples are prepared for looping at
-load time; each channel selects loop or one-shot playback independently.
-Playing voices retain their sound even after cache eviction; root reset
-stops voices and clears cached data/counters. `host_audio` owns the shared
-FMOD mixer with independent effects/music groups; music streams are updated
-through the existing frame pump even when only effects are playing.
+Predecoded SDL3_mixer `MIX_Audio` samples are shared between tracks and held
+in a 16 MiB decoded-PCM / 64-entry LRU cache (decoded size counted as 32-bit
+float frames). Each track selects loop (`MIX_PROP_PLAY_LOOPS_NUMBER` -1) or
+one-shot playback independently. Playing tracks hold their own reference to
+the sample, so it survives cache eviction; root reset stops voices and clears
+cached data/counters. `host_audio` owns one SDL3_mixer mixer per group
+(effects, music, FMV) with independent gains; SDL mixes on its own thread.
 Sounds above the cache limit can play up to the 64 MiB per-effect bound,
-checked with an open-only metadata probe before full decode. `wave_reads`
+checked with an undecoded load (duration and format) before full decode. `wave_reads`
 counts uncached load attempts (probe plus decode), not OS file reads. Loop pitch
 and gain updates now reject non-finite inputs via the same finite defaults
 as play_file. HostSfxStats exposes rejection/read/hit/cache diagnostics.
@@ -202,12 +202,11 @@ Video without VLC (#216): 64-bit Windows ships no Cinepak codec (only the
 DirectShow paths failed and every intro and `prime.avi` was skipped.
 `video_fmv_open` now tries `src/platform/video_cinepak.cpp` first: it indexes
 the AVI, decodes Cinepak frames in order into BGRA and plays PCM audio through
-a dedicated FMOD channel/group, whose position drives the frame clock.
-The FMV pump updates the shared mixer during boot intros, and EOF/channel
-failure falls back to wall time from the last valid position without jumping
-the picture. PCM is staged in a WAV memory sample (unsigned 8-bit or signed
-16-bit, mono/stereo) and released before its shared mixer owner. Looping
-replays the same sound with a fresh channel. Files it rejects
+a track on the dedicated SDL3_mixer FMV mixer, whose position drives the
+frame clock. EOF or an early track stop falls back to wall time from the last
+valid position without jumping the picture. PCM is loaded as raw audio
+(unsigned 8-bit or signed 16-bit, mono/stereo) and released before its shared
+mixer owner. Looping replays the same track from its first sample. Files it rejects
 (another codec, or a first frame it cannot decode) still go to LibVLC, then
 AVIFile/DirectShow. The video_safety suite checks the decoder and a generated
 Cinepak AVI with PCM audio.
