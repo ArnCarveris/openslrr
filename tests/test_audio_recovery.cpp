@@ -2,6 +2,8 @@
 #include "slrr/host_audio.hpp"
 #include "slrr/host_sfx.hpp"
 #include "slrr/host_music.hpp"
+#include <SDL3/SDL.h>
+#include <SDL3_mixer/SDL_mixer.h>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -59,29 +61,27 @@ int main(int argc,char** argv){
  std::puts("PASS unreadable music skipped in both directions; all-broken set stops after one pass");
  auto audio=host_audio_acquire();SLRR_REQUIRE(audio);
  auto id=host_sfx_play_file(silence.string(),1,0,true);SLRR_REQUIRE(id>0);
- FMOD::Channel* channel=nullptr;
- SLRR_REQUIRE(audio->effects->getChannel(0,&channel)==FMOD_OK);
+ MIX_Track* channel=host_sfx_track(id);SLRR_REQUIRE(channel);
  host_sfx_pause_loop(id,true);host_music_update();
- bool paused=false;SLRR_REQUIRE(channel->getPaused(&paused)==FMOD_OK&&paused&&host_sfx_is_playing(id));
+ SLRR_REQUIRE(MIX_TrackPaused(channel)&&host_sfx_is_playing(id));
  host_sfx_update_loop(id,1.5f,.4f);
- float value=0;SLRR_REQUIRE(channel->getPitch(&value)==FMOD_OK&&std::abs(value-1.5f)<.001f);
- SLRR_REQUIRE(channel->getVolume(&value)==FMOD_OK&&std::abs(value-.4f)<.001f);
+ SLRR_REQUIRE(std::abs(MIX_GetTrackFrequencyRatio(channel)-1.5f)<.001f);
+ SLRR_REQUIRE(std::abs(MIX_GetTrackGain(channel)-.4f)<.001f);
  host_music_set_volume(.2f);
- SLRR_REQUIRE(audio->music->getVolume(&value)==FMOD_OK&&std::abs(value-.2f)<.001f);
- SLRR_REQUIRE(audio->effects->getVolume(&value)==FMOD_OK&&value==0);
- SLRR_REQUIRE(audio->fmv->getVolume(&value)==FMOD_OK&&value==1.f);
- host_sfx_pause_loop(id,false);SLRR_REQUIRE(channel->getPaused(&paused)==FMOD_OK&&!paused);
- host_sfx_stop(id);SLRR_REQUIRE(!host_sfx_is_playing(id));
+ SLRR_REQUIRE(std::abs(MIX_GetMixerGain(audio->music)-.2f)<.001f);
+ SLRR_REQUIRE(MIX_GetMixerGain(audio->effects)==0);
+ SLRR_REQUIRE(MIX_GetMixerGain(audio->fmv)==1.f);
+ host_sfx_pause_loop(id,false);SLRR_REQUIRE(MIX_TrackPlaying(channel)&&!MIX_TrackPaused(channel));
+ host_sfx_stop(id);SLRR_REQUIRE(!host_sfx_is_playing(id)&&!host_sfx_track(id));
  host_music_set_volume(0);
- std::puts("PASS FMOD loop pause/resume, pitch/gain, stop and independent mixer groups");
+ std::puts("PASS SDL_mixer loop pause/resume, pitch/gain, stop and independent mixer groups");
  wave(f.root/"music/Main_menu/short.wav",1);
  host_music_set_root(f.root.string());host_music_change_set(3);
  const auto short_path=(f.root/"music/Main_menu/short.wav").string();
  const auto short_loop=host_sfx_play_file(short_path,1,0,true);SLRR_REQUIRE(short_loop>0);
  const auto short_shot=host_sfx_play_file(short_path,1,0,false);SLRR_REQUIRE(short_shot>0);
- SLRR_REQUIRE(audio->effects->getChannel(0,&channel)==FMOD_OK);
- FMOD::Sound* sample=nullptr;FMOD_MODE mode=0;
- SLRR_REQUIRE(channel->getCurrentSound(&sample)==FMOD_OK&&sample->getMode(&mode)==FMOD_OK&&(mode&FMOD_LOOP_NORMAL));
+ channel=host_sfx_track(short_loop);SLRR_REQUIRE(channel&&MIX_GetTrackLoops(channel)==-1);
+ SLRR_REQUIRE(MIX_GetTrackAudio(channel)==MIX_GetTrackAudio(host_sfx_track(short_shot)));
  const auto attempts=host_music_stats().attempts;
  auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
  while((host_music_stats().attempts==attempts||host_sfx_is_playing(short_shot))&&std::chrono::steady_clock::now()<deadline){

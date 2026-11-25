@@ -6,7 +6,7 @@
   .\scripts\build-run-branch.ps1 -Branch main -GameRoot 'D:\Games\SLRR'
 .EXAMPLE
   .\scripts\build-run-branch.ps1 -Branch feature/my-branch -GameRoot 'D:\Games\SLRR' `
-    -Workspace 'D:\OpenSLRR-builds' -FmodSdkDir 'D:\FMOD Studio API Windows'
+    -Workspace 'D:\OpenSLRR-builds'
 #>
 [CmdletBinding()]
 param(
@@ -19,7 +19,6 @@ param(
     [string]$GameRoot,
 
     [string]$Workspace = (Join-Path $env:LOCALAPPDATA 'OpenSLRR-branch-builds'),
-    [string]$FmodSdkDir = $env:SLRR_FMOD_SDK_DIR,
     [string]$ToolsCacheDir = $env:SLRR_TOOLS_CACHE_DIR,
     [string[]]$GameArguments = @()
 )
@@ -113,7 +112,6 @@ try {
 
     $build = Join-Path $repo 'build'
     $configureArgs = @('-S', $repo, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
-    if ($FmodSdkDir) { $configureArgs += "-DSLRR_FMOD_SDK_DIR=$FmodSdkDir" }
     if ($ToolsCacheDir) { $configureArgs += "-DSLRR_TOOLS_CACHE_DIR=$ToolsCacheDir" }
     Invoke-Checked 'cmake' $configureArgs
     Invoke-Checked 'cmake' @('--build', $build, '--config', 'Release', '--target', 'slrr_host', '--parallel')

@@ -226,16 +226,16 @@ contracts documented in `repos/slrr-reverse/engine/Runtime/Render/RenderNatives.
 | `Sound.getMode`, `setMode` | Per-playlist mode state (initially 3). Accept 0..3, preserve the old mode for invalid values. No active set: get returns -1, set returns its input, matching the reference native. Specific shuffle/repeat policies for these mode values have not been established; the host currently advances sequentially at EOF. |
 | `Sound.has3DHardware`, `hasMixHardware` | Zero: the software mixer does not provide the legacy DirectSound hardware-buffer capabilities. This does not mean sound is unavailable. |
 
-Effects and music share one FMOD Core system with separate channel groups.
-Music uses FMOD streams rather than loading complete songs, retaining the
-MP3/WAV/WMA playlist scan, sequential order and bounded bad-track recovery.
-The shared mixer is updated in modal script pumps as well as the main loop,
-even with music stopped. Startup logs list scan counts and track starts;
-FMOD failures include the operation and error text. Stock Cinepak FMV PCM
-uses a separate FMOD group and updates the mixer during boot intros too;
-its audio position drives video timing, falling back continuously to wall
-time on EOF or channel failure. Other VLC/Windows codec fallbacks retain
-their own audio outputs. No Studio banks or authored events are required.
+Effects, music and stock Cinepak FMV PCM each have their own SDL3_mixer
+mixer, so their volumes are independent. Music streams from the file rather
+than loading complete songs, retaining the MP3/WAV playlist scan, sequential
+order and bounded bad-track recovery (WMA is not decoded; the stock game
+ships none). SDL mixes on its own audio thread, including during modal script
+pumps; the music pump only advances the playlist at EOF. Startup logs list
+scan counts and track starts; SDL_mixer failures include the operation and
+SDL's error text. The Cinepak audio position drives video timing, falling
+back continuously to wall time on EOF or a stopped track. Other VLC/Windows
+codec fallbacks retain their own audio outputs.
 
 ### Audio options
 
@@ -271,7 +271,7 @@ device or screenshot implementation was taken from it.
 
 ### Repeated effects and UI bursts
 
-Transient FMOD effects are grouped by normalized WAV path. Requests closer
+Transient effects are grouped by normalized WAV path. Requests closer
 than 35 ms are coalesced before reading/allocating another voice. At most two
 copies of one transient cue may overlap; their gains are divided by the copy
 count so correlated waveforms cannot multiply that cue's peak amplitude.

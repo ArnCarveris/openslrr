@@ -13,25 +13,6 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/bgfx.cmake/CMakeLists.txt
   message(FATAL_ERROR "Missing third_party/bgfx.cmake. See README.md for setup.")
 endif()
 
-# FMOD Core is an external Windows x64 SDK; never download or vendor it.
-set(_slrr_fmod_default "C:/Program Files (x86)/FMOD SoundSystem/FMOD Studio API Windows")
-if(DEFINED ENV{SLRR_FMOD_SDK_DIR} AND NOT "$ENV{SLRR_FMOD_SDK_DIR}" STREQUAL "")
-  set(_slrr_fmod_default "$ENV{SLRR_FMOD_SDK_DIR}")
-endif()
-set(SLRR_FMOD_SDK_DIR "${_slrr_fmod_default}" CACHE PATH "FMOD Studio API Windows SDK root (Core 2.04)")
-file(TO_CMAKE_PATH "${SLRR_FMOD_SDK_DIR}" _slrr_fmod_dir)
-foreach(_slrr_fmod_file IN ITEMS api/core/inc/fmod.hpp api/core/inc/fmod.h
-    api/core/lib/x64/fmod_vc.lib api/core/lib/x64/fmod.dll)
-  if(NOT EXISTS "${_slrr_fmod_dir}/${_slrr_fmod_file}")
-    message(FATAL_ERROR "Missing FMOD Core SDK file: ${_slrr_fmod_dir}/${_slrr_fmod_file}. Install the Windows x64 FMOD Studio API SDK and set SLRR_FMOD_SDK_DIR (CMake cache or environment) to its root.")
-  endif()
-endforeach()
-add_library(FMOD::Core SHARED IMPORTED)
-set_target_properties(FMOD::Core PROPERTIES
-  IMPORTED_IMPLIB "${_slrr_fmod_dir}/api/core/lib/x64/fmod_vc.lib"
-  IMPORTED_LOCATION "${_slrr_fmod_dir}/api/core/lib/x64/fmod.dll"
-  INTERFACE_INCLUDE_DIRECTORIES "${_slrr_fmod_dir}/api/core/inc")
-
 # Visual Studio compiles the files of one project one after the other unless
 # /MP is set, which left most cores idle. It covers bgfx.cmake's targets too.
 # SLRR_COMPILE_JOBS caps the cl.exe processes per project; empty uses every core.
@@ -193,12 +174,12 @@ endif()
 
 if(WIN32)
   # strmiids = DirectShow GUIDs for FMV (GfxEngine.openVideo).
-  # vfw32 = AVIFile fallback; stock Cinepak PCM is mixed through FMOD.
+  # vfw32 = AVIFile fallback; stock Cinepak PCM is mixed through SDL3_mixer.
   target_link_libraries(slrr_host PRIVATE user32 gdi32 opengl32 winmm ole32
-                                          oleaut32 strmiids vfw32 FMOD::Core)
+                                          oleaut32 strmiids vfw32)
 endif()
 
-# SDL handles peripherals only; keep the existing Win32 window, audio and renderer.
+# SDL handles peripherals and audio output; keep the existing Win32 window and renderer.
 include(FetchContent)
 if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
@@ -209,14 +190,15 @@ set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-foreach(_slrr_sdl_subsystem IN ITEMS AUDIO VIDEO GPU RENDER CAMERA HAPTIC POWER SENSOR DIALOG)
+set(SDL_AUDIO ON CACHE BOOL "" FORCE)
+foreach(_slrr_sdl_subsystem IN ITEMS VIDEO GPU RENDER CAMERA HAPTIC POWER SENSOR DIALOG)
   set(SDL_${_slrr_sdl_subsystem} OFF CACHE BOOL "" FORCE)
 endforeach()
 FetchContent_Declare(SDL3
-  URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.30/SDL3-3.2.30.tar.gz
-  URL_HASH SHA256=4c3b09330d866dc52eb65b66259a6684ad387252ca8c57901b3a2b534eb42e3d)
-# SDL gates this probe on audio/video's SDL_DIRECTX option. Input-only builds
-# still need DirectInput for wheels, pedals and shifters on a fresh CMake cache.
+  URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz
+  URL_HASH SHA256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f)
+# SDL gates this probe on audio/video's SDL_DIRECTX option. Keep the explicit
+# check so wheels, pedals and shifters never silently lose DirectInput.
 include(CheckIncludeFileCXX)
 check_include_file_cxx(dinput.h HAVE_DINPUT_H)
 if(NOT HAVE_DINPUT_H)
@@ -224,6 +206,32 @@ if(NOT HAVE_DINPUT_H)
 endif()
 FetchContent_MakeAvailable(SDL3)
 target_link_libraries(slrr_host PRIVATE SDL3::SDL3-static)
+
+# SDL3_mixer mixes effects, music and stock Cinepak PCM. Only its built-in
+# WAV and dr_mp3 decoders are used: the release tarball has no vendored
+# libraries, and the game ships WAV effects and MP3/WAV music.
+set(SDLMIXER_VENDORED OFF CACHE BOOL "" FORCE)
+set(SDLMIXER_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDLMIXER_TESTS OFF CACHE BOOL "" FORCE)
+set(SDLMIXER_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDLMIXER_DEPS_SHARED OFF CACHE BOOL "" FORCE)
+foreach(_slrr_mixer_codec IN ITEMS AIFF VOC AU FLAC GME MOD MIDI OPUS VORBIS_STB
+    VORBIS_VORBISFILE VORBIS_TREMOR WAVPACK MP3_MPG123)
+  set(SDLMIXER_${_slrr_mixer_codec} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(SDLMIXER_WAVE ON CACHE BOOL "" FORCE)
+set(SDLMIXER_MP3 ON CACHE BOOL "" FORCE)
+set(SDLMIXER_MP3_DRMP3 ON CACHE BOOL "" FORCE)
+# SDL3_mixer follows BUILD_SHARED_LIBS; build it static without changing the
+# value seen by later subprojects.
+set(_slrr_shared_libs "${BUILD_SHARED_LIBS}")
+set(BUILD_SHARED_LIBS OFF)
+FetchContent_Declare(SDL3_mixer
+  URL https://github.com/libsdl-org/SDL_mixer/releases/download/release-3.2.4/SDL3_mixer-3.2.4.tar.gz
+  URL_HASH SHA256=182a07c745375e113dc740d43964ff21b0be29f29f59876c4dbc4db3d32f6901)
+FetchContent_MakeAvailable(SDL3_mixer)
+set(BUILD_SHARED_LIBS "${_slrr_shared_libs}")
+target_link_libraries(slrr_host PRIVATE SDL3_mixer::SDL3_mixer)
 
 # bgfx is the game's renderer.
 set(BGFX_BUILD_TOOLS ON CACHE BOOL "" FORCE)
@@ -403,7 +411,7 @@ if(BUILD_TESTING)
   target_include_directories(audio_recovery PRIVATE include)
   target_compile_options(audio_recovery PRIVATE /W3 /utf-8)
   target_compile_definitions(audio_recovery PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_link_libraries(audio_recovery PRIVATE FMOD::Core)
+  target_link_libraries(audio_recovery PRIVATE SDL3_mixer::SDL3_mixer SDL3::SDL3-static)
   add_test(NAME audio_recovery COMMAND audio_recovery)
   add_executable(save_json tests/test_save_json.cpp src/natives/save_json.cpp)
   target_include_directories(save_json PRIVATE src/natives)
@@ -412,14 +420,4 @@ if(BUILD_TESTING)
   add_test(NAME save_json COMMAND save_json)
 endif()
 
-foreach(_slrr_audio_target IN ITEMS slrr_host audio_recovery)
-  if(TARGET ${_slrr_audio_target})
-    add_custom_command(TARGET ${_slrr_audio_target} POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "$<TARGET_FILE:FMOD::Core>" "$<TARGET_FILE_DIR:${_slrr_audio_target}>"
-      VERBATIM)
-  endif()
-endforeach()
-
 install(TARGETS slrr_host RUNTIME DESTINATION bin)
-install(FILES "$<TARGET_FILE:FMOD::Core>" DESTINATION bin)
